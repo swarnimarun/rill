@@ -120,9 +120,14 @@ impl<'a> Resolver<'a> {
         // well as qualified (`Step::Yield x`); both resolve to the enum's item.
         for (item, slot) in module.items.iter().zip(&slots) {
             let AstItem::Type(decl) = item else { continue };
-            let rill_ast::TypeBody::Variants(variants) = &decl.body else { continue };
+            let rill_ast::TypeBody::Variants(variants) = &decl.body else {
+                continue;
+            };
             for variant in variants {
-                self.module_values.entry(variant.name.sym).or_default().push(*slot);
+                self.module_values
+                    .entry(variant.name.sym)
+                    .or_default()
+                    .push(*slot);
             }
         }
         slots

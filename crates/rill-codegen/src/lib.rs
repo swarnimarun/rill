@@ -248,7 +248,7 @@ impl<'a> Generator<'a> {
             if variant.payload.is_empty() {
                 body.push_str(&format!("    int32_t _{index}; // {vname}\n"));
             } else {
-                body.push_str(&format!("    struct {{\n"));
+                body.push_str("    struct {\n");
                 for (field, ty) in variant.payload.iter().enumerate() {
                     let ty = self.c_type(ty);
                     body.push_str(&format!("      {ty} _{field};\n"));
@@ -873,7 +873,7 @@ impl<'a> Generator<'a> {
                         }
                         self.body.push_str("  }\n");
                     }
-                    None => self.body.push_str("\n"),
+                    None => self.body.push('\n'),
                 }
                 if matches!(ty, Ty::Unit) {
                     "rill_unit()".into()
@@ -1325,14 +1325,23 @@ impl<'a> Generator<'a> {
 
     /// `match` — a guarded arm sequence with a `done` flag: guards work without
     /// gotos, and the result is zero-initialised when no arm matches.
-    fn match_expr(&mut self, whole: &Expr, scrutinee: &Expr, arms: &[rill_hir::MatchArm]) -> String {
+    fn match_expr(
+        &mut self,
+        whole: &Expr,
+        scrutinee: &Expr,
+        arms: &[rill_hir::MatchArm],
+    ) -> String {
         let value = self.expr(scrutinee);
         let scrutinee_ty = self.expr_ty(scrutinee);
         let c_ty = self.c_type(&scrutinee_ty);
         let slot = self.fresh("scrut");
         self.body.push_str(&format!("  {c_ty} {slot} = {value};\n"));
         let result_ty = self.expr_ty(whole);
-        let result_ty = if matches!(result_ty, Ty::Unit) { Ty::i32() } else { result_ty };
+        let result_ty = if matches!(result_ty, Ty::Unit) {
+            Ty::i32()
+        } else {
+            result_ty
+        };
         let result = self.fresh("matched");
         let result_c = self.c_type(&result_ty);
         self.body.push_str(&format!("  {result_c} {result} = 0;\n"));
@@ -1340,7 +1349,8 @@ impl<'a> Generator<'a> {
         self.body.push_str(&format!("  r_bool {done} = 0;\n"));
         for arm in arms {
             let test = self.arm_test(&slot, &scrutinee_ty, arm);
-            self.body.push_str(&format!("  if (!{done} && ({test})) {{\n"));
+            self.body
+                .push_str(&format!("  if (!{done} && ({test})) {{\n"));
             self.push_scope();
             for line in self.pattern_bindings(&arm.pattern, &slot) {
                 self.body.push_str(&format!("  {line}\n"));
@@ -1369,7 +1379,9 @@ impl<'a> Generator<'a> {
     /// [`Self::pattern_bindings`].
     fn arm_test(&mut self, slot: &str, scrutinee_ty: &Ty, arm: &rill_hir::MatchArm) -> String {
         match &arm.pattern {
-            Pattern::Wildcard(_) | Pattern::Binding { .. } | Pattern::Tuple { .. } => "1".to_string(),
+            Pattern::Wildcard(_) | Pattern::Binding { .. } | Pattern::Tuple { .. } => {
+                "1".to_string()
+            }
             Pattern::Literal { text, .. } => {
                 let trimmed = text.trim();
                 if trimmed.starts_with('"') {
@@ -1382,7 +1394,10 @@ impl<'a> Generator<'a> {
                 } else if trimmed == "false" {
                     format!("({slot} == 0)")
                 } else if trimmed.starts_with('\'') {
-                    format!("{slot} == {}", self.literal(rill_ast::LiteralKind::Char, trimmed))
+                    format!(
+                        "{slot} == {}",
+                        self.literal(rill_ast::LiteralKind::Char, trimmed)
+                    )
                 } else {
                     format!("{slot} == ({trimmed})")
                 }
@@ -1428,11 +1443,13 @@ impl<'a> Generator<'a> {
     fn call(&mut self, whole: &Expr, callee: &Expr, args: &[rill_hir::Arg]) -> String {
         // Enum construction: `Type::Variant a b` or a record construction
         // `Name a b`.
-        if let ExprKind::Path { segments, res } = &callee.kind {
-            if let Res::Item(id) = res {
-                if let Some(ItemTy::Nominal(nominal)) = self.checked.item_ty(*id) {
-                    return self.construct(whole, *nominal, segments, args);
-                }
+        if let ExprKind::Path {
+            segments,
+            res: Res::Item(id),
+        } = &callee.kind
+        {
+            if let Some(ItemTy::Nominal(nominal)) = self.checked.item_ty(*id) {
+                return self.construct(whole, *nominal, segments, args);
             }
         }
         if let ExprKind::Binary {
@@ -1449,16 +1466,13 @@ impl<'a> Generator<'a> {
         let callee_code = self.expr(callee);
         let callee_ty = self.expr_ty(callee);
         let mut arguments: Vec<String> = args.iter().map(|arg| self.expr(&arg.value)).collect();
-        match &callee_ty {
-            Ty::Fn { params, .. } => {
-                // Pass conventions do not change the C ABI for value types.
-                for (param, argument) in params.iter().zip(arguments.iter_mut()) {
-                    if let Ty::Unit = param {
-                        *argument = "rill_unit()".to_string();
-                    }
+        if let Ty::Fn { params, .. } = &callee_ty {
+            // Pass conventions do not change the C ABI for value types.
+            for (param, argument) in params.iter().zip(arguments.iter_mut()) {
+                if let Ty::Unit = param {
+                    *argument = "rill_unit()".to_string();
                 }
             }
-            _ => {}
         }
         format!("{callee_code}({})", arguments.join(", "))
     }
@@ -1495,15 +1509,14 @@ impl<'a> Generator<'a> {
                         return "0".into();
                     }
                 };
-                let Some(index) = variants.iter().position(|v| self.text(v.name) == variant_name)
+                let Some(index) = variants
+                    .iter()
+                    .position(|v| self.text(v.name) == variant_name)
                 else {
                     let names: Vec<&str> = variants.iter().map(|v| self.text(v.name)).collect();
                     self.diagnostics.push(
-                        Diagnostic::error(
-                            whole.span,
-                            format!("`{variant_name}` is not a variant"),
-                        )
-                        .note(format!("variants: {}", names.join(", "))),
+                        Diagnostic::error(whole.span, format!("`{variant_name}` is not a variant"))
+                            .note(format!("variants: {}", names.join(", "))),
                     );
                     return "0".into();
                 };
@@ -1527,7 +1540,7 @@ impl<'a> Generator<'a> {
             }
             NominalKind::Opaque | NominalKind::Alias(_) => {
                 self.unsupported(whole.span, "this constructor", "M3");
-                return "0".into();
+                "0".into()
             }
         }
     }
@@ -1536,7 +1549,10 @@ impl<'a> Generator<'a> {
 /// Locals referenced anywhere in `expr` (used for capture analysis).
 fn collect_local_refs_expr(expr: &Expr, out: &mut Vec<LocalId>) {
     match &expr.kind {
-        ExprKind::Path { res: Res::Local(id), .. } => {
+        ExprKind::Path {
+            res: Res::Local(id),
+            ..
+        } => {
             if !out.contains(id) {
                 out.push(*id);
             }
@@ -1546,9 +1562,9 @@ fn collect_local_refs_expr(expr: &Expr, out: &mut Vec<LocalId>) {
                 collect_local_refs_expr(element, out);
             }
         }
-        ExprKind::Block(block) | ExprKind::Comptime { body: block } | ExprKind::Unsafe { body: block } => {
-            collect_local_refs_block(block, out)
-        }
+        ExprKind::Block(block)
+        | ExprKind::Comptime { body: block }
+        | ExprKind::Unsafe { body: block } => collect_local_refs_block(block, out),
         ExprKind::Lambda { body, .. } => collect_local_refs_block(body, out),
         ExprKind::Call { callee, args } | ExprKind::Index { base: callee, args } => {
             collect_local_refs_expr(callee, out);
@@ -1565,7 +1581,11 @@ fn collect_local_refs_expr(expr: &Expr, out: &mut Vec<LocalId>) {
         ExprKind::Cast { expr, .. } | ExprKind::Is { expr, .. } => {
             collect_local_refs_expr(expr, out)
         }
-        ExprKind::If { cond, then_branch, else_branch } => {
+        ExprKind::If {
+            cond,
+            then_branch,
+            else_branch,
+        } => {
             match cond {
                 Cond::Expr(expr) => collect_local_refs_expr(expr, out),
                 Cond::Bind { value, .. } => collect_local_refs_expr(value, out),

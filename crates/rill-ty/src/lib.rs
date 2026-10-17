@@ -1069,8 +1069,8 @@ impl Checker<'_> {
                         // A nominal in value position is its constructor; the
                         // path's last segment selects the variant.
                         let last = segments.last().map(|s| self.text(*s).to_string());
-                        let payload = last.and_then(|name| {
-                            match &self.nominals[nominal.0 as usize].kind {
+                        let payload =
+                            last.and_then(|name| match &self.nominals[nominal.0 as usize].kind {
                                 NominalKind::Enum(variants) => variants
                                     .iter()
                                     .find(|v| self.text(v.name) == name)
@@ -1079,8 +1079,7 @@ impl Checker<'_> {
                                     Some(fields.iter().map(|f| f.ty.clone()).collect())
                                 }
                                 _ => None,
-                            }
-                        });
+                            });
                         match payload {
                             // A payload-less variant is a value, not a function.
                             Some(params) if !params.is_empty() => Ty::Fn {
@@ -1704,7 +1703,12 @@ impl Checker<'_> {
                 }
                 let _ = expected;
             }
-            Pattern::Constructor { path, args, span, res } => {
+            Pattern::Constructor {
+                path,
+                args,
+                span,
+                res,
+            } => {
                 let name = path[0];
                 // The resolver already bound the pattern's head: an enum
                 // variant, or a type name used as a record pattern.

@@ -835,9 +835,16 @@ mod tests {
             binary_operator(SyntaxKind::Pipe).unwrap().bp
                 < binary_operator(SyntaxKind::DotDot).unwrap().bp
         );
+        // `.` binds tighter than every other binary operator (see `bp::FLOW`),
+        // so `from.balance - amount` groups as `(from.balance) - amount` and
+        // `alice.balance as String` casts the field access.
         assert!(
-            binary_operator(SyntaxKind::Dot).unwrap().bp
-                < binary_operator(SyntaxKind::PlusPlus).unwrap().bp
+            binary_operator(SyntaxKind::Star).unwrap().bp
+                < binary_operator(SyntaxKind::Dot).unwrap().bp
+        );
+        assert!(
+            binary_operator(SyntaxKind::KwAs).unwrap().bp
+                < binary_operator(SyntaxKind::Dot).unwrap().bp
         );
         assert!(
             binary_operator(SyntaxKind::PlusPlus).unwrap().bp
