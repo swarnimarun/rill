@@ -935,5 +935,8 @@ fn pattern_bindings(pattern: &AstPattern) -> Vec<(Symbol, Span)> {
 
 /// Compiler-provided names the front end knows by name.
 pub fn is_builtin(name: &str) -> bool {
-    matches!(name, "zeroed")
+    matches!(
+        name,
+        "zeroed" | "buf_new" | "buf_push" | "buf_len" | "buf_get" | "buf_text"
+    )
 }

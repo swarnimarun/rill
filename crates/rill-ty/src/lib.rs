@@ -132,7 +132,7 @@ impl Ty {
     }
 }
 
-#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord)]
+#[derive(Clone, Copy, PartialEq, Eq, Hash, Debug, PartialOrd, Ord, Default)]
 pub struct NominalId(pub u32);
 
 #[derive(Clone, Debug)]
@@ -185,6 +185,10 @@ pub enum ItemTy {
 /// definitions they refer to.
 #[derive(Default, Clone, Debug)]
 pub struct Checked {
+    /// The builtin `Buf` nominal (growable byte buffers, `<alloc>`).
+    pub buf_id: NominalId,
+    /// The builtin `Option` nominal (`option { … }` results).
+    pub option_id: NominalId,
     local_types: Vec<Option<Ty>>,
     item_types: Vec<ItemTy>,
     nominals: Vec<NominalDef>,
@@ -194,6 +198,11 @@ pub struct Checked {
 }
 
 impl Checked {
+    /// The builtin growable-buffer nominal (`Buf`).
+    pub fn buf_id(&self) -> NominalId {
+        self.buf_id
+    }
+
     pub fn expr_ty(&self, id: ExprId) -> Option<&Ty> {
         self.resolved.get(&id)
     }
@@ -244,6 +253,8 @@ struct Checker<'a> {
     loop_depth: u32,
     /// The nominal standing in for `Option` results.
     option_id: NominalId,
+    /// The nominal standing in for growable byte buffers (`<alloc>`).
+    buf_id: NominalId,
     /// Unsuffixed numeric literals: they take the type their context requires
     /// and fall back to `i32`/`f64`, like Rust's `{integer}`/`{float}`.
     int_literals: Vec<u32>,
@@ -268,6 +279,7 @@ impl<'a> Checker<'a> {
             handler: None,
             loop_depth: 0,
             option_id: NominalId(0),
+            buf_id: NominalId(1),
             int_literals: Vec::new(),
             float_literals: Vec::new(),
         }
@@ -292,6 +304,8 @@ impl<'a> Checker<'a> {
             }
         }
         Checked {
+            buf_id: self.buf_id,
+            option_id: self.option_id,
             local_types: self.local_types,
             item_types: self.item_types,
             nominals: self.nominals,
@@ -593,6 +607,12 @@ impl<'a> Checker<'a> {
     }
 
     fn nominal_name(&self, id: NominalId) -> String {
+        if id == self.buf_id {
+            return "Buf".to_string();
+        }
+        if id == self.option_id {
+            return "Option".to_string();
+        }
         match self.nominals.get(id.0 as usize) {
             Some(def) => self.text(def.name).to_string(),
             None => format!("<nominal {}>", id.0),
@@ -607,6 +627,15 @@ impl<'a> Checker<'a> {
         debug_assert_eq!(self.option_id, NominalId(0));
         self.nominals.push(NominalDef {
             id: NominalId(0),
+            name: Symbol::EMPTY,
+            kind: NominalKind::Opaque,
+            span: Span::DUMMY,
+        });
+        // `Buf` is the growable byte buffer behind `<alloc>`: `buf_new`,
+        // `buf_push`, `buf_len`, `buf_get` and `buf_text`.
+        debug_assert_eq!(self.buf_id, NominalId(1));
+        self.nominals.push(NominalDef {
+            id: NominalId(1),
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
@@ -828,6 +857,7 @@ impl<'a> Checker<'a> {
             "f64" => Ty::Float { bits: 64 },
             "Bool" => Ty::Bool,
             "String" | "Text" => Ty::Text,
+            "Buf" => Ty::Nominal(self.buf_id),
             _ => {
                 // A declared nominal: the item name resolves to a type.
                 let item = self
@@ -863,6 +893,7 @@ impl<'a> Checker<'a> {
     fn row_effects(&mut self, row: &EffectRow) -> Vec<Effect> {
         row.items
             .iter()
+            .filter(|item| self.text(item.name.sym) != "computes")
             .flat_map(|item| {
                 let name = self.text(item.name.sym).to_string();
                 // `transacts` is a lattice row: reads | writes | alloc (§5.2).
@@ -903,11 +934,13 @@ impl Checker<'_> {
                     if let Some(body) = &def.body {
                         self.body_effects.clear();
                         let found = self.expr(body);
+                        self.effects_of.insert(body.id, self.body_effects.clone());
                         self.unify(&expected, &found, body.span, "checking the function's body");
                     }
                 } else if let Some(body) = &def.body {
                     self.body_effects.clear();
                     let found = self.expr(body);
+                    self.effects_of.insert(body.id, self.body_effects.clone());
                     self.unify(&Ty::Unit, &found, body.span, "checking the function's body");
                 }
             }
@@ -920,6 +953,8 @@ impl Checker<'_> {
                     .unwrap_or(Ty::Unit);
                 self.body_effects.clear();
                 let found = self.expr(&def.body);
+                self.effects_of
+                    .insert(def.body.id, self.body_effects.clone());
                 self.unify(
                     &expected,
                     &found,
@@ -1128,8 +1163,22 @@ impl Checker<'_> {
                         }
                     }
                 }
-                // A builtin takes the type its context requires.
-                Res::Builtin => self.fresh(),
+                // Builtins carry real signatures, including their effects.
+                Res::Builtin => {
+                    let name = segments.last().map(|s| self.text(*s).to_string());
+                    match name.as_deref().and_then(|n| self.builtin_sig(n)) {
+                        Some((params, ret, effects)) => {
+                            self.add_effects(&effects);
+                            Ty::Fn {
+                                params,
+                                ret: Box::new(ret),
+                                effects,
+                            }
+                        }
+                        // `zeroed ()` takes the type its context requires.
+                        None => self.fresh(),
+                    }
+                }
                 Res::Field => Ty::Error,
                 Res::Error => Ty::Error,
             },
@@ -1480,6 +1529,36 @@ impl Checker<'_> {
                 Ty::Error
             }
         }
+    }
+
+    /// Signatures of the compiler-provided builtins.
+    fn builtin_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty, Vec<Effect>)> {
+        let buf = Ty::Nominal(self.buf_id);
+        Some(match name {
+            "buf_new" => (Vec::new(), buf, vec![Effect::Alloc]),
+            "buf_push" => (
+                vec![
+                    buf.clone(),
+                    Ty::Int {
+                        bits: 8,
+                        signed: false,
+                    },
+                ],
+                Ty::Unit,
+                vec![Effect::Alloc],
+            ),
+            "buf_len" => (vec![buf.clone()], Ty::usize_(), Vec::new()),
+            "buf_get" => (
+                vec![buf.clone(), Ty::usize_()],
+                Ty::Int {
+                    bits: 8,
+                    signed: false,
+                },
+                Vec::new(),
+            ),
+            "buf_text" => (vec![buf.clone()], Ty::Text, vec![Effect::Alloc]),
+            _ => return None,
+        })
     }
 
     /// True for `comptime { zeroed () }`: the value is a zero-initialised buffer

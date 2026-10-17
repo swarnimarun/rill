@@ -14,7 +14,7 @@ the M1–M6 roadmap.
 | M1 | `rill-hir`, `rill-ty` — name resolution + HIR (done); inference, effect rows, arity uncurrying | in progress |
 | M2 | `rill-mir`, `rill-borrow` — place-CFG MIR, exclusivity checking, slice splitting | planned |
 | M3 | `rill-mlir`, `rill-driver` — MLIR lowering, native binaries, no runtime | next |
-| M4 | `<transacts>` — SSA promotion, undo trails, scoped `<alloc>` arenas | planned |
+| M4 | `<transacts>` undo trails; `<alloc>` growable buffers (done) and scoped arenas | in progress |
 | M5 | `<suspends>` — `sync`/`race`/`rush`/`branch`, `simd`/`seq` builders | planned |
 | M6 | Self-hosting bootstrap | planned |
 

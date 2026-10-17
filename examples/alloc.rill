@@ -1,0 +1,20 @@
+use std::io;
+
+# `<alloc>`: output whose size is not known up front, grown through a byte
+# buffer. The `<alloc>` effect keeps allocation out of `<computes>` code.
+
+let encode (n: i64) -> Buf <alloc> = {
+    var out = buf_new ();
+    for (i := 0..<n) {
+        buf_push (out, 65u8 + (i as u8));
+        buf_push (out, 44u8)
+    };
+    out
+};
+
+# `main` needs `<alloc>` too: effects propagate to callers.
+let main () -> i32 <io | alloc> = {
+    var b = encode 5i64;
+    io::println ("len " ++ (buf_len (b) as String) ++ " first " ++ (buf_get (b, 0u64) as String) ++ " text " ++ (buf_text (b)));
+    buf_len (b) as i32
+};

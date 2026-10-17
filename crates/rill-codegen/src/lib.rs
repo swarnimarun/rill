@@ -105,6 +105,40 @@ static r_text rill_f64_to_text(r_f64 v) {
 
 static void rill_println(r_text s) { printf("%s\n", s); }
 
+// ---- growable buffers (`<alloc>`) ----------------------------------------
+typedef struct rill_buf {
+  unsigned char *data;
+  size_t len;
+  size_t cap;
+} rill_buf;
+
+static rill_buf *rill_buf_new(void) {
+  rill_buf *b = (rill_buf *)malloc(sizeof(rill_buf));
+  b->data = NULL;
+  b->len = 0;
+  b->cap = 0;
+  return b;
+}
+
+static void rill_buf_push(rill_buf *b, r_u8 byte) {
+  if (b->len == b->cap) {
+    b->cap = b->cap ? b->cap * 2 : 64;
+    b->data = (unsigned char *)realloc(b->data, b->cap);
+  }
+  b->data[b->len++] = byte;
+}
+
+static r_i64 rill_buf_len(rill_buf *b) { return (r_i64)b->len; }
+
+static r_u8 rill_buf_get(rill_buf *b, r_u64 i) { return (r_u8)b->data[i]; }
+
+static r_text rill_buf_text(rill_buf *b) {
+  char *p = (char *)malloc(b->len + 1);
+  memcpy(p, b->data, b->len);
+  p[b->len] = 0;
+  return p;
+}
+
 // Maps a file read-only; the program gets its input without copying it.
 static r_text rill_map_file(r_text path) {
   int fd = open(path, O_RDONLY);
@@ -403,6 +437,9 @@ impl<'a> Generator<'a> {
                 self.c_type(elem),
                 self.c_type(elem)
             ),
+            Ty::Record(id) | Ty::Nominal(id) if *id == self.checked.buf_id() => {
+                "rill_buf *".to_string()
+            }
             Ty::Record(id) | Ty::Nominal(id) => match &self.checked.nominal(*id).kind {
                 NominalKind::Enum(_) => format!("en_{}", self.nominal_name(*id)),
                 NominalKind::Alias(inner) => {
@@ -874,12 +911,22 @@ impl<'a> Generator<'a> {
                     }
                 }
                 Res::Builtin => {
-                    self.unsupported(
-                        expr.span,
-                        "this builtin outside `comptime { zeroed () }`",
-                        "M3 (intrinsics)",
-                    );
-                    "0".into()
+                    let name = segments.last().map(|s| self.text(*s)).unwrap_or("");
+                    match name {
+                        "buf_new" => "rill_buf_new".into(),
+                        "buf_push" => "rill_buf_push".into(),
+                        "buf_len" => "rill_buf_len".into(),
+                        "buf_get" => "rill_buf_get".into(),
+                        "buf_text" => "rill_buf_text".into(),
+                        _ => {
+                            self.unsupported(
+                                expr.span,
+                                "this builtin outside `comptime { zeroed () }`",
+                                "M3 (intrinsics)",
+                            );
+                            "0".into()
+                        }
+                    }
                 }
                 Res::Field => {
                     self.unsupported(expr.span, "an unresolved field reference", "M2");

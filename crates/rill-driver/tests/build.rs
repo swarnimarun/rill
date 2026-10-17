@@ -106,3 +106,58 @@ fn builds_and_runs_early_exit_loops() {
     );
     assert_eq!(output.status.code(), Some(17));
 }
+
+#[test]
+fn builds_and_runs_a_growable_buffer_program() {
+    let dir = workdir("alloc");
+    let out = dir.join("alloc");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/alloc.rill")
+        .canonicalize()
+        .expect("examples/alloc.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(stdout.contains("len 10"), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("text A,B,C,D,E,"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(10));
+}
+
+#[test]
+fn allocation_outside_declared_effects_is_rejected() {
+    let dir = workdir("alloc-effect");
+    let path = dir.join("pure.rill");
+    std::fs::write(
+        &path,
+        "use std::io;\n\
+         let f () -> i32 <computes> = { var b = buf_new (); buf_len (b) as i32 };\n\
+         let main () -> i32 <io> = f ();\n",
+    )
+    .expect("write fixture");
+    let output = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .arg("build")
+        .arg(&path)
+        .arg("-o")
+        .arg(dir.join("pure"))
+        .output()
+        .expect("run rillc build");
+    assert!(!output.status.success(), "must reject undeclared `<alloc>`");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("performs alloc"),
+        "unexpected stderr: {stderr}"
+    );
+}
