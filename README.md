@@ -11,9 +11,9 @@ the M1–M6 roadmap.
 | Milestone | Scope | State |
 | --- | --- | --- |
 | **M0** | `rill-span`, `rill-diagnostics`, `rill-lexer`, `rill-syntax`, `rill-parser`, `rill-ast` — lossless CST, adjacency rule, `.` flow, builder desugaring | **done** |
-| M1 | `rill-hir`, `rill-ty` — HM(X) inference, Rémy effect rows, trait constraints, arity uncurrying | next |
+| M1 | `rill-hir`, `rill-ty` — name resolution + HIR (done); inference, effect rows, arity uncurrying | in progress |
 | M2 | `rill-mir`, `rill-borrow` — place-CFG MIR, exclusivity checking, slice splitting | planned |
-| M3 | `rill-mlir`, `rill-driver` — MLIR lowering, native static binaries via `lld` | planned |
+| M3 | `rill-mlir`, `rill-driver` — MLIR lowering, native binaries, no runtime | next |
 | M4 | `<transacts>` — SSA promotion, undo trails, scoped `<alloc>` arenas | planned |
 | M5 | `<suspends>` — `sync`/`race`/`rush`/`branch`, `simd`/`seq` builders | planned |
 | M6 | Self-hosting bootstrap | planned |
@@ -32,9 +32,35 @@ crates/
 ├── rill-lexer/        hand-written cursor lexer (trivia-preserving)
 ├── rill-parser/       resilient Pratt + recursive-descent parser (events -> CST)
 ├── rill-ast/          AST nodes, CST -> AST lowering, builder desugaring
+├── rill-hir/          name resolution: Res/LocalId/ExprId tables + HIR
+├── rill-ty/           type & effect checking over the HIR
 └── rill-driver/       `rillc`, the front-end driver binary
 examples/showcase.rill  the PLAN.md §11 program, parsed by the test suite
 ```
+
+## Backend: MLIR -> LLVM IR -> object, no runtime
+
+Code generation is *direct*: typed HIR is lowered to the project's MLIR dialect
+(`func`/`arith`/`cf`/`llvm` built from the HIR, with `rill.*` ops for
+`<decides>`/`<transacts>`/projections as they land), then `mlir-opt` /
+`mlir-translate` produce LLVM IR, and a linker produces the executable.
+
+There is deliberately **no C transpilation and no runtime library**: a program's
+observable result is its `main` exit code, so a self-contained binary needs
+nothing under it. Only the platform's linker/CRT is involved, and for a fully
+static artifact the LLVM IR is compiled for a musl target:
+
+```console
+$ /opt/homebrew/opt/llvm/bin/mlir-opt --convert-to-llvm probe.mlir \
+    | /opt/homebrew/opt/llvm/bin/mlir-translate --mlir-to-llvmir -o probe.ll
+$ clang -O2 -o probe probe.ll                    # native, exit code 42
+$ zig cc -target aarch64-linux-musl -static -O2 -o probe probe.ll
+$ file probe      # ELF 64-bit ... statically linked
+```
+
+Toolchain verified on this workstation: Homebrew LLVM 22.1.8 (`mlir-opt`,
+`mlir-translate`, `llc`) with `melior` 0.27.8 binding `mlir-sys` 220.0.2 (MLIR
+22), and `zig cc` for static ELF linking.
 
 ## Usage
 

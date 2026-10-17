@@ -69,3 +69,13 @@ version = "0.1.0"
 dependencies = [
  "rill-span",
 ]
+
+[[package]]
+name = "rill-ty"
+version = "0.1.0"
+dependencies = [
+ "rill-ast",
+ "rill-diagnostics",
+ "rill-hir",
+ "rill-span",
+]

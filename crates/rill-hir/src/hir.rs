@@ -338,6 +338,15 @@ pub enum Cond {
     },
 }
 
+impl Cond {
+    pub fn span(&self) -> Span {
+        match self {
+            Cond::Expr(expr) => expr.span,
+            Cond::Bind { span, .. } => *span,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub enum ElseBranch {
     Block(Block),

@@ -8,6 +8,7 @@ members = [
     "crates/rill-parser",
     "crates/rill-ast",
     "crates/rill-hir",
+    "crates/rill-ty",
     "crates/rill-driver",
 ]
 
@@ -25,4 +26,5 @@ rill-lexer = { path = "crates/rill-lexer" }
 rill-parser = { path = "crates/rill-parser" }
 rill-ast = { path = "crates/rill-ast" }
 rill-hir = { path = "crates/rill-hir" }
+rill-ty = { path = "crates/rill-ty" }
 rill-driver = { path = "crates/rill-driver" }
