@@ -44,7 +44,7 @@ pub struct Parse {
 pub fn parse_source(source_map: &SourceMap, file: FileId) -> Parse {
     let src = source_map.file(file);
     let (tokens, mut diagnostics) = rill_lexer::tokenize(&src.text, src.start);
-    let parsed = parse_tokens(&tokens, Some((&src.text, src.start)));
+    let parsed = parse_tokens(&tokens, &src.text, src.start);
     diagnostics.extend(parsed.diagnostics);
     Parse {
         cst: parsed.cst,
@@ -52,15 +52,12 @@ pub fn parse_source(source_map: &SourceMap, file: FileId) -> Parse {
     }
 }
 
-/// Parses an already-lexed token stream without access to the source text;
-/// error messages then quote token kinds rather than token text.
-pub fn parse_file(tokens: &[SyntaxToken]) -> Parse {
-    parse_tokens(tokens, None)
-}
-
-/// Parses tokens, optionally with the source text backing them (for messages).
-pub fn parse_tokens(tokens: &[SyntaxToken], source: Option<(&str, BytePos)>) -> Parse {
-    let mut p = Parser::new(tokens, source);
+/// Parses an already-lexed token stream. `text`/`base` must be the source the
+/// tokens came from: contextual syntax (`and`/`or`/`not`, `&raw mut T`) is
+/// recognized from token text, so a parser without the source would silently
+/// diverge from the real parse.
+pub fn parse_tokens(tokens: &[SyntaxToken], text: &str, base: BytePos) -> Parse {
+    let mut p = Parser::new(tokens, text, base);
     p.root();
     let cst = build(tokens, &p.events);
     Parse {
@@ -163,8 +160,8 @@ fn build(tokens: &[SyntaxToken], events: &[Event]) -> SyntaxNode {
 
 pub struct Parser<'a> {
     tokens: &'a [SyntaxToken],
-    /// Source text backing `tokens`, for diagnostics.
-    source: Option<(&'a str, BytePos)>,
+    /// Source text backing `tokens` and the global offset of its byte 0.
+    source: (&'a str, BytePos),
     /// Index of the next *non-trivia* token.
     pos: usize,
     /// End of the last consumed token; drives the adjacency rule.
@@ -181,14 +178,14 @@ pub struct Parser<'a> {
 }
 
 impl<'a> Parser<'a> {
-    pub fn new(tokens: &'a [SyntaxToken], source: Option<(&'a str, BytePos)>) -> Self {
+    pub fn new(tokens: &'a [SyntaxToken], text: &'a str, base: BytePos) -> Self {
         assert!(
             matches!(tokens.last(), Some(t) if t.kind == K::Eof),
             "token stream must end with Eof"
         );
         let mut parser = Parser {
             tokens,
-            source,
+            source: (text, base),
             pos: 0,
             prev_end: None,
             last_kind: K::Root,
@@ -255,16 +252,12 @@ impl<'a> Parser<'a> {
         *self.tokens.last().unwrap()
     }
 
-    /// Source text of a token, when the source is available.
+    /// Source text of a token.
     pub fn token_text(&self, tok: SyntaxToken) -> &'a str {
-        match self.source {
-            Some((text, base)) => {
-                let start = tok.span.start.0.saturating_sub(base.0) as usize;
-                let end = tok.span.end.0.saturating_sub(base.0) as usize;
-                text.get(start..end).unwrap_or("")
-            }
-            None => tok.kind.token_text().unwrap_or(""),
-        }
+        let (text, base) = self.source;
+        let start = tok.span.start.0.saturating_sub(base.0) as usize;
+        let end = tok.span.end.0.saturating_sub(base.0) as usize;
+        text.get(start..end).unwrap_or("")
     }
 
     /// Text of the current token.

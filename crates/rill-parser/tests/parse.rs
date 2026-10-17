@@ -59,10 +59,10 @@ fn adjacency_rule_calls_and_try() {
     let (parse, _) = parse_ok("rotate_point (inout t.position, t.rotation);");
     let call = root(&parse).find(K::CallExpr).expect("call");
     assert_eq!(call.count(K::Arg), 2);
-    let first_arg = call.find(K::Arg).expect("first argument");
-    assert!(
-        first_arg.tokens().any(|t| t.kind == K::KwInout),
-        "the first argument carries the `inout` convention"
+    assert_eq!(
+        call.count_tokens(K::KwInout),
+        1,
+        "first argument carries `inout`"
     );
 }
 
@@ -111,7 +111,7 @@ fn lambda_versus_block() {
     let (parse, _) = parse_ok("let r = fold 0 { acc, x -> acc + x };\n");
     let lambda = root(&parse).find(K::LambdaExpr).expect("lambda");
     let params = lambda.child_node(K::LambdaParams).expect("parameters");
-    assert_eq!(params.tokens().filter(|t| t.kind == K::Name).count(), 2);
+    assert_eq!(params.count_tokens(K::Name), 2);
     // A block without `->` is not a lambda.
     let (parse, _) = parse_ok("let r = f { x };\n");
     assert!(root(&parse).find(K::LambdaExpr).is_none());
@@ -197,4 +197,78 @@ fn module_level_signature_and_extern() {
     assert_eq!(root.count(K::BuilderDecl), 1);
     assert_eq!(root.count(K::BuilderBody), 1);
     assert!(root.find(K::TypePtr).is_some(), "&raw u8");
+}
+
+#[test]
+fn application_spine_is_flattened() {
+    // §9: `add 10 20` groups as one call with two arguments, not a nested
+    // `(add 10) 20`, so arity analysis sees the whole spine at once.
+    let (parse, _) = parse_ok("let r = add 10 20;\n");
+    let calls = root(&parse).descendants(K::CallExpr);
+    assert_eq!(
+        calls.len(),
+        1,
+        "a flat spine is a single CallExpr: {:?}",
+        calls.len()
+    );
+    assert_eq!(calls[0].count(K::Arg), 2);
+
+    // Explicit grouping stays visible: `(f x) y` has two call nodes.
+    let (parse, _) = parse_ok("let r = (f x) y;\n");
+    assert_eq!(root(&parse).descendants(K::CallExpr).len(), 2);
+
+    // Argument lists splice: `g (a, b) c` is one call with three arguments.
+    let (parse, _) = parse_ok("let r = g (a, b) c;\n");
+    let calls = root(&parse).descendants(K::CallExpr);
+    assert_eq!(calls.len(), 1);
+    assert_eq!(calls[0].count(K::Arg), 3);
+}
+
+#[test]
+fn match_arms_and_patterns() {
+    let (parse, _) = parse_ok(
+        "let classify (p: Pair) = match p {\n\
+             | Pair (a, b) if a > b -> a,\n\
+             | Pair (a, b) -> b,\n\
+             _ -> 0\n\
+         };\n",
+    );
+    let match_expr = root(&parse).find(K::MatchExpr).expect("match");
+    assert_eq!(match_expr.count(K::MatchArm), 3);
+    let arms: Vec<&SyntaxNode> = match_expr.descendants(K::MatchArm);
+    assert!(arms[0].has_token(K::KwIf), "first arm has a guard");
+    assert!(!arms[1].has_token(K::KwIf));
+    let arm_pattern = arms[0].child_node(K::MatchPat).expect("arm pattern");
+    let tuple_pattern = arm_pattern
+        .child_node(K::MatchPat)
+        .expect("nested tuple pattern");
+    assert_eq!(
+        tuple_pattern.child_list().len(),
+        2,
+        "`(a, b)` binds two names"
+    );
+    assert!(arms[2].has_descendant_token(K::Underscore), "wildcard arm");
+}
+
+#[test]
+fn contextual_operators_are_not_application_arguments() {
+    let (parse, _) = parse_ok("let r = a and b;\n");
+    let ops = root(&parse).descendants(K::BinaryExpr);
+    assert_eq!(ops.len(), 1, "`a and b` is one binary expression");
+    assert_eq!(
+        root(&parse).count(K::CallExpr),
+        0,
+        "not an application spine"
+    );
+
+    // A binding never becomes an argument of the preceding expression, so a
+    // `;`-less block-like statement can be followed by a bind.
+    let (parse, _) = parse_ok("let f (c: Bool) = {\n    if (c) { g x }\n    y := 1;\n};\n");
+    let block = root(&parse).find(K::Block).expect("block");
+    let kinds: Vec<K> = block.child_list().iter().map(|n| n.kind).collect();
+    assert_eq!(kinds, vec![K::ExprStmt, K::BindStmt], "{kinds:?}");
+    assert!(
+        block.child_list()[0].find(K::IfExpr).is_some(),
+        "the `;`-less statement still parses"
+    );
 }

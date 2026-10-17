@@ -4,7 +4,10 @@
 //! Round-trip accuracy is checked for each fixture: the CST text must be
 //! byte-identical to the input.
 
-use rill_ast::{parse_and_lower_text, Expr, Frontend, Item, Stmt, TypeBody};
+use rill_ast::{
+    parse_and_lower_text, Block, Cond, ElseBranch, Expr, Frontend, Item, Module, Pattern, Stmt,
+    Type, TypeBody, TypeDecl,
+};
 use rill_diagnostics::render_all;
 
 struct Fixture {
@@ -13,20 +16,27 @@ struct Fixture {
 }
 
 fn check(fixture: &Fixture) -> Frontend {
-    let (frontend, sm) = parse_and_lower_text(fixture.name, fixture.source);
+    check_source(fixture.name, fixture.source)
+}
+
+fn check_source(name: &str, source: &str) -> Frontend {
+    let (frontend, sm) = parse_and_lower_text(name, source);
     assert!(
         !frontend.diagnostics.has_errors(),
-        "{} produced diagnostics:\n{}",
-        fixture.name,
+        "{name} produced diagnostics:\n{}",
         render_all(&sm, &frontend.diagnostics)
     );
     assert_eq!(
         frontend.cst.text(&sm),
-        fixture.source,
-        "{} must round-trip byte-for-byte",
-        fixture.name
+        source,
+        "{name} must round-trip byte-for-byte"
     );
-    frontend.module.items.len();
+    // A clean parse must not hide a lowering gap behind `Error` nodes.
+    let errors = find_errors(&frontend.module);
+    assert!(
+        errors.is_empty(),
+        "{name} lowered to error nodes: {errors:?}"
+    );
     frontend
 }
 
@@ -301,6 +311,300 @@ const FIXTURES: &[Fixture] = &[
     },
 ];
 
+// ---------------------------------------------------------------------------
+// Error-node audit
+// ---------------------------------------------------------------------------
+
+/// Collects every `Error` node in a lowered module. A clean parse must produce
+/// none: this is what makes the corpus check meaningful for every CST kind,
+/// instead of only checking that no diagnostic was emitted.
+fn find_errors(module: &Module) -> Vec<String> {
+    let mut finder = ErrorFinder { found: Vec::new() };
+    for item in &module.items {
+        finder.item(item);
+    }
+    finder.found
+}
+
+struct ErrorFinder {
+    found: Vec<String>,
+}
+
+impl ErrorFinder {
+    fn push(&mut self, what: &str, span: rill_span::Span) {
+        self.found.push(format!("{what} at {span:?}"));
+    }
+
+    fn item(&mut self, item: &Item) {
+        match item {
+            Item::Error(span) => self.push("item", *span),
+            Item::Use(_) => {}
+            Item::Signature(decl) => self.ty(&decl.ty),
+            Item::Fn(decl) => self.fn_decl(decl),
+            Item::Project(decl) => {
+                for group in &decl.params {
+                    for param in &group.params {
+                        if let Some(ty) = &param.ty {
+                            self.ty(ty);
+                        }
+                    }
+                }
+                if let Some(ret) = &decl.ret {
+                    self.ty(&ret.ty);
+                }
+                self.expr(&decl.body);
+            }
+            Item::Type(decl) => {
+                for param in &decl.params {
+                    if let Some(ty) = &param.comptime_ty {
+                        self.ty(ty);
+                    }
+                }
+                self.type_body(&decl.body);
+            }
+            Item::Trait(decl) => {
+                for member in &decl.members {
+                    self.item(member);
+                }
+            }
+            Item::Impl(decl) => {
+                for member in &decl.members {
+                    self.item(member);
+                }
+            }
+            Item::Builder(decl) => {
+                for member in &decl.members {
+                    self.item(member);
+                }
+            }
+            Item::Extern(decl) => self.item(&decl.inner),
+            Item::Stmt(stmt) => self.stmt(stmt),
+        }
+    }
+
+    fn fn_decl(&mut self, decl: &rill_ast::FnDecl) {
+        for group in &decl.params {
+            for param in &group.params {
+                if let Some(ty) = &param.ty {
+                    self.ty(ty);
+                }
+            }
+        }
+        if let Some(ret) = &decl.ret {
+            self.ty(&ret.ty);
+        }
+        if let Some(body) = &decl.body {
+            self.expr(body);
+        }
+    }
+
+    fn type_body(&mut self, body: &TypeBody) {
+        match body {
+            TypeBody::Error(span) => self.push("type body", *span),
+            TypeBody::Record(record) | TypeBody::View(record) => {
+                for field in &record.fields {
+                    self.ty(&field.ty);
+                }
+                if let Some(deinit) = &record.deinit {
+                    self.block(&deinit.body);
+                }
+            }
+            TypeBody::Variants(variants) => {
+                for variant in variants {
+                    for payload in &variant.payload {
+                        self.ty(payload);
+                    }
+                }
+            }
+            TypeBody::Alias(ty) => self.ty(ty),
+        }
+    }
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Error(span) => self.push("statement", *span),
+            Stmt::Var { ty, init, .. } => {
+                if let Some(ty) = ty {
+                    self.ty(ty);
+                }
+                self.expr(init);
+            }
+            Stmt::Set { place, value, .. } => {
+                self.expr(place);
+                self.expr(value);
+            }
+            Stmt::Yield { value, .. } => self.expr(value),
+            Stmt::Bind { name, value, .. } => {
+                self.pattern(name);
+                self.expr(value);
+            }
+            Stmt::TryBind { value, .. } => self.expr(value),
+            Stmt::When { cond, .. } => self.cond(cond),
+            Stmt::For {
+                pattern,
+                iter,
+                body,
+                ..
+            } => {
+                self.pattern(pattern);
+                self.expr(iter);
+                self.block(body);
+            }
+            Stmt::Let(decl) => self.fn_decl(decl),
+            Stmt::Expr(expr) => self.expr(expr),
+        }
+    }
+
+    fn cond(&mut self, cond: &Cond) {
+        match cond {
+            Cond::Expr(expr) => self.expr(expr),
+            Cond::Bind { pattern, value, .. } => {
+                self.pattern(pattern);
+                self.expr(value);
+            }
+        }
+    }
+
+    fn block(&mut self, block: &Block) {
+        for stmt in &block.stmts {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &block.tail {
+            self.expr(tail);
+        }
+    }
+
+    fn expr(&mut self, expr: &Expr) {
+        match expr {
+            Expr::Error(span) => self.push("expression", *span),
+            Expr::Literal { .. } | Expr::Path { .. } => {}
+            Expr::Tuple { elems, .. } | Expr::Array { elems, .. } => {
+                for elem in elems {
+                    self.expr(elem);
+                }
+            }
+            Expr::Block(block) => self.block(block),
+            Expr::Lambda { body, .. } => self.block(body),
+            Expr::Call { callee, args, .. }
+            | Expr::Index {
+                base: callee, args, ..
+            } => {
+                self.expr(callee);
+                for arg in args {
+                    self.expr(&arg.value);
+                }
+            }
+            Expr::Try { base, .. } => self.expr(base),
+            Expr::Unary { operand, .. } => self.expr(operand),
+            Expr::Binary { lhs, rhs, .. } => {
+                self.expr(lhs);
+                self.expr(rhs);
+            }
+            Expr::Cast { expr, ty, .. } | Expr::Is { expr, ty, .. } => {
+                self.expr(expr);
+                self.ty(ty);
+            }
+            Expr::If {
+                cond,
+                then_branch,
+                else_branch,
+                ..
+            } => {
+                self.cond(cond);
+                self.block(then_branch);
+                match else_branch {
+                    Some(ElseBranch::Block(block)) => self.block(block),
+                    Some(ElseBranch::If(expr)) => self.expr(expr),
+                    None => {}
+                }
+            }
+            Expr::Match {
+                scrutinee, arms, ..
+            } => {
+                self.expr(scrutinee);
+                for arm in arms {
+                    self.pattern(&arm.pattern);
+                    if let Some(guard) = &arm.guard {
+                        self.expr(guard);
+                    }
+                    self.expr(&arm.body);
+                }
+            }
+            Expr::Comptime { body, .. }
+            | Expr::Unsafe { body, .. }
+            | Expr::Handler { body, .. } => self.block(body),
+            Expr::Concurrent { arms, .. } => {
+                for arm in arms {
+                    self.expr(arm);
+                }
+            }
+        }
+    }
+
+    fn ty(&mut self, ty: &Type) {
+        match ty {
+            Type::Error(span) => self.push("type", *span),
+            Type::Path { .. } => {}
+            Type::App { ctor, args, .. } => {
+                self.ty(ctor);
+                for arg in args {
+                    self.ty(arg);
+                }
+            }
+            Type::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.ty(elem);
+                }
+            }
+            Type::Array { elem, len, .. } => {
+                self.ty(elem);
+                if let Some(len) = len {
+                    self.expr(len);
+                }
+            }
+            Type::Fn { params, ret, .. } => {
+                for param in params {
+                    self.ty(&param.ty);
+                }
+                if let Some(ret) = ret {
+                    self.ty(ret);
+                }
+            }
+            Type::Ptr { pointee, .. } => self.ty(pointee),
+            Type::Dyn { inner, .. } => self.ty(inner),
+        }
+    }
+
+    fn pattern(&mut self, pattern: &Pattern) {
+        match pattern {
+            Pattern::Error(span) => self.push("pattern", *span),
+            Pattern::Constructor { args, .. } => {
+                for arg in args {
+                    self.pattern(arg);
+                }
+            }
+            Pattern::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.pattern(elem);
+                }
+            }
+            Pattern::Wildcard(_) | Pattern::Binding { .. } | Pattern::Literal { .. } => {}
+        }
+    }
+}
+
+fn type_decl<'a>(frontend: &'a Frontend, name: &str) -> &'a TypeDecl {
+    frontend
+        .module
+        .items
+        .iter()
+        .find_map(|item| match item {
+            Item::Type(decl) if frontend.text(decl.name) == name => Some(decl),
+            _ => None,
+        })
+        .unwrap_or_else(|| panic!("no type declaration named `{name}`"))
+}
+
 #[test]
 fn all_plan_examples_parse_losslessly() {
     check_all(FIXTURES);
@@ -368,4 +672,119 @@ fn showcase_ast_shape() {
         panic!("expected a block body")
     };
     assert_eq!(body.tail.as_deref().unwrap().span().len(), 4, "`0i32` tail");
+}
+
+/// The plan's own fenced examples, extracted from `PLAN.md` so the corpus
+/// cannot silently shrink as the document evolves.
+const PLAN: &str = include_str!("../../../PLAN.md");
+
+fn plan_rill_fences() -> Vec<(usize, String)> {
+    let mut fences = Vec::new();
+    let mut current: Option<(usize, Vec<&str>)> = None;
+    for (index, line) in PLAN.lines().enumerate() {
+        let trimmed = line.trim_start();
+        match current.as_mut() {
+            None if trimmed.starts_with("```rill") => current = Some((index + 1, Vec::new())),
+            Some((start, lines)) if trimmed.starts_with("```") => {
+                let (start, lines) = current.take().expect("borrowed above");
+                let _ = start;
+                fences.push((start, format!("{}\n", lines.join("\n"))));
+            }
+            Some((_, lines)) => lines.push(line),
+            None => {}
+        }
+    }
+    fences
+}
+
+#[test]
+fn every_rill_fence_in_the_plan_parses() {
+    let fences = plan_rill_fences();
+    assert_eq!(
+        fences.len(),
+        10,
+        "PLAN.md must keep exactly ten ```rill blocks"
+    );
+    for (line, source) in &fences {
+        check_source(&format!("PLAN.md:{line}"), source);
+    }
+}
+
+#[test]
+fn type_groups_are_transparent() {
+    let frontend = check_source(
+        "types.rill",
+        "type Callback = (i32) -> i32;\n\
+         type Nested = Array (Slice u8);\n\
+         type Unit = ();\n\
+         type Pair = (i32, i32);\n\
+         type Handler = dyn ((i32) -> i32 <io>);\n\
+         type Raw = &raw mut u8;\n",
+    );
+
+    // `(i32) -> i32` is a function type whose parameter is `i32`, not a 1-tuple.
+    match &type_decl(&frontend, "Callback").body {
+        TypeBody::Alias(Type::Fn {
+            params,
+            ret,
+            effects,
+            ..
+        }) => {
+            assert_eq!(params.len(), 1);
+            assert!(matches!(&params[0].ty, Type::Path { segments, .. } if segments.len() == 1));
+            assert_eq!(
+                frontend.text(match &params[0].ty {
+                    Type::Path { segments, .. } => segments[0],
+                    other => panic!("expected `i32`, got {other:?}"),
+                }),
+                "i32"
+            );
+            assert!(ret.is_some());
+            assert!(effects.is_empty());
+        }
+        other => panic!("expected a function alias, got {other:?}"),
+    }
+
+    // `Array (Slice u8)` applies `Array` to a grouped application.
+    match &type_decl(&frontend, "Nested").body {
+        TypeBody::Alias(Type::App { ctor, args, .. }) => {
+            assert_eq!(args.len(), 1);
+            assert!(matches!(**ctor, Type::Path { .. }));
+            assert!(matches!(&args[0], Type::App { args, .. } if args.len() == 1));
+        }
+        other => panic!("expected a type application, got {other:?}"),
+    }
+
+    // `()` is unit; `(i32, i32)` is a tuple.
+    assert!(
+        matches!(&type_decl(&frontend, "Unit").body, TypeBody::Alias(Type::Tuple { elems, .. }) if elems.is_empty())
+    );
+    assert!(
+        matches!(&type_decl(&frontend, "Pair").body, TypeBody::Alias(Type::Tuple { elems, .. }) if elems.len() == 2)
+    );
+
+    // `dyn ((i32) -> i32 <io>)` keeps the arrow type and its effect row.
+    match &type_decl(&frontend, "Handler").body {
+        TypeBody::Alias(Type::Dyn { inner, .. }) => match &**inner {
+            Type::Fn {
+                params, effects, ..
+            } => {
+                assert_eq!(params.len(), 1);
+                let names: Vec<&str> = effects
+                    .items
+                    .iter()
+                    .map(|item| frontend.text(item.name))
+                    .collect();
+                assert_eq!(names, vec!["io"]);
+            }
+            other => panic!("expected a function type inside `dyn`, got {other:?}"),
+        },
+        other => panic!("expected a `dyn` alias, got {other:?}"),
+    }
+
+    // `&raw mut u8` is a mutable raw pointer.
+    assert!(matches!(
+        &type_decl(&frontend, "Raw").body,
+        TypeBody::Alias(Type::Ptr { mutable: true, .. })
+    ));
 }

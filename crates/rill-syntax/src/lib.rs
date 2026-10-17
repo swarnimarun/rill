@@ -614,6 +614,19 @@ impl SyntaxNode {
         self.descendants(kind).len()
     }
 
+    /// Count of descendant *tokens* of the given kind. `descendants` is
+    /// node-only (which is what lowering wants), so token assertions use this.
+    pub fn count_tokens(&self, kind: SyntaxKind) -> usize {
+        let mut tokens = Vec::new();
+        self.all_tokens(&mut tokens);
+        tokens.iter().filter(|t| t.kind == kind).count()
+    }
+
+    /// True when a descendant token of the given kind exists.
+    pub fn has_descendant_token(&self, kind: SyntaxKind) -> bool {
+        self.count_tokens(kind) > 0
+    }
+
     /// Direct child nodes, in order (trivia skipped).
     pub fn child_list(&self) -> Vec<&SyntaxNode> {
         self.nodes().collect()

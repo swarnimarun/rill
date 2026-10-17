@@ -114,30 +114,26 @@ impl<'a> Parser<'a> {
 
     /// `"(" type ")"`, `"(" type ("," type)+ ")"`, or unit `()`.
     ///
-    /// A single parenthesised type is *transparent* (grammar §2.3 lists it as
-    /// an alternative to the tuple form), so only tuples and the unit type get
-    /// a [`K::TypeTuple`] node.
+    /// Groups always produce a [`K::TypeTuple`] node so the parentheses stay
+    /// inside it; lowering treats a one-element group as the inner type
+    /// (grammar §2.3 lists `"(" type ")"` beside the tuple form) and an empty
+    /// one as unit.
     fn type_tuple(&mut self) {
-        let marker = self.marker();
-        self.expect(K::LParen, "`(`");
-        if self.at(K::RParen) {
-            self.bump();
-            marker.complete(self, K::TypeTuple);
-            return;
-        }
-        self.parse_type();
-        if self.eat(K::Comma) {
-            while !self.at(K::RParen) && !self.at_end() {
-                self.parse_type();
-                if !self.eat(K::Comma) {
-                    break;
-                }
+        self.node(K::TypeTuple, |p| {
+            p.expect(K::LParen, "`(`");
+            if p.at(K::RParen) {
+                p.bump();
+                return;
             }
-            self.expect(K::RParen, "`)`");
-            marker.complete(self, K::TypeTuple);
-        } else {
-            self.expect(K::RParen, "`)`");
-        }
+            p.parse_type();
+            while p.eat(K::Comma) {
+                if p.at(K::RParen) {
+                    break; // trailing comma
+                }
+                p.parse_type();
+            }
+            p.expect(K::RParen, "`)`");
+        });
     }
 
     /// `"[" type (";" comptime_expr)? "]"` — fixed-size / shaped tensor type.

@@ -60,6 +60,24 @@ impl<'a> Lower<'a> {
         self.diags.push(Diagnostic::error(span, message));
     }
 
+    /// Reports a malformed construct and yields an error node. Every path that
+    /// cannot represent the CST goes through one of these, so a lowering gap
+    /// surfaces as a diagnostic instead of silently degrading the AST.
+    fn bad_type(&mut self, span: Span, what: &str) -> Type {
+        self.err(span, format!("malformed type: {what}"));
+        Type::Error(span)
+    }
+
+    fn bad_expr(&mut self, span: Span, what: &str) -> Expr {
+        self.err(span, format!("malformed expression: {what}"));
+        Expr::error(span)
+    }
+
+    fn bad_pattern(&mut self, span: Span, what: &str) -> Pattern {
+        self.err(span, format!("malformed pattern: {what}"));
+        Pattern::Error(span)
+    }
+
     fn text(&self, tok: SyntaxToken) -> &str {
         self.sm.snippet(tok.span)
     }
@@ -524,7 +542,7 @@ impl<'a> Lower<'a> {
                 }
             }
             while starts_type_element(&cur) {
-                args.push(self.type_next(&mut cur, node.span));
+                args.push(self.type_child(&mut cur, node.span));
             }
             Constraint::Is {
                 ty,
@@ -548,7 +566,7 @@ impl<'a> Lower<'a> {
             };
             let mut args = Vec::new();
             while starts_type_element(&ic) {
-                args.push(self.type_next(&mut ic, item_node.span));
+                args.push(self.type_child(&mut ic, item_node.span));
             }
             items.push(EffectItem {
                 name,
@@ -640,7 +658,7 @@ impl<'a> Lower<'a> {
             };
             let mut payload = Vec::new();
             while starts_type_element(&cur) {
-                payload.push(self.type_next(&mut cur, variant.span));
+                payload.push(self.type_child(&mut cur, variant.span));
             }
             out.push(Variant {
                 name,
@@ -652,21 +670,6 @@ impl<'a> Lower<'a> {
     }
 
     // -- types -------------------------------------------------------------
-
-    /// Reads one type element, transparently stepping through `(T)` groups
-    /// (the grammar lists a parenthesised type as an alternative to the tuple
-    /// form, so the parser emits no node for them).
-    fn type_next(&mut self, cur: &mut Cursor<'_>, fallback: Span) -> Type {
-        if cur.peek_kind() == Some(K::LParen) {
-            cur.bump();
-            let inner = self.type_next(cur, fallback);
-            if cur.peek_kind() == Some(K::RParen) {
-                cur.bump();
-            }
-            return inner;
-        }
-        self.type_child(cur, fallback)
-    }
 
     fn type_child(&mut self, cur: &mut Cursor<'_>, fallback: Span) -> Type {
         match cur.node() {
@@ -695,12 +698,12 @@ impl<'a> Lower<'a> {
             K::TypeApp => {
                 let mut cur = Cursor::new(node);
                 let Some(first) = cur.node() else {
-                    return Type::Error(node.span);
+                    return self.bad_type(node.span, "type application without a constructor");
                 };
                 let ctor = self.type_of(first);
                 let mut args = Vec::new();
                 while starts_type_element(&cur) {
-                    args.push(self.type_next(&mut cur, node.span));
+                    args.push(self.type_child(&mut cur, node.span));
                 }
                 Type::App {
                     ctor: Box::new(ctor),
@@ -712,12 +715,30 @@ impl<'a> Lower<'a> {
                 let mut cur = Cursor::new(node);
                 cur.eat(K::LParen);
                 let mut elems = Vec::new();
-                while let Some(atom) = cur.node() {
-                    elems.push(self.type_of(atom));
+                loop {
+                    match cur.peek_kind() {
+                        None | Some(K::RParen) => break,
+                        Some(K::Comma) => {
+                            cur.bump();
+                        }
+                        Some(_) => match cur.node() {
+                            Some(atom) => elems.push(self.type_of(atom)),
+                            None => {
+                                let span = cur.span_or(node.span);
+                                self.err(span, "unexpected token in a tuple type");
+                                cur.bump();
+                            }
+                        },
+                    }
                 }
-                Type::Tuple {
-                    elems,
-                    span: node.span,
+                if elems.len() == 1 {
+                    // `(T)` is a parenthesised group, not a one-element tuple.
+                    elems.pop().expect("checked length")
+                } else {
+                    Type::Tuple {
+                        elems,
+                        span: node.span,
+                    }
                 }
             }
             K::TypeArray => {
@@ -743,7 +764,7 @@ impl<'a> Lower<'a> {
                 if mutable {
                     cur.bump();
                 }
-                let pointee = self.type_next(&mut cur, node.span);
+                let pointee = self.type_child(&mut cur, node.span);
                 Type::Ptr {
                     mutable,
                     pointee: Box::new(pointee),
@@ -753,7 +774,7 @@ impl<'a> Lower<'a> {
             K::TypeDyn => {
                 let mut cur = Cursor::new(node);
                 cur.eat(K::KwDyn);
-                let inner = self.type_next(&mut cur, node.span);
+                let inner = self.type_child(&mut cur, node.span);
                 Type::Dyn {
                     inner: Box::new(inner),
                     span: node.span,
@@ -763,10 +784,7 @@ impl<'a> Lower<'a> {
                 let mut cur = Cursor::new(node);
                 let has_arrow = cur.items.iter().any(|e| e.kind() == K::Arrow);
                 if !has_arrow {
-                    if !starts_type_element(&cur) {
-                        return Type::Error(node.span);
-                    }
-                    return self.type_next(&mut cur, node.span);
+                    return self.type_child(&mut cur, node.span);
                 }
                 let mut params = Vec::new();
                 let ret;
@@ -774,7 +792,7 @@ impl<'a> Lower<'a> {
                 loop {
                     let start = cur.peek().map(|e| e.span()).unwrap_or(node.span);
                     let convention = self.convention(&mut cur);
-                    let ty = self.type_next(&mut cur, node.span);
+                    let ty = self.type_child(&mut cur, node.span);
                     if cur.eat(K::Arrow).is_some() {
                         params.push(ParamSlot {
                             convention,
@@ -976,7 +994,7 @@ impl<'a> Lower<'a> {
                     span: tok.span,
                 }
             }
-            _ => Pattern::Error(node.span),
+            _ => self.bad_pattern(node.span, "expected a binding name"),
         };
         let op = match cur.peek_kind() {
             Some(K::Colon) => {
@@ -1064,7 +1082,7 @@ impl<'a> Lower<'a> {
                             span: node.span,
                         }
                     }
-                    None => Expr::error(node.span),
+                    None => self.bad_expr(node.span, "literal without a token"),
                 }
             }
             K::PathExpr => {
@@ -1157,7 +1175,7 @@ impl<'a> Lower<'a> {
             K::CallExpr => {
                 let mut cur = Cursor::new(node);
                 let Some(callee_node) = cur.node() else {
-                    return Expr::error(node.span);
+                    return self.bad_expr(node.span, "call without a callee");
                 };
                 let callee = self.expr(callee_node);
                 let mut args = Vec::new();
@@ -1184,7 +1202,7 @@ impl<'a> Lower<'a> {
             K::IndexExpr => {
                 let mut cur = Cursor::new(node);
                 let Some(base_node) = cur.node() else {
-                    return Expr::error(node.span);
+                    return self.bad_expr(node.span, "index without a target");
                 };
                 let base = self.expr(base_node);
                 let mut args = Vec::new();
@@ -1287,7 +1305,13 @@ impl<'a> Lower<'a> {
                 cur.eat(K::RParen);
                 let then_branch = match cur.expect_node(K::Block) {
                     Some(b) => self.block(b),
-                    None => Block::empty(node.span),
+                    None => {
+                        self.err(
+                            cur.span_or(node.span),
+                            "expected the `then` block of an `if`",
+                        );
+                        Block::empty(node.span)
+                    }
                 };
                 let else_branch = if cur.eat(K::KwElse).is_some() {
                     match cur.peek_kind() {
@@ -1334,7 +1358,10 @@ impl<'a> Lower<'a> {
                 cur.eat(K::KwComptime);
                 let body = match cur.expect_node(K::Block) {
                     Some(b) => self.block(b),
-                    None => Block::empty(node.span),
+                    None => {
+                        self.err(cur.span_or(node.span), "expected a `comptime` block");
+                        Block::empty(node.span)
+                    }
                 };
                 Expr::Comptime {
                     body,
@@ -1346,7 +1373,10 @@ impl<'a> Lower<'a> {
                 cur.eat(K::KwUnsafe);
                 let body = match cur.expect_node(K::Block) {
                     Some(b) => self.block(b),
-                    None => Block::empty(node.span),
+                    None => {
+                        self.err(cur.span_or(node.span), "expected an `unsafe` block");
+                        Block::empty(node.span)
+                    }
                 };
                 Expr::Unsafe {
                     body,
@@ -1494,7 +1524,7 @@ impl<'a> Lower<'a> {
                     span: tok.span(),
                 }
             }
-            _ => Pattern::Error(node.span),
+            _ => self.bad_pattern(node.span, "unsupported pattern"),
         }
     }
 }
@@ -1564,14 +1594,9 @@ fn is_stmt_kind(kind: K) -> bool {
     )
 }
 
-/// True when the cursor sits on something that can start a type element:
-/// a type node or an opening parenthesis of a transparent group.
+/// True when the cursor sits on a type node.
 fn starts_type_element(cur: &Cursor<'_>) -> bool {
-    match cur.peek() {
-        Some(Element::Token(tok)) => tok.kind == K::LParen,
-        Some(Element::Node(node)) => is_type_kind(node.kind),
-        None => false,
-    }
+    matches!(cur.peek_kind(), Some(kind) if is_type_kind(kind))
 }
 
 fn is_type_kind(kind: K) -> bool {

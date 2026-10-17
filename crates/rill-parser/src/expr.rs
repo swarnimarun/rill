@@ -137,27 +137,17 @@ impl<'a> Parser<'a> {
         base
     }
 
-    /// Space-separated application: `f x y`, `f { ... }`, `f [a, b]`.
-    fn application_spine(&mut self, mut lhs: CompletedMarker) -> CompletedMarker {
-        loop {
-            let starts_arg = self.kind().starts_expr();
-            if !starts_arg {
-                break;
-            }
-            // `match x { ... }`: the brace opens the match, not an argument.
-            if self.block_args_suppressed() && self.at(K::LBrace) {
-                break;
-            }
-            // Contextual operators are names: `a and b` is not an application.
-            if self.at(K::Name)
-                && matches!(
-                    contextual_operator(self.current_text()),
-                    Some(K::KwAnd) | Some(K::KwOr)
-                )
-            {
-                break;
-            }
-            let marker = lhs.precede(self);
+    /// Space-separated application: `f x y` becomes *one* flat call — the
+    /// callee followed by one `Arg` per operand — so later arity analysis sees
+    /// the whole spine at once (PLAN §9, "syntactic arity grouping").
+    /// Grouping stays explicit because a parenthesised operand is its own
+    /// node, which is what keeps `(f x) y` distinguishable from `f x y`.
+    fn application_spine(&mut self, lhs: CompletedMarker) -> CompletedMarker {
+        if !self.starts_application_argument() {
+            return lhs;
+        }
+        let marker = lhs.precede(self);
+        while self.starts_application_argument() {
             let before = self.pos_marker();
             if self.at(K::LParen) {
                 // Spaced argument list: `rotate_point (inout a, b)`.
@@ -170,9 +160,33 @@ impl<'a> Parser<'a> {
                 });
             }
             debug_assert!(self.pos_marker() > before, "application made no progress");
-            lhs = marker.complete(self, K::CallExpr);
         }
-        lhs
+        marker.complete(self, K::CallExpr)
+    }
+
+    /// True when the current token can begin another operand of an application.
+    fn starts_application_argument(&self) -> bool {
+        if !self.kind().starts_expr() {
+            return false;
+        }
+        // `match x { ... }`: the brace opens the match, not an argument.
+        if self.block_args_suppressed() && self.at(K::LBrace) {
+            return false;
+        }
+        // Contextual operators are names: `a and b` is not an application.
+        if self.at(K::Name)
+            && matches!(
+                contextual_operator(self.current_text()),
+                Some(K::KwAnd) | Some(K::KwOr)
+            )
+        {
+            return false;
+        }
+        // A binding statement is not an operand: `f x` then `y := 1`.
+        if (self.at(K::Name) || self.at(K::Underscore)) && self.nth(1) == K::ColonEq {
+            return false;
+        }
+        true
     }
 
     /// One argument of a `(...)` / `[...]` call.
