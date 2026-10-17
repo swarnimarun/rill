@@ -7,16 +7,27 @@ use std::io::Write as _;
 use std::process::ExitCode;
 
 use rill_ast::parse_and_lower;
+use rill_codegen::emit_c;
 use rill_diagnostics::{eprint_with_summary, render_all};
+use rill_hir::lower;
 use rill_span::SourceMap;
+use rill_ty::check;
 
 const USAGE: &str = "\
-rillc — Rill front end (M0: lexer, parser, CST, desugared AST)
+rillc — Rill compiler
 
 USAGE:
-    rillc [OPTIONS] <FILE.rill>
+    rillc build <FILE.rill> [-o OUT] [--target native|linux-musl] [--emit-c]
+    rillc <FILE.rill> [OPTIONS]
 
-OPTIONS:
+BUILD OPTIONS:
+    -o OUT             output binary (default: the file stem in the cwd)
+    --target native    host cc, dynamic — runs locally (default)
+    --target linux-musl
+                       zig cc -target <arch>-linux-musl -static — static ELF
+    --emit-c           also print the generated C file's path
+
+FRONT-END OPTIONS:
     --dump=<cst|ast>   print the lossless CST or the Debug form of the AST
     --stats            print item/statement/token counts
     -h, --help         show this message
@@ -34,7 +45,11 @@ fn print_line(text: &str) {
 }
 
 fn main() -> ExitCode {
-    let args: Vec<String> = std::env::args().skip(1).collect();
+    let mut args: Vec<String> = std::env::args().skip(1).collect();
+    if args.first().map(|a| a.as_str()) == Some("build") {
+        args.remove(0);
+        return build(&args);
+    }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print_out(USAGE);
         return ExitCode::SUCCESS;
@@ -112,5 +127,113 @@ fn main() -> ExitCode {
         ExitCode::FAILURE
     } else {
         ExitCode::SUCCESS
+    }
+}
+
+/// `rillc build` — type-check, emit C, compile, link.
+fn build(args: &[String]) -> ExitCode {
+    let mut path = None;
+    let mut out = None;
+    let mut target = "native".to_string();
+    let mut emit_c_only = false;
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "-o" => {
+                index += 1;
+                out = args.get(index).cloned();
+            }
+            "--target" => {
+                index += 1;
+                match args.get(index).map(|s| s.as_str()) {
+                    Some(value @ ("native" | "linux-musl")) => target = value.to_string(),
+                    other => {
+                        eprintln!("error: unknown target {:?} (native or linux-musl)", other);
+                        return ExitCode::from(2);
+                    }
+                }
+            }
+            "--emit-c" => emit_c_only = true,
+            other => path = Some(other.to_string()),
+        }
+        index += 1;
+    }
+    let Some(path) = path else {
+        eprint!("{USAGE}");
+        return ExitCode::from(2);
+    };
+    let text = match std::fs::read_to_string(&path) {
+        Ok(text) => text,
+        Err(err) => {
+            eprintln!("error: cannot read `{path}`: {err}");
+            return ExitCode::from(2);
+        }
+    };
+
+    let mut source_map = SourceMap::new();
+    let file = source_map.add_file(&path, text);
+    let frontend = parse_and_lower(&source_map, file);
+    let mut diagnostics = frontend.diagnostics.clone();
+    if diagnostics.has_errors() {
+        eprint_with_summary(&source_map, &diagnostics);
+        return ExitCode::FAILURE;
+    }
+    let hir = lower(&frontend);
+    diagnostics.extend(hir.diagnostics.clone());
+    if diagnostics.has_errors() {
+        eprint_with_summary(&source_map, &diagnostics);
+        return ExitCode::FAILURE;
+    }
+    let checked = check(&frontend, &hir);
+    diagnostics.extend(checked.diagnostics.clone());
+    if diagnostics.has_errors() {
+        eprint_with_summary(&source_map, &diagnostics);
+        return ExitCode::FAILURE;
+    }
+
+    let (c_source, codegen_diagnostics) = emit_c(&frontend, &hir, &checked);
+    if codegen_diagnostics.has_errors() {
+        eprint_with_summary(&source_map, &codegen_diagnostics);
+        return ExitCode::FAILURE;
+    }
+
+    let stem = std::path::Path::new(&path)
+        .file_stem()
+        .map(|s| s.to_string_lossy().to_string())
+        .unwrap_or_else(|| "program".to_string());
+    let out = out.unwrap_or_else(|| format!("./{stem}"));
+    let c_path = format!("{out}.c");
+    if let Err(err) = std::fs::write(&c_path, &c_source) {
+        eprintln!("error: cannot write `{c_path}`: {err}");
+        return ExitCode::from(2);
+    }
+
+    if emit_c_only {
+        print_line(&c_path);
+    }
+
+    let cc = match target.as_str() {
+        "linux-musl" => format!(
+            "zig cc -target {}-linux-musl -static -O2 -o {} {}",
+            std::env::consts::ARCH,
+            out,
+            c_path
+        ),
+        _ => format!("cc -O2 -o {out} {c_path}"),
+    };
+    let status = std::process::Command::new("sh").arg("-c").arg(&cc).status();
+    match status {
+        Ok(status) if status.success() => {
+            print_line(&format!("built {out} ({target})"));
+            ExitCode::SUCCESS
+        }
+        Ok(status) => {
+            eprintln!("error: `{cc}` failed with {status}");
+            ExitCode::FAILURE
+        }
+        Err(err) => {
+            eprintln!("error: cannot run `{cc}`: {err}");
+            ExitCode::from(2)
+        }
     }
 }

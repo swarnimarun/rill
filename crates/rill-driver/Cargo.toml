@@ -13,3 +13,6 @@ rill-syntax.workspace = true
 rill-parser.workspace = true
 rill-ast.workspace = true
 rill-diagnostics.workspace = true
+rill-hir.workspace = true
+rill-ty.workspace = true
+rill-codegen.workspace = true

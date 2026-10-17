@@ -1,0 +1,11 @@
+[package]
+name = "rill-codegen"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rill-span.workspace = true
+rill-ast.workspace = true
+rill-hir.workspace = true
+rill-ty.workspace = true
+rill-diagnostics.workspace = true

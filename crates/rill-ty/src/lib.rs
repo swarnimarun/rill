@@ -657,6 +657,7 @@ impl<'a> Checker<'a> {
             span: item.span,
         });
         self.nominal_by_item.insert(item.id, id);
+        self.item_types[item.id.0 as usize] = ItemTy::Nominal(id);
         let _ = def;
     }
 
@@ -1045,7 +1046,7 @@ impl Checker<'_> {
                     signed: false,
                 },
             },
-            ExprKind::Path { segments: _, res } => match res {
+            ExprKind::Path { segments, res } => match res {
                 Res::Local(id) => self
                     .local_types
                     .get(id.0 as usize)
@@ -1072,10 +1073,23 @@ impl Checker<'_> {
                     },
                 },
                 Res::Import(_) => {
-                    // `io::println` and friends: the only impure surface the
-                    // examples use.
+                    // `Res::Import` records the *import's* path; the reference's
+                    // own segments name the item being used (`io::println`).
                     self.add_effects(&[Effect::Io]);
-                    Ty::Text
+                    let last = segments.last().map(|s| self.text(*s).to_string());
+                    if last.as_deref() == Some("println") {
+                        Ty::Fn {
+                            params: vec![Ty::Text],
+                            ret: Box::new(Ty::Unit),
+                            effects: vec![Effect::Io],
+                        }
+                    } else {
+                        Ty::Fn {
+                            params: Vec::new(),
+                            ret: Box::new(Ty::Error),
+                            effects: vec![Effect::Io],
+                        }
+                    }
                 }
                 Res::Field => Ty::Error,
                 Res::Error => Ty::Error,
@@ -1489,6 +1503,27 @@ impl Checker<'_> {
                 }
                 (*ret).clone()
             }
+            Ty::Nominal(id) | Ty::Record(id) => {
+                let expected = match &self.nominals[id.0 as usize].kind {
+                    NominalKind::Record(fields) | NominalKind::View(fields) => fields.len(),
+                    NominalKind::Enum(_) => 0,
+                    _ => 0,
+                };
+                if expected != arg_tys.len() {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            span,
+                            format!(
+                                "`{}` takes {expected} value(s) but {} were given",
+                                self.nominal_name(id),
+                                arg_tys.len()
+                            ),
+                        )
+                        .note(format!("while {context}")),
+                    );
+                }
+                Ty::Nominal(id)
+            }
             Ty::Error => Ty::Error,
             other => {
                 let display = self.display(&other);
@@ -1563,13 +1598,22 @@ impl Checker<'_> {
                 ..
             } => {
                 let iter_ty = self.expr(iter);
-                let elem = self.element_ty(&iter_ty);
+                let elem = self.loop_element_ty(&iter_ty);
                 self.pattern(pattern, &elem);
                 self.block(body);
             }
             Stmt::Expr(expr) => {
                 self.expr(expr);
             }
+        }
+    }
+
+    /// The element type a `for (x := e)` loop iterates over.
+    fn loop_element_ty(&mut self, ty: &Ty) -> Ty {
+        match self.resolve_deep(ty) {
+            Ty::Range(elem) => (*elem).clone(),
+            Ty::Array { elem, .. } => (*elem).clone(),
+            other => other,
         }
     }
 

@@ -13,6 +13,17 @@ dependencies = [
 ]
 
 [[package]]
+name = "rill-codegen"
+version = "0.1.0"
+dependencies = [
+ "rill-ast",
+ "rill-diagnostics",
+ "rill-hir",
+ "rill-span",
+ "rill-ty",
+]
+
+[[package]]
 name = "rill-diagnostics"
 version = "0.1.0"
 dependencies = [
@@ -24,10 +35,13 @@ name = "rill-driver"
 version = "0.1.0"
 dependencies = [
  "rill-ast",
+ "rill-codegen",
  "rill-diagnostics",
+ "rill-hir",
  "rill-parser",
  "rill-span",
  "rill-syntax",
+ "rill-ty",
 ]
 
 [[package]]

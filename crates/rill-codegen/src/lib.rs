@@ -1,0 +1,1299 @@
+//! `rill-codegen` — C backend used as the bootstrap target (PLAN.md §7.1).
+//!
+//! Typed HIR is emitted as portable C plus a small libc-backed runtime
+//! (`printf`, `malloc`), then compiled by the platform toolchain:
+//!
+//! * `--target native` — host `cc`, dynamic: runs locally, so tests can assert
+//!   stdout and the exit code;
+//! * `--target linux-musl` — `zig cc -target <arch>-linux-musl -static`, giving
+//!   a genuinely statically linked ELF.
+//!
+//! The MLIR backend (`rill-mlir`) replaces this crate once the `rill` dialect
+//! lowering lands; the front end and type tables consumed here are unchanged by
+//! that switch.
+//!
+//! Lowered today: functions (including recursion and non-capturing local
+//! functions), records, enums, tuples, fixed arrays, ranges in `for`, `if`,
+//! `match`, casts, text (`++`, `as String`) and `io::println`.
+//! Reported as unsupported rather than miscompiled: `<decides>` (`?`, `|`,
+//! `f[x]`), handlers (`option`/`one`/`all`), structured concurrency,
+//! projections and `<transacts>` rollback — those arrive with M2–M5.
+
+use std::collections::HashSet;
+
+use rill_ast::{BinaryOp, LiteralKind, UnaryOp};
+use rill_diagnostics::{Diagnostic, Diagnostics};
+use rill_hir::{
+    Block, Cond, ElseBranch, Expr, ExprKind, Hir, ItemId, ItemKind, LocalId, Pattern, Res, Stmt,
+};
+use rill_span::{Span, Symbol};
+use rill_ty::{Checked, ItemTy, NominalId, NominalKind, Ty};
+
+/// Emits a complete C translation unit, or diagnostics explaining what could
+/// not be lowered.
+pub fn emit_c(
+    frontend: &rill_ast::Frontend,
+    hir: &Hir,
+    checked: &Checked,
+) -> (String, Diagnostics) {
+    let mut gen = Generator::new(frontend, hir, checked);
+    gen.module();
+    let diagnostics = std::mem::take(&mut gen.diagnostics);
+    (gen.finish(), diagnostics)
+}
+
+const RUNTIME: &str = r#"// ---- rill runtime (libc-backed bootstrap) ---------------------------------
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+typedef int8_t   r_i8;
+typedef int16_t  r_i16;
+typedef int32_t  r_i32;
+typedef int64_t  r_i64;
+typedef uint8_t  r_u8;
+typedef uint16_t r_u16;
+typedef uint32_t r_u32;
+typedef uint64_t r_u64;
+typedef float    r_f32;
+typedef double   r_f64;
+typedef int32_t  r_bool;
+typedef const char *r_text;
+typedef struct { int32_t unused; } r_unit;
+
+static r_unit rill_unit(void) { r_unit u; u.unused = 0; return u; }
+
+// Text is a heap string; the arena keeps concat/formatting allocation-free per
+// call, which is fine for bootstrap-scale programs.
+static char rill_text_arena[1 << 20];
+static size_t rill_text_used = 0;
+
+static r_text rill_text_alloc(size_t n) {
+  if (rill_text_used + n > sizeof(rill_text_arena)) {
+    rill_text_used = 0;
+  }
+  char *p = &rill_text_arena[rill_text_used];
+  rill_text_used += n;
+  return p;
+}
+
+static r_text rill_text_concat(r_text a, r_text b) {
+  size_t la = strlen(a), lb = strlen(b);
+  char *p = (char *)rill_text_alloc(la + lb + 1);
+  memcpy(p, a, la);
+  memcpy(p + la, b, lb);
+  p[la + lb] = 0;
+  return p;
+}
+
+static r_text rill_i64_to_text(r_i64 v) {
+  char *p = (char *)rill_text_alloc(32);
+  snprintf(p, 32, "%lld", (long long)v);
+  return p;
+}
+
+static r_text rill_f64_to_text(r_f64 v) {
+  char *p = (char *)rill_text_alloc(64);
+  snprintf(p, 64, "%g", (double)v);
+  return p;
+}
+
+static void rill_println(r_text s) { printf("%s\n", s); }
+static r_i64 rill_size_i64(r_i64 n) { return n; }
+static size_t rill_size_slice(size_t n) { return n; }
+// ---- end runtime ---------------------------------------------------------
+"#;
+
+struct Generator<'a> {
+    frontend: &'a rill_ast::Frontend,
+    hir: &'a Hir,
+    checked: &'a Checked,
+    runtime: String,
+    types: String,
+    protos: String,
+    defs: String,
+    /// Statements of the function currently being emitted.
+    body: String,
+    temp: usize,
+    emitted_types: HashSet<String>,
+    diagnostics: Diagnostics,
+    /// Locals that hold no C storage (unit values).
+    scopes: Vec<Vec<(LocalId, String)>>,
+}
+
+impl<'a> Generator<'a> {
+    fn new(frontend: &'a rill_ast::Frontend, hir: &'a Hir, checked: &'a Checked) -> Self {
+        Generator {
+            frontend,
+            hir,
+            checked,
+            runtime: RUNTIME.to_string(),
+            types: String::new(),
+            protos: String::new(),
+            defs: String::new(),
+            body: String::new(),
+            temp: 0,
+            emitted_types: HashSet::new(),
+            diagnostics: Diagnostics::new(),
+            scopes: Vec::new(),
+        }
+    }
+
+    fn finish(self) -> String {
+        format!(
+            "{}{}{}{}\n",
+            self.runtime, self.types, self.protos, self.defs
+        )
+    }
+
+    fn text(&self, sym: Symbol) -> &str {
+        self.frontend.interner.get(sym)
+    }
+
+    fn err(&mut self, span: Span, message: impl Into<String>) {
+        self.diagnostics.push(Diagnostic::error(span, message));
+    }
+
+    fn unsupported(&mut self, span: Span, what: &str, milestone: &str) {
+        self.diagnostics.push(
+            Diagnostic::error(span, format!("{what} is not lowered by the C backend yet"))
+                .note(format!("planned with {milestone} in PLAN.md")),
+        );
+    }
+
+    // -- module ------------------------------------------------------------
+
+    fn module(&mut self) {
+        // Type definitions first: structs may reference each other.
+        for item in self.hir.items() {
+            let ItemKind::Type(def) = &item.kind else {
+                continue;
+            };
+            let Some(ItemTy::Nominal(id)) = self.checked.item_ty(item.id) else {
+                continue;
+            };
+            let id = *id;
+            match &def.body {
+                rill_ast::TypeBody::Record(_) | rill_ast::TypeBody::View(_) => {
+                    match &self.checked.nominal(id).kind {
+                        NominalKind::Record(fields) | NominalKind::View(fields) => {
+                            let name = format!("st_{}", self.nominal_name(id));
+                            if self.emitted_types.insert(name.clone()) {
+                                let mut body = format!("typedef struct {} {{\n", name);
+                                for field in fields {
+                                    let ty = self.c_type(&field.ty);
+                                    let fname = self.text(field.name).to_string();
+                                    body.push_str(&format!("  {ty} {fname};\n"));
+                                }
+                                body.push_str(&format!("}} {name};\n"));
+                                self.types.push_str(&body);
+                            }
+                        }
+                        _ => {}
+                    }
+                }
+                rill_ast::TypeBody::Variants(_) => {
+                    self.emit_enum(id);
+                }
+                _ => {}
+            }
+        }
+
+        for item in self.hir.items() {
+            match &item.kind {
+                ItemKind::Fn(def) => {
+                    if def.body.is_none() {
+                        continue; // signatures/trait members have no body to emit
+                    }
+                    self.emit_fn(item.id, def);
+                }
+                ItemKind::Signature(def) => {
+                    let _ = def;
+                }
+                ItemKind::Project(_) => {
+                    self.unsupported(item.span, "`project` bodies", "M2/M4");
+                }
+                ItemKind::Builder(_)
+                | ItemKind::Trait(_)
+                | ItemKind::Impl(_)
+                | ItemKind::Use(_) => {}
+                ItemKind::Type(_) | ItemKind::Stmt(_) | ItemKind::Placeholder => {}
+            }
+        }
+    }
+
+    fn nominal_name(&self, id: NominalId) -> String {
+        let name = self.checked.nominal(id).name;
+        let text = self.text(name).to_string();
+        if text.is_empty() {
+            format!("anon{}", id.0)
+        } else {
+            text
+        }
+    }
+
+    fn emit_enum(&mut self, id: NominalId) {
+        let name = format!("en_{}", self.nominal_name(id));
+        if !self.emitted_types.insert(name.clone()) {
+            return;
+        }
+        let variants = match &self.checked.nominal(id).kind {
+            NominalKind::Enum(variants) => variants.clone(),
+            _ => return,
+        };
+        let mut body = format!("typedef struct {name} {{\n  int32_t tag;\n  union {{\n");
+        for (index, variant) in variants.iter().enumerate() {
+            let vname = self.text(variant.name).to_string();
+            if variant.payload.is_empty() {
+                body.push_str(&format!("    int32_t _{index}; // {vname}\n"));
+            } else {
+                body.push_str(&format!("    struct {{\n"));
+                for (field, ty) in variant.payload.iter().enumerate() {
+                    let ty = self.c_type(ty);
+                    body.push_str(&format!("      {ty} _{field};\n"));
+                }
+                body.push_str(&format!("    }} {vname};\n"));
+            }
+        }
+        body.push_str("  } payload;\n} ");
+        body.push_str(&name);
+        body.push_str(";\n");
+        for (index, variant) in variants.iter().enumerate() {
+            let vname = self.text(variant.name).to_string();
+            body.push_str(&format!("#define {name}_TAG_{vname} {index}\n"));
+        }
+        self.types.push_str(&body);
+    }
+
+    // -- types -------------------------------------------------------------
+
+    fn c_type(&mut self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int { bits, signed } => {
+                format!("r_{}{bits}", if *signed { 'i' } else { 'u' })
+            }
+            Ty::Float { bits } => format!("r_f{bits}"),
+            Ty::Bool => "r_bool".into(),
+            Ty::Unit => "r_unit".into(),
+            Ty::Text => "r_text".into(),
+            Ty::Tuple(elems) => {
+                let name = self.mangled_tuple(elems);
+                if self.emitted_types.insert(name.clone()) {
+                    let mut body = format!("typedef struct {name} {{\n");
+                    for (index, elem) in elems.iter().enumerate() {
+                        let ty = self.c_type(elem);
+                        body.push_str(&format!("  {ty} _{index};\n"));
+                    }
+                    body.push_str(&format!("}} {name};\n"));
+                    self.types.push_str(&body);
+                }
+                name
+            }
+            Ty::Array { elem, len } => {
+                let elem_ty = self.c_type(elem);
+                match len {
+                    Some(len) => {
+                        let name = format!("{}_n{len}", self.mangle(elem));
+                        if self.emitted_types.insert(name.clone()) {
+                            self.types.push_str(&format!(
+                                "typedef struct {{ {elem_ty} v[{len}]; }} {name};\n"
+                            ));
+                        }
+                        name
+                    }
+                    None => {
+                        let name = format!("sl_{}", self.mangle(elem));
+                        if self.emitted_types.insert(name.clone()) {
+                            self.types.push_str(&format!(
+                                "typedef struct {{ {elem_ty} *ptr; size_t len; }} {name};\n"
+                            ));
+                        }
+                        name
+                    }
+                }
+            }
+            Ty::Range(elem) => format!(
+                "struct {{ {} start; {} end; }}",
+                self.c_type(elem),
+                self.c_type(elem)
+            ),
+            Ty::Record(id) | Ty::Nominal(id) => match &self.checked.nominal(*id).kind {
+                NominalKind::Enum(_) => format!("en_{}", self.nominal_name(*id)),
+                NominalKind::Alias(inner) => {
+                    let inner = inner.clone();
+                    self.c_type(&inner)
+                }
+                _ => {
+                    let name = format!("st_{}", self.nominal_name(*id));
+                    // Definitions are emitted with the module; recurse lazily if
+                    // this type was not pre-registered (anonymous monomorphs).
+                    if !self.emitted_types.contains(&name) {
+                        if let NominalKind::Record(fields) | NominalKind::View(fields) =
+                            self.checked.nominal(*id).kind.clone()
+                        {
+                            self.emitted_types.insert(name.clone());
+                            let mut body = format!("typedef struct {name} {{\n");
+                            for field in fields {
+                                let ty = self.c_type(&field.ty);
+                                let fname = self.text(field.name).to_string();
+                                body.push_str(&format!("  {ty} {fname};\n"));
+                            }
+                            body.push_str(&format!("}} {name};\n"));
+                            self.types.push_str(&body);
+                        }
+                    }
+                    name
+                }
+            },
+            Ty::Fn { params, ret, .. } => {
+                let params: Vec<String> = params.iter().map(|p| self.c_type(p)).collect();
+                let ret = self.c_type(ret);
+                if params.is_empty() {
+                    format!("{ret} (*)(void)")
+                } else {
+                    format!("{ret} (*)({})", params.join(", "))
+                }
+            }
+            Ty::Choice(inner) => {
+                let inner = inner.clone();
+                self.c_type(&inner)
+            }
+            Ty::Var(_) | Ty::Error => "r_i64".into(),
+        }
+    }
+
+    fn mangle(&mut self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int { bits, signed } => format!("{}{}", if *signed { 'i' } else { 'u' }, bits),
+            Ty::Float { bits } => format!("f{bits}"),
+            Ty::Bool => "b".into(),
+            Ty::Unit => "u".into(),
+            Ty::Text => "s".into(),
+            Ty::Tuple(elems) => {
+                let parts: Vec<String> = elems.iter().map(|e| self.mangle(e)).collect();
+                format!("t{}", parts.join("_"))
+            }
+            Ty::Array { elem, len } => match len {
+                Some(len) => format!("a{}{len}", self.mangle(elem)),
+                None => format!("sl{}", self.mangle(elem)),
+            },
+            Ty::Range(elem) => format!("r{}", self.mangle(elem)),
+            Ty::Record(id) | Ty::Nominal(id) => self.nominal_name(*id),
+            Ty::Fn { .. } => "fn".into(),
+            Ty::Choice(inner) => self.mangle(inner),
+            Ty::Var(_) | Ty::Error => "e".into(),
+        }
+    }
+
+    fn mangled_tuple(&mut self, elems: &[Ty]) -> String {
+        let parts: Vec<String> = elems.iter().map(|e| self.mangle(e)).collect();
+        format!("tup_{}", parts.join("_"))
+    }
+
+    // -- functions ---------------------------------------------------------
+
+    fn emit_fn(&mut self, id: ItemId, def: &rill_hir::FnDef) {
+        let name = self.item_c_name(id);
+        let ret_ty = match self.checked.item_ty(id) {
+            Some(ItemTy::Fn { ret, .. }) => ret.clone(),
+            _ => Ty::Unit,
+        };
+        let ret = self.c_type(&ret_ty);
+        let params = self.param_list(def);
+        let is_main = self
+            .hir
+            .item(id)
+            .name
+            .map(|n| self.text(n) == "main")
+            .unwrap_or(false);
+        let (ret_decl, final_name) = if is_main {
+            // The program's `main` becomes the C entry point; its value is the
+            // process exit code.
+            ("int".to_string(), "main".to_string())
+        } else {
+            (ret.clone(), name.clone())
+        };
+        // The program's `main` must be visible to the C runtime's entry point.
+        let linkage = if is_main { "" } else { "static " };
+        self.protos
+            .push_str(&format!("{linkage}{ret_decl} {final_name}({params});\n"));
+
+        let previous = std::mem::take(&mut self.body);
+        let previous_scopes = std::mem::take(&mut self.scopes);
+        let previous_temp = self.temp;
+        self.temp = 0;
+        self.push_scope();
+        for param in &def.params {
+            if let (Some(local), Some(name)) = (param.local, param.name) {
+                let c_name = format!("p_{}", self.text(name));
+                self.bind(local, c_name);
+            }
+        }
+        let tail_value = def.body.as_ref().map(|body| self.expr(body));
+        self.body.push('\n');
+        let mut body = std::mem::take(&mut self.body);
+        if is_main {
+            let value = tail_value.unwrap_or_else(|| "0".to_string());
+            body.push_str(&format!("  return (int)({value});\n"));
+        } else if matches!(ret_ty, Ty::Unit) {
+            body.push_str("  return rill_unit();\n");
+        } else if let Some(value) = tail_value {
+            body.push_str(&format!("  return {value};\n"));
+        }
+        self.pop_scope();
+        self.body = previous;
+        self.scopes = previous_scopes;
+        self.temp = previous_temp;
+        self.defs.push_str(&format!(
+            "{linkage}{ret_decl} {final_name}({params}) {{\n{body}}}\n"
+        ));
+    }
+
+    fn param_list(&mut self, def: &rill_hir::FnDef) -> String {
+        let mut parts = Vec::new();
+        for param in &def.params {
+            let ty = param
+                .ty
+                .as_ref()
+                .map(|ast| {
+                    let name = param
+                        .name
+                        .map(|n| self.text(n).to_string())
+                        .unwrap_or_default();
+                    let _ = name;
+                    ast.clone()
+                })
+                .map(|ast| self.ast_param_ty(&ast))
+                .unwrap_or_else(|| "r_i64".to_string());
+            let name = param
+                .name
+                .map(|n| self.text(n).to_string())
+                .unwrap_or_else(|| "_".to_string());
+            parts.push(format!("{ty} p_{name}"));
+        }
+        if parts.is_empty() {
+            "void".to_string()
+        } else {
+            parts.join(", ")
+        }
+    }
+
+    fn ast_param_ty(&mut self, ast: &rill_ast::Type) -> String {
+        // Parameters were typed during checking; re-derive the C type from the
+        // checked signature instead of the syntax.
+        let ty = self.syntax_to_c(ast);
+        ty
+    }
+
+    fn syntax_to_c(&mut self, ast: &rill_ast::Type) -> String {
+        match ast {
+            rill_ast::Type::Path { segments, .. } => {
+                let name = self.text(segments[0].sym).to_string();
+                match name.as_str() {
+                    "i8" => "r_i8".into(),
+                    "i16" => "r_i16".into(),
+                    "i32" => "r_i32".into(),
+                    "i64" | "isize" => "r_i64".into(),
+                    "u8" => "r_u8".into(),
+                    "u16" => "r_u16".into(),
+                    "u32" => "r_u32".into(),
+                    "u64" | "usize" => "r_u64".into(),
+                    "f32" => "r_f32".into(),
+                    "f64" => "r_f64".into(),
+                    "Bool" => "r_bool".into(),
+                    "String" | "Text" => "r_text".into(),
+                    _ => format!("st_{name}"),
+                }
+            }
+            rill_ast::Type::App { ctor, args, .. } => {
+                let name = match &**ctor {
+                    rill_ast::Type::Path { segments, .. } => self.text(segments[0].sym).to_string(),
+                    _ => String::new(),
+                };
+                match name.as_str() {
+                    "Array" | "Slice" | "Box" => args
+                        .first()
+                        .map(|a| self.syntax_to_c(a))
+                        .unwrap_or_else(|| "void *".into()),
+                    _ => format!("st_{name}"),
+                }
+            }
+            rill_ast::Type::Tuple { elems, .. } if elems.is_empty() => "r_unit".into(),
+            rill_ast::Type::Array { elem, len, .. } => {
+                let elem_ty = self.syntax_to_c(elem);
+                match len.as_ref().and_then(|l| match &**l {
+                    rill_ast::Expr::Literal { text, .. } => text.parse::<u64>().ok(),
+                    _ => None,
+                }) {
+                    Some(n) => format!("struct {{ {elem_ty} v[{n}]; }}"),
+                    None => format!("struct {{ {elem_ty} *ptr; size_t len; }}"),
+                }
+            }
+            _ => "r_i64".into(),
+        }
+    }
+
+    fn item_c_name(&self, id: ItemId) -> String {
+        match self.hir.item(id).name {
+            Some(name) => format!("rill_{}", self.text(name)),
+            None => format!("rill_item{}", id.0),
+        }
+    }
+
+    // -- scopes ------------------------------------------------------------
+
+    fn push_scope(&mut self) {
+        self.scopes.push(Vec::new());
+    }
+
+    fn pop_scope(&mut self) {
+        self.scopes.pop();
+    }
+
+    fn bind(&mut self, local: LocalId, c_name: String) {
+        let scope = self.scopes.last_mut().expect("a scope is open");
+        scope.retain(|(id, _)| *id != local);
+        scope.push((local, c_name));
+    }
+
+    fn c_name(&self, local: LocalId) -> Option<&str> {
+        for scope in self.scopes.iter().rev() {
+            for (id, name) in scope.iter().rev() {
+                if *id == local {
+                    return Some(name);
+                }
+            }
+        }
+        None
+    }
+
+    fn fresh(&mut self, prefix: &str) -> String {
+        let name = format!("{prefix}{}", self.temp);
+        self.temp += 1;
+        name
+    }
+
+    fn typed_temp(&mut self, ty: &Ty) -> String {
+        let name = self.fresh("t_");
+        let c_ty = self.c_type(ty);
+        self.body.push_str(&format!("  {c_ty} {name};\n"));
+        name
+    }
+
+    fn expr_ty(&self, expr: &Expr) -> Ty {
+        self.checked.expr_ty(expr.id).cloned().unwrap_or(Ty::Error)
+    }
+
+    fn local_ty(&self, local: LocalId) -> Ty {
+        self.checked.local_ty(local).cloned().unwrap_or(Ty::Error)
+    }
+
+    // -- expressions -------------------------------------------------------
+
+    fn expr(&mut self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Literal { kind, text } => self.literal(*kind, text),
+            ExprKind::Path { segments, res } => match res {
+                Res::Local(id) => match self.c_name(*id) {
+                    Some(name) => name.to_string(),
+                    None => {
+                        self.err(expr.span, "internal error: local without C storage");
+                        "0".into()
+                    }
+                },
+                Res::Item(id) => self.item_c_name(*id),
+                Res::Import(_) => {
+                    let text: Vec<&str> = segments.iter().map(|s| self.text(*s)).collect();
+                    if text.len() == 2 && text[0] == "io" && text[1] == "println" {
+                        "rill_println".into()
+                    } else {
+                        self.unsupported(
+                            expr.span,
+                            &format!("the import `{}`", text.join("::")),
+                            "M3 (stdlib)",
+                        );
+                        "0".into()
+                    }
+                }
+                Res::Field => {
+                    self.unsupported(expr.span, "an unresolved field reference", "M2");
+                    "0".into()
+                }
+                Res::Error => "0".into(),
+            },
+            ExprKind::Tuple(elems) => {
+                let ty = self.expr_ty(expr);
+                let name = match &ty {
+                    Ty::Tuple(elems) => self.mangled_tuple(elems),
+                    _ => "r_i64".into(),
+                };
+                let parts: Vec<String> = elems.iter().map(|e| self.expr(e)).collect();
+                let fields: Vec<String> = parts
+                    .iter()
+                    .enumerate()
+                    .map(|(index, value)| format!("._{index} = {value}"))
+                    .collect();
+                format!("({name}){{ {} }}", fields.join(", "))
+            }
+            ExprKind::Array(elems) => {
+                let ty = self.expr_ty(expr);
+                let values: Vec<String> = elems.iter().map(|e| self.expr(e)).collect();
+                match &ty {
+                    Ty::Array { elem, len: Some(_) } => {
+                        let name = self.mangle(elem);
+                        let temp = self.fresh("arr_");
+                        self.body.push_str(&format!(
+                            "  {name} {temp} = {{ .v = {{ {} }} }};\n",
+                            values.join(", ")
+                        ));
+                        temp
+                    }
+                    _ => {
+                        self.unsupported(expr.span, "this array literal", "M3");
+                        "0".into()
+                    }
+                }
+            }
+            ExprKind::Block(block) => self.block(block),
+            ExprKind::Lambda { .. } => {
+                self.unsupported(
+                    expr.span,
+                    "a closure",
+                    "M3 (needs capture analysis; `FOLD`-style helpers arrive with the stdlib)",
+                );
+                "0".into()
+            }
+            ExprKind::Call { callee, args } => self.call(expr, callee, args),
+            ExprKind::Index { base, args } => {
+                let base = self.expr(base);
+                let index = args
+                    .first()
+                    .map(|arg| self.expr(&arg.value))
+                    .unwrap_or_else(|| "0".into());
+                let base_ty = self.expr_ty(base_expr(expr));
+                match base_ty {
+                    Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
+                    Ty::Array { len: None, .. } => format!("({base}).ptr[{index}]"),
+                    _ => {
+                        self.unsupported(expr.span, "this index expression", "M3");
+                        "0".into()
+                    }
+                }
+            }
+            ExprKind::Try { .. } => {
+                self.unsupported(expr.span, "`?` on a failable value", "M3 (`<decides>`)");
+                "0".into()
+            }
+            ExprKind::Unary { op, operand } => {
+                let value = self.expr(operand);
+                match op {
+                    UnaryOp::Neg => format!("(-({value}))"),
+                    UnaryOp::Not => format!("(!({value}))"),
+                    UnaryOp::Deref => format!("(*({value}))"),
+                    UnaryOp::Size => {
+                        let operand_ty = self.expr_ty(operand);
+                        match operand_ty {
+                            Ty::Array { len: Some(n), .. } => n.to_string(),
+                            Ty::Array { len: None, .. } => format!("((r_i64)({value}).len)"),
+                            _ => "0".into(),
+                        }
+                    }
+                    UnaryOp::Shapeof | UnaryOp::Reshape => {
+                        self.unsupported(expr.span, "shaped-tensor operations", "M5");
+                        "0".into()
+                    }
+                }
+            }
+            ExprKind::Binary { op, lhs, rhs } => self.binary(expr, *op, lhs, rhs),
+            ExprKind::Cast { expr: inner, ty } => {
+                let value = self.expr(inner);
+                let from = self.expr_ty(inner);
+                let to_text = matches!(
+                    ty,
+                    rill_ast::Type::Path { segments, .. }
+                        if matches!(self.text(segments[0].sym), "String" | "Text")
+                );
+                if to_text {
+                    return match from {
+                        Ty::Int { .. } => format!("rill_i64_to_text((r_i64)({value}))"),
+                        Ty::Float { .. } => format!("rill_f64_to_text((r_f64)({value}))"),
+                        Ty::Text => value,
+                        other => {
+                            let display = format!("{other:?}");
+                            self.unsupported(
+                                expr.span,
+                                &format!("casting `{display}` to text"),
+                                "M3 (stdlib)",
+                            );
+                            "0".into()
+                        }
+                    };
+                }
+                if matches!(from, Ty::Text) {
+                    self.unsupported(expr.span, "casting text to a number", "M3 (stdlib)");
+                    return "0".into();
+                }
+                let target = self.syntax_to_c(ty);
+                format!("(({target})({value}))")
+            }
+            ExprKind::Is { expr: inner, .. } => {
+                self.expr(inner);
+                "0".into()
+            }
+            ExprKind::If {
+                cond,
+                then_branch,
+                else_branch,
+            } => {
+                let ty = self.expr_ty(expr);
+                let result = self.typed_temp(&ty);
+                let condition = self.condition(cond);
+                self.body.push_str(&format!("  if ({condition}) {{\n"));
+                let then_value = self.block(then_branch);
+                if !matches!(ty, Ty::Unit) {
+                    self.body
+                        .push_str(&format!("    {result} = {then_value};\n"));
+                }
+                self.body.push_str("  }");
+                match else_branch {
+                    Some(ElseBranch::Block(block)) => {
+                        self.body.push_str(" else {\n");
+                        let value = self.block(block);
+                        if !matches!(ty, Ty::Unit) {
+                            self.body.push_str(&format!("    {result} = {value};\n"));
+                        }
+                        self.body.push_str("  }\n");
+                    }
+                    Some(ElseBranch::If(other)) => {
+                        self.body.push_str(" else {\n");
+                        let value = self.expr(other);
+                        if !matches!(ty, Ty::Unit) {
+                            self.body.push_str(&format!("    {result} = {value};\n"));
+                        }
+                        self.body.push_str("  }\n");
+                    }
+                    None => self.body.push_str("\n"),
+                }
+                if matches!(ty, Ty::Unit) {
+                    "rill_unit()".into()
+                } else {
+                    result
+                }
+            }
+            ExprKind::Match { scrutinee, .. } => {
+                self.expr(scrutinee);
+                self.unsupported(
+                    expr.span,
+                    "`match`",
+                    "M3 (enum lowering lands with the tagged-union pass)",
+                );
+                "0".into()
+            }
+            ExprKind::Comptime { .. } => {
+                self.unsupported(expr.span, "`comptime` evaluation", "M3 (rill-comptime)");
+                "0".into()
+            }
+            ExprKind::Unsafe { body } => self.block(body),
+            ExprKind::Handler { kind, .. } => {
+                let name = match kind {
+                    rill_ast::HandlerKind::Option => "option",
+                    rill_ast::HandlerKind::One => "one",
+                    rill_ast::HandlerKind::All => "all",
+                };
+                self.unsupported(
+                    expr.span,
+                    &format!("the `{name} {{ … }}` handler"),
+                    "M3/M4 (rooted in `<decides>` lowering)",
+                );
+                "0".into()
+            }
+            ExprKind::Concurrent { kind, .. } => {
+                let name = match kind {
+                    rill_ast::ConcurrentKind::Sync => "sync",
+                    rill_ast::ConcurrentKind::Race => "race",
+                    rill_ast::ConcurrentKind::Rush => "rush",
+                    rill_ast::ConcurrentKind::Branch => "branch",
+                };
+                self.unsupported(
+                    expr.span,
+                    &format!("`{name} {{ … }}` structured concurrency"),
+                    "M5 (`<suspends>`)",
+                );
+                "0".into()
+            }
+            ExprKind::Error => "0".into(),
+        }
+    }
+
+    fn literal(&mut self, kind: LiteralKind, text: &str) -> String {
+        match kind {
+            LiteralKind::Int => {
+                let cleaned = text.replace('_', "");
+                let (digits, suffix) = match cleaned.rsplit_once(|c: char| c.is_alphabetic()) {
+                    Some((digits, suffix)) => {
+                        // `0x1f` and `1e9` end in letters that belong to the number.
+                        let is_suffix = matches!(
+                            suffix,
+                            "i8" | "i16"
+                                | "i32"
+                                | "i64"
+                                | "i128"
+                                | "isize"
+                                | "u8"
+                                | "u16"
+                                | "u32"
+                                | "u64"
+                                | "u128"
+                                | "usize"
+                        );
+                        if is_suffix {
+                            (digits, Some(suffix))
+                        } else {
+                            (cleaned.as_str(), None)
+                        }
+                    }
+                    None => (cleaned.as_str(), None),
+                };
+                match suffix {
+                    Some("i64") => format!("((r_i64){digits})"),
+                    Some("u64") | Some("usize") => format!("((r_u64){digits})"),
+                    Some("i32") => format!("((r_i32){digits})"),
+                    Some("u32") => format!("((r_u32){digits})"),
+                    Some("u8") => format!("((r_u8){digits})"),
+                    _ => digits.to_string(),
+                }
+            }
+            LiteralKind::Float => {
+                let cleaned = text.replace('_', "");
+                match cleaned.rsplit_once(|c: char| c.is_alphabetic()) {
+                    Some((digits, "f32")) => format!("((r_f32){digits})"),
+                    Some((digits, "f64")) => format!("((r_f64){digits})"),
+                    _ => format!("((r_f64){cleaned})"),
+                }
+            }
+            LiteralKind::Bool => {
+                if text == "true" {
+                    "1".into()
+                } else {
+                    "0".into()
+                }
+            }
+            LiteralKind::Text | LiteralKind::RawText => {
+                let inner = match kind {
+                    LiteralKind::RawText => text
+                        .trim_start_matches("r#\"")
+                        .trim_end_matches("\"#")
+                        .to_string(),
+                    _ => text.trim_matches('"').to_string(),
+                };
+                format!("\"{}\"", escape_c(&inner))
+            }
+            LiteralKind::Char => format!("'{}'", escape_c(text.trim_matches('\''))),
+        }
+    }
+
+    fn binary(&mut self, whole: &Expr, op: BinaryOp, lhs: &Expr, rhs: &Expr) -> String {
+        match op {
+            BinaryOp::Flow => self.field_access(whole, lhs, rhs),
+            BinaryOp::Concat => {
+                let left = self.expr(lhs);
+                let right = self.expr(rhs);
+                let ty = self.expr_ty(lhs);
+                match ty {
+                    Ty::Text => format!("rill_text_concat({left}, {right})"),
+                    other => {
+                        let display = format!("{other:?}");
+                        self.unsupported(
+                            whole.span,
+                            &format!("`++` on `{display}`"),
+                            "M3 (stdlib)",
+                        );
+                        "0".into()
+                    }
+                }
+            }
+            _ => {
+                let left = self.expr(lhs);
+                let right = self.expr(rhs);
+                let operator = match op {
+                    BinaryOp::Add => "+",
+                    BinaryOp::Sub => "-",
+                    BinaryOp::Mul => "*",
+                    BinaryOp::Div => "/",
+                    BinaryOp::Rem => "%",
+                    BinaryOp::BitAnd => "&",
+                    BinaryOp::BitXor => "^",
+                    BinaryOp::BitOr => "|",
+                    BinaryOp::Shl => "<<",
+                    BinaryOp::Shr => ">>",
+                    BinaryOp::And => "&&",
+                    BinaryOp::Or => "||",
+                    BinaryOp::Eq | BinaryOp::EqEq => "==",
+                    BinaryOp::NotEq => "!=",
+                    BinaryOp::Lt => "<",
+                    BinaryOp::Gt => ">",
+                    BinaryOp::LtEq => "<=",
+                    BinaryOp::GtEq => ">=",
+                    BinaryOp::Concat
+                    | BinaryOp::RangeInclusive
+                    | BinaryOp::RangeHalfOpen
+                    | BinaryOp::Choice
+                    | BinaryOp::Flow => {
+                        self.unsupported(whole.span, "this operator", "M3");
+                        return "0".into();
+                    }
+                };
+                format!("(({left}) {operator} ({right}))")
+            }
+        }
+    }
+
+    /// `record.field` / `tuple.0` / `slice.field`.
+    fn field_access(&mut self, whole: &Expr, lhs: &Expr, rhs: &Expr) -> String {
+        let base = self.expr(lhs);
+        let field = match rhs.path_res() {
+            Some((segments, _)) => self.text(segments[0]).to_string(),
+            None => match &rhs.kind {
+                ExprKind::Literal { text, .. } => text.clone(),
+                _ => {
+                    self.unsupported(whole.span, "this `.` selection", "M3");
+                    return "0".into();
+                }
+            },
+        };
+        let base_ty = self.expr_ty(lhs);
+        match base_ty {
+            Ty::Tuple(_) => format!("({base})._{field}"),
+            Ty::Record(_) | Ty::Nominal(_) => format!("({base}).{field}"),
+            _ => {
+                self.unsupported(whole.span, "this field projection", "M2 (projections)");
+                "0".into()
+            }
+        }
+    }
+
+    fn condition(&mut self, cond: &Cond) -> String {
+        match cond {
+            Cond::Expr(expr) => self.expr(expr),
+            Cond::Bind { value, .. } => {
+                // `if (x := e)` — the binding is checked; the C backend only
+                // lowers it when `e` is a plain value.
+                self.unsupported(
+                    cond.span(),
+                    "an `if (x := …)` failable binding",
+                    "M3 (`<decides>`)",
+                );
+                let _ = self.expr(value);
+                "1".into()
+            }
+        }
+    }
+
+    fn block(&mut self, block: &Block) -> String {
+        self.push_scope();
+        for stmt in &block.stmts {
+            self.stmt(stmt);
+        }
+        let value = match &block.tail {
+            Some(tail) => self.expr(tail),
+            None => "rill_unit()".to_string(),
+        };
+        self.pop_scope();
+        value
+    }
+
+    // -- statements --------------------------------------------------------
+
+    fn stmt(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Error(_) => {}
+            Stmt::Var {
+                local, ty, init, ..
+            } => {
+                let init_code = self.expr(init);
+                let declared = ty
+                    .as_ref()
+                    .map(|ast| self.syntax_to_c(ast))
+                    .unwrap_or_else(|| self.c_type(&self.local_ty(*local)));
+                let name = format!("v_{}", self.text(self.hir.local(*local).name));
+                self.body
+                    .push_str(&format!("  {declared} {name} = {init_code};\n"));
+                self.bind(*local, name);
+            }
+            Stmt::Bind { pattern, value, .. } => {
+                let value_code = self.expr(value);
+                self.bind_pattern(pattern, &value_code);
+            }
+            Stmt::Set { place, value, .. } => {
+                let target = self.place(place);
+                let value_code = self.expr(value);
+                self.body.push_str(&format!("  {target} = {value_code};\n"));
+            }
+            Stmt::Yield { span, .. } => {
+                self.unsupported(*span, "`yield`", "M2 (projections)");
+            }
+            Stmt::TryBind { span, .. } => {
+                self.unsupported(*span, "`let?`", "M3 (`<decides>`)");
+            }
+            Stmt::When { span, .. } => {
+                self.unsupported(*span, "`when` guards", "M3 (`<decides>`)");
+            }
+            Stmt::For {
+                pattern,
+                iter,
+                body,
+                span,
+            } => self.for_loop(*span, pattern, iter, body),
+            Stmt::Let { item, .. } => {
+                // Local `let`s are emitted as file-scope static functions.
+                if let Some(inner) = self.hir.try_item(*item) {
+                    if let ItemKind::Fn(def) = &inner.kind {
+                        self.emit_fn(*item, def);
+                    }
+                }
+            }
+            Stmt::Expr(expr) => {
+                // The value is discarded, but the expression must still *run*:
+                // calls carry their side effects in the emitted text.
+                let value = self.expr(expr);
+                if !matches!(self.expr_ty(expr), Ty::Unit) {
+                    self.body.push_str(&format!("  (void)({value});\n"));
+                } else {
+                    self.body.push_str(&format!("  {value};\n"));
+                }
+            }
+        }
+    }
+
+    fn for_loop(&mut self, span: Span, pattern: &Pattern, iter: &Expr, body: &Block) {
+        let Pattern::Binding { local, .. } = pattern else {
+            self.unsupported(span, "this loop pattern", "M3");
+            return;
+        };
+        let index = format!("i_{}", self.text(self.hir.local(*local).name));
+        let element = self.c_type(&self.local_ty(*local));
+        let iter_ty = self.expr_ty(iter);
+        match (&iter_ty, &iter.kind) {
+            (Ty::Range(_), ExprKind::Binary { op, lhs, rhs }) => {
+                let start_code = self.expr(lhs);
+                let end_code = self.expr(rhs);
+                let comparison = if *op == BinaryOp::RangeInclusive {
+                    "<="
+                } else {
+                    "<"
+                };
+                self.body.push_str(&format!(
+                    "  for ({element} {index} = {start_code}; {index} {comparison} {end_code}; {index} += 1) {{\n"
+                ));
+                self.push_scope();
+                self.bind(*local, index.clone());
+                self.block_inner(body);
+                self.pop_scope();
+                self.body.push_str("  }\n");
+            }
+            (Ty::Array { len, .. }, _) => {
+                let iter_code = self.expr(iter);
+                let length = match len {
+                    Some(n) => n.to_string(),
+                    None => format!("((r_i64)({iter_code}).len)"),
+                };
+                let access = match len {
+                    Some(_) => format!("({iter_code}).v[{index}]"),
+                    None => format!("({iter_code}).ptr[{index}]"),
+                };
+                let item = format!("{index}_item");
+                self.body.push_str(&format!(
+                    "  for (r_i64 {index} = 0; {index} < {length}; {index} += 1) {{\n    {element} {item} = {access};\n"
+                ));
+                self.push_scope();
+                self.bind(*local, item);
+                self.block_inner(body);
+                self.pop_scope();
+                self.body.push_str("  }\n");
+            }
+            _ => {
+                self.unsupported(span, "this loop iterator", "M3");
+            }
+        }
+    }
+
+    /// The statements and tail of a block, without opening a scope.
+    fn block_inner(&mut self, block: &Block) {
+        for stmt in &block.stmts {
+            self.stmt(stmt);
+        }
+        if let Some(tail) = &block.tail {
+            self.expr(tail);
+        }
+    }
+
+    /// An assignable C lvalue.
+    fn place(&mut self, expr: &Expr) -> String {
+        match &expr.kind {
+            ExprKind::Path {
+                res: Res::Local(id),
+                ..
+            } => self
+                .c_name(*id)
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "0".into()),
+            ExprKind::Index { base, args } => {
+                let base = self.expr(base);
+                let index = args
+                    .first()
+                    .map(|a| self.expr(&a.value))
+                    .unwrap_or_else(|| "0".into());
+                let base_ty = self.expr_ty(base_expr(expr));
+                match base_ty {
+                    Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
+                    _ => format!("({base}).ptr[{index}]"),
+                }
+            }
+            ExprKind::Binary {
+                op: BinaryOp::Flow,
+                lhs,
+                rhs,
+            } => {
+                let base = self.expr(lhs);
+                let field = match rhs.path_res() {
+                    Some((segments, _)) => self.text(segments[0]).to_string(),
+                    None => "0".to_string(),
+                };
+                let base_ty = self.expr_ty(lhs);
+                match base_ty {
+                    Ty::Tuple(_) => format!("({base})._{field}"),
+                    _ => format!("({base}).{field}"),
+                }
+            }
+            _ => {
+                self.unsupported(expr.span, "this assignment target", "M2 (places)");
+                "0".into()
+            }
+        }
+    }
+
+    fn bind_pattern(&mut self, pattern: &Pattern, value: &str) {
+        match pattern {
+            Pattern::Wildcard(_) | Pattern::Error(_) | Pattern::Literal { .. } => {}
+            Pattern::Binding { local, .. } => {
+                let name = format!("v_{}", self.text(self.hir.local(*local).name));
+                let ty = self.local_ty(*local);
+                let c_ty = self.c_type(&ty);
+                self.body.push_str(&format!("  {c_ty} {name} = {value};\n"));
+                self.bind(*local, name);
+            }
+            Pattern::Tuple { .. } => {
+                self.unsupported(pattern.span(), "tuple destructuring in a binding", "M3");
+            }
+            Pattern::Constructor { .. } => {
+                self.unsupported(pattern.span(), "this destructuring pattern", "M3");
+            }
+        }
+    }
+
+    fn call(&mut self, whole: &Expr, callee: &Expr, args: &[rill_hir::Arg]) -> String {
+        // Enum construction: `Type::Variant a b` or a record construction
+        // `Name a b`.
+        if let ExprKind::Path { segments, res } = &callee.kind {
+            if let Res::Item(id) = res {
+                if let Some(ItemTy::Nominal(nominal)) = self.checked.item_ty(*id) {
+                    return self.construct(whole, *nominal, segments, args);
+                }
+            }
+        }
+        if let ExprKind::Binary {
+            op: BinaryOp::Flow, ..
+        } = &callee.kind
+        {
+            self.unsupported(
+                whole.span,
+                "a `.`-method call",
+                "M2/M3 (projections and stdlib)",
+            );
+            return "0".into();
+        }
+        let callee_code = self.expr(callee);
+        let callee_ty = self.expr_ty(callee);
+        let mut arguments: Vec<String> = args.iter().map(|arg| self.expr(&arg.value)).collect();
+        match &callee_ty {
+            Ty::Fn { params, .. } => {
+                // Pass conventions do not change the C ABI for value types.
+                for (param, argument) in params.iter().zip(arguments.iter_mut()) {
+                    if let Ty::Unit = param {
+                        *argument = "rill_unit()".to_string();
+                    }
+                }
+            }
+            _ => {}
+        }
+        format!("{callee_code}({})", arguments.join(", "))
+    }
+
+    fn construct(
+        &mut self,
+        whole: &Expr,
+        nominal: NominalId,
+        _segments: &[Symbol],
+        args: &[rill_hir::Arg],
+    ) -> String {
+        let kind = self.checked.nominal(nominal).kind.clone();
+        let values: Vec<String> = args.iter().map(|arg| self.expr(&arg.value)).collect();
+        match kind {
+            NominalKind::Record(fields) | NominalKind::View(fields) => {
+                let temp = self.fresh("rec_");
+                let name = self.c_type(&Ty::Record(nominal));
+                let field_inits: Vec<String> = fields
+                    .iter()
+                    .zip(values.iter())
+                    .map(|(field, value)| format!(".{} = {value}", self.text(field.name)))
+                    .collect();
+                self.body.push_str(&format!(
+                    "  {name} {temp} = {{ {} }};\n",
+                    field_inits.join(", ")
+                ));
+                temp
+            }
+            NominalKind::Enum(_) => {
+                self.unsupported(whole.span, "an enum constructor", "M3 (tagged-union pass)");
+                return "0".into();
+            }
+            NominalKind::Opaque | NominalKind::Alias(_) => {
+                self.unsupported(whole.span, "this constructor", "M3");
+                return "0".into();
+            }
+        }
+    }
+}
+
+/// The base expression of an index, for type queries.
+fn base_expr(expr: &Expr) -> &Expr {
+    match &expr.kind {
+        ExprKind::Index { base, .. } => base,
+        _ => expr,
+    }
+}
+
+/// Escapes a Rill text literal for C, decoding the escapes Rill accepts.
+fn escape_c(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut chars = text.chars();
+    while let Some(c) = chars.next() {
+        match c {
+            '\\' => match chars.next() {
+                Some('n') => out.push_str("\\n"),
+                Some('t') => out.push_str("\\t"),
+                Some('r') => out.push_str("\\r"),
+                Some('0') => out.push_str("\\0"),
+                Some('\\') => out.push_str("\\\\"),
+                Some('"') => out.push_str("\\\""),
+                Some(other) => out.push(other),
+                None => out.push('\\'),
+            },
+            '"' => out.push_str("\\\""),
+            '\n' => out.push_str("\\n"),
+            other => out.push(other),
+        }
+    }
+    out
+}
