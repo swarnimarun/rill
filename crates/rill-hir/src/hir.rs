@@ -36,6 +36,9 @@ pub enum Res {
     /// A `use`-imported name; the import's path segments (resolution of the
     /// import itself belongs to the module graph / linker).
     Import(Vec<Symbol>),
+    /// A compiler-provided name whose shape is contextual (`zeroed ()` inside
+    /// `comptime { … }`, the seed of `core`'s intrinsics).
+    Builtin,
     /// The name selected by `.` after an expression (`t.rotation`,
     /// `xs.fold`): a field or a method, decided with types. Not an error when
     /// nothing of that name is in scope, because fields are not bindings.

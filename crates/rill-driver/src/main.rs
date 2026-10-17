@@ -28,7 +28,8 @@ BUILD OPTIONS:
     --emit-c           also print the generated C file's path
 
 FRONT-END OPTIONS:
-    --dump=<cst|ast>   print the lossless CST or the Debug form of the AST
+    --dump=<cst|ast|hir>
+                       print the lossless CST, the AST or the resolved HIR
     --stats            print item/statement/token counts
     -h, --help         show this message
 ";
@@ -63,7 +64,7 @@ fn main() -> ExitCode {
             other if other.starts_with("--dump=") => {
                 let value = &other["--dump=".len()..];
                 match value {
-                    "cst" | "ast" => dump = Some(value.to_string()),
+                    "cst" | "ast" | "hir" => dump = Some(value.to_string()),
                     _ => {
                         eprintln!("error: unknown dump format `{value}` (expected cst or ast)");
                         return ExitCode::from(2);
@@ -103,6 +104,10 @@ fn main() -> ExitCode {
     match dump.as_deref() {
         Some("cst") => print_out(&frontend.cst.root.dump(&source_map)),
         Some("ast") => print_line(&format!("{:#?}", frontend.module)),
+        Some("hir") => {
+            let hir = lower(&frontend);
+            print_line(&format!("{hir:#?}"));
+        }
         _ => {}
     }
 

@@ -1016,18 +1016,16 @@ impl Checker<'_> {
         match &expr.kind {
             ExprKind::Error => Ty::Error,
             ExprKind::Literal { kind, text } => match kind {
-                rill_ast::LiteralKind::Int => {
-                    match numeric_suffix(text) {
-                        Some(ty) => ty,
-                        None => {
-                            let var = self.fresh();
-                            if let Ty::Var(id) = var {
-                                self.int_literals.push(id);
-                            }
-                            var
+                rill_ast::LiteralKind::Int => match numeric_suffix(text) {
+                    Some(ty) => ty,
+                    None => {
+                        let var = self.fresh();
+                        if let Ty::Var(id) = var {
+                            self.int_literals.push(id);
                         }
+                        var
                     }
-                }
+                },
                 rill_ast::LiteralKind::Float => match numeric_suffix(text) {
                     Some(ty) => ty,
                     None => {
@@ -1040,7 +1038,10 @@ impl Checker<'_> {
                 },
                 rill_ast::LiteralKind::Bool => Ty::Bool,
                 rill_ast::LiteralKind::Text | rill_ast::LiteralKind::RawText => Ty::Text,
-                rill_ast::LiteralKind::Char => Ty::Int { bits: 8, signed: false },
+                rill_ast::LiteralKind::Char => Ty::Int {
+                    bits: 8,
+                    signed: false,
+                },
             },
             ExprKind::Path { segments, res } => match res {
                 Res::Local(id) => self
@@ -1102,6 +1103,18 @@ impl Checker<'_> {
                             ret: Box::new(Ty::Unit),
                             effects: vec![Effect::Io],
                         }
+                    } else if last.as_deref() == Some("map_file") {
+                        Ty::Fn {
+                            params: vec![Ty::Text],
+                            ret: Box::new(Ty::Text),
+                            effects: vec![Effect::Io, Effect::Fs],
+                        }
+                    } else if last.as_deref() == Some("file_size") {
+                        Ty::Fn {
+                            params: vec![Ty::Text],
+                            ret: Box::new(Ty::usize_()),
+                            effects: vec![Effect::Io, Effect::Fs],
+                        }
                     } else if last.as_deref() == Some("read_file") {
                         Ty::Fn {
                             params: vec![Ty::Text],
@@ -1116,9 +1129,12 @@ impl Checker<'_> {
                         }
                     }
                 }
+                // A builtin takes the type its context requires.
+                Res::Builtin => self.fresh(),
                 Res::Field => Ty::Error,
                 Res::Error => Ty::Error,
             },
+            ExprKind::Tuple(elems) if elems.is_empty() => Ty::Unit,
             ExprKind::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| self.expr(e)).collect()),
             ExprKind::Array(elems) => {
                 let elem = self.fresh();
@@ -1169,7 +1185,10 @@ impl Checker<'_> {
                             let index = self.expr(&arg.value);
                             self.unify(&Ty::usize_(), &index, arg.span, "checking an index");
                         }
-                        Ty::Int { bits: 8, signed: false }
+                        Ty::Int {
+                            bits: 8,
+                            signed: false,
+                        }
                     }
                     Ty::Error => Ty::Error,
                     other => {
@@ -1285,7 +1304,15 @@ impl Checker<'_> {
                 }
                 result
             }
-            ExprKind::Comptime { body } => self.block(body),
+            ExprKind::Comptime { body } => {
+                if self.is_zeroed(body) {
+                    // `comptime { zeroed () }` takes the type its context
+                    // requires (PLAN §11's scratch buffers and pools).
+                    self.fresh()
+                } else {
+                    self.block(body)
+                }
+            }
             ExprKind::Unsafe { body } => self.block(body),
             ExprKind::Handler { kind, body } => {
                 let previous = self.handler;
@@ -1337,12 +1364,48 @@ impl Checker<'_> {
         let left = self.expr(lhs);
         // A `.`-selected name is a field or a method of the left operand.
         if op == BinaryOp::Flow {
-            if let Some((_, Res::Field)) = rhs.path_res() {
-                let field = self.rhs_field(rhs, &left, span);
-                self.expr_types.insert(rhs.id, field.clone());
-                // `items.fold 0 { … }` composes into a call; the checker reports
-                // the composed form so the result type comes from the callee.
-                return field;
+            match &rhs.kind {
+                ExprKind::Path {
+                    res: Res::Field, ..
+                } => {
+                    let field = self.member_ty(&left, rhs, span);
+                    self.expr_types.insert(rhs.id, field.clone());
+                    return field;
+                }
+                ExprKind::Index { base, args }
+                    if matches!(base.path_res(), Some((_, Res::Field))) =>
+                {
+                    // `x.field[i]` — select the field, then index it.
+                    let field_ty = self.member_ty(&left, base, span);
+                    self.expr_types.insert(base.id, field_ty.clone());
+                    let index_ty = self.expr(args.first().map(|a| &a.value).unwrap_or(lhs));
+                    match self.resolve_deep(&field_ty) {
+                        Ty::Array { elem, .. } => {
+                            self.unify(&Ty::usize_(), &index_ty, span, "checking an index");
+                            return (*elem).clone();
+                        }
+                        Ty::Text => {
+                            self.unify(&Ty::usize_(), &index_ty, span, "checking an index");
+                            return Ty::Int {
+                                bits: 8,
+                                signed: false,
+                            };
+                        }
+                        Ty::Error => return Ty::Error,
+                        other => {
+                            let display = self.display(&other);
+                            self.err(span, format!("cannot index `{display}`"));
+                            return Ty::Error;
+                        }
+                    }
+                }
+                ExprKind::Call { callee, .. }
+                    if matches!(callee.path_res(), Some((_, Res::Field))) =>
+                {
+                    self.unsupported_member_call(callee, span);
+                    return Ty::Error;
+                }
+                _ => {}
             }
         }
         let right = self.expr(rhs);
@@ -1420,11 +1483,50 @@ impl Checker<'_> {
         }
     }
 
-    /// Types `lhs.field`, with a diagnostic listing the available fields.
-    fn rhs_field(&mut self, rhs: &Expr, base: &Ty, span: Span) -> Ty {
-        let name = match rhs.path_res() {
+    /// True for `comptime { zeroed () }`: the value is a zero-initialised buffer
+    /// whose type comes from the context.
+    fn is_zeroed(&self, block: &Block) -> bool {
+        if !block.stmts.is_empty() {
+            return false;
+        }
+        let Some(tail) = block.tail.as_deref() else {
+            return false;
+        };
+        match &tail.kind {
+            ExprKind::Call { callee, args } if args.is_empty() => match callee.path_res() {
+                Some((segments, _)) => segments
+                    .last()
+                    .map(|s| self.text(*s) == "zeroed")
+                    .unwrap_or(false),
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
+    /// `.`-method calls (`items.fold 0 { … }`) need the method/projection pass
+    /// (M2) before they can be typed.
+    fn unsupported_member_call(&mut self, callee: &Expr, span: Span) {
+        let name = match callee.path_res() {
+            Some((segments, _)) => self.text(segments[0]).to_string(),
+            None => "…".to_string(),
+        };
+        self.diagnostics.push(
+            Diagnostic::error(span, format!("`{name}` is called as a method")).note(
+                "method/projection calls are not typed yet (M2); call it as a free function"
+                    .to_string(),
+            ),
+        );
+    }
+
+    /// Types a `.`-selected member, with a diagnostic listing the fields.
+    fn member_ty(&mut self, base: &Ty, member: &Expr, span: Span) -> Ty {
+        let name = match member.path_res() {
             Some((segments, _)) => segments[0],
-            None => return Ty::Error,
+            None => {
+                self.err(span, "a `.` selection must name a field");
+                return Ty::Error;
+            }
         };
         let text = self.text(name).to_string();
         match self.resolve_deep(base) {
@@ -1813,7 +1915,9 @@ pub fn split_numeric_suffix(text: &str) -> (&str, Option<&str>) {
         if let Some(digits) = text.strip_suffix(suffix) {
             let last_digit = digits.chars().last();
             match last_digit {
-                Some(c) if c.is_ascii_digit() || c.is_ascii_hexdigit() => return (digits, Some(suffix)),
+                Some(c) if c.is_ascii_digit() || c.is_ascii_hexdigit() => {
+                    return (digits, Some(suffix))
+                }
                 _ => continue,
             }
         }
@@ -1826,16 +1930,40 @@ pub fn numeric_suffix(text: &str) -> Option<Ty> {
     let cleaned = text.replace('_', "");
     let (_, suffix) = split_numeric_suffix(&cleaned);
     Some(match suffix? {
-        "i8" => Ty::Int { bits: 8, signed: true },
-        "i16" => Ty::Int { bits: 16, signed: true },
+        "i8" => Ty::Int {
+            bits: 8,
+            signed: true,
+        },
+        "i16" => Ty::Int {
+            bits: 16,
+            signed: true,
+        },
         "i32" => Ty::i32(),
-        "i64" | "isize" => Ty::Int { bits: 64, signed: true },
-        "i128" => Ty::Int { bits: 128, signed: true },
-        "u8" => Ty::Int { bits: 8, signed: false },
-        "u16" => Ty::Int { bits: 16, signed: false },
-        "u32" => Ty::Int { bits: 32, signed: false },
+        "i64" | "isize" => Ty::Int {
+            bits: 64,
+            signed: true,
+        },
+        "i128" => Ty::Int {
+            bits: 128,
+            signed: true,
+        },
+        "u8" => Ty::Int {
+            bits: 8,
+            signed: false,
+        },
+        "u16" => Ty::Int {
+            bits: 16,
+            signed: false,
+        },
+        "u32" => Ty::Int {
+            bits: 32,
+            signed: false,
+        },
         "u64" | "usize" => Ty::usize_(),
-        "u128" => Ty::Int { bits: 128, signed: false },
+        "u128" => Ty::Int {
+            bits: 128,
+            signed: false,
+        },
         "f16" => Ty::Float { bits: 16 },
         "f32" => Ty::Float { bits: 32 },
         "f64" => Ty::Float { bits: 64 },

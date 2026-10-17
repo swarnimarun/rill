@@ -47,6 +47,10 @@ const RUNTIME: &str = r#"// ---- rill runtime (libc-backed bootstrap) ----------
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <fcntl.h>
+#include <sys/mman.h>
+#include <sys/stat.h>
+#include <unistd.h>
 
 typedef int8_t   r_i8;
 typedef int16_t  r_i16;
@@ -100,6 +104,26 @@ static r_text rill_f64_to_text(r_f64 v) {
 }
 
 static void rill_println(r_text s) { printf("%s\n", s); }
+
+// Maps a file read-only; the program gets its input without copying it.
+static r_text rill_map_file(r_text path) {
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) { return ""; }
+  struct stat st;
+  if (fstat(fd, &st) != 0 || st.st_size == 0) { close(fd); return ""; }
+  void *data = mmap(NULL, (size_t)st.st_size, PROT_READ, MAP_PRIVATE, fd, 0);
+  if (data == MAP_FAILED) { close(fd); return ""; }
+  return (r_text)data;
+}
+
+static r_i64 rill_file_size(r_text path) {
+  int fd = open(path, O_RDONLY);
+  if (fd < 0) { return 0; }
+  struct stat st;
+  r_i64 size = (fstat(fd, &st) == 0) ? (r_i64)st.st_size : 0;
+  close(fd);
+  return size;
+}
 
 // Reads a whole file as text; programs get their input without a stdlib.
 static r_text rill_read_file(r_text path) {
@@ -720,6 +744,27 @@ impl<'a> Generator<'a> {
         name
     }
 
+    /// True for `comptime { zeroed () }`: emitted as a C zero initialiser, so
+    /// pools and scratch buffers need no element list.
+    fn is_zeroed(&self, block: &Block) -> bool {
+        if !block.stmts.is_empty() {
+            return false;
+        }
+        let Some(tail) = block.tail.as_deref() else {
+            return false;
+        };
+        match &tail.kind {
+            ExprKind::Call { callee, args } if args.is_empty() => match callee.path_res() {
+                Some((segments, _)) => segments
+                    .last()
+                    .map(|s| self.text(*s) == "zeroed")
+                    .unwrap_or(false),
+                None => false,
+            },
+            _ => false,
+        }
+    }
+
     fn expr_ty(&self, expr: &Expr) -> Ty {
         self.checked.expr_ty(expr.id).cloned().unwrap_or(Ty::Error)
     }
@@ -756,6 +801,10 @@ impl<'a> Generator<'a> {
                         "rill_println".into()
                     } else if text.len() == 2 && text[0] == "io" && text[1] == "read_file" {
                         "rill_read_file".into()
+                    } else if text.len() == 2 && text[0] == "io" && text[1] == "map_file" {
+                        "rill_map_file".into()
+                    } else if text.len() == 2 && text[0] == "io" && text[1] == "file_size" {
+                        "rill_file_size".into()
                     } else {
                         self.unsupported(
                             expr.span,
@@ -764,6 +813,14 @@ impl<'a> Generator<'a> {
                         );
                         "0".into()
                     }
+                }
+                Res::Builtin => {
+                    self.unsupported(
+                        expr.span,
+                        "this builtin outside `comptime { zeroed () }`",
+                        "M3 (intrinsics)",
+                    );
+                    "0".into()
                 }
                 Res::Field => {
                     self.unsupported(expr.span, "an unresolved field reference", "M2");
@@ -928,9 +985,17 @@ impl<'a> Generator<'a> {
                 }
             }
             ExprKind::Match { scrutinee, arms } => self.match_expr(expr, scrutinee, arms),
-            ExprKind::Comptime { .. } => {
-                self.unsupported(expr.span, "`comptime` evaluation", "M3 (rill-comptime)");
-                "0".into()
+            ExprKind::Comptime { body } => {
+                if self.is_zeroed(body) {
+                    // C zero-fills the rest of an aggregate initialiser, which is
+                    // exactly what `zeroed ()` promises.
+                    let ty = self.expr_ty(expr);
+                    let c_ty = self.c_type(&ty);
+                    format!("({c_ty}){{0}}")
+                } else {
+                    self.unsupported(expr.span, "`comptime` evaluation", "M3 (rill-comptime)");
+                    "0".into()
+                }
             }
             ExprKind::Unsafe { body } => self.block(body),
             ExprKind::Handler { kind, .. } => {
@@ -1013,7 +1078,10 @@ impl<'a> Generator<'a> {
 
     fn binary(&mut self, whole: &Expr, op: BinaryOp, lhs: &Expr, rhs: &Expr) -> String {
         match op {
-            BinaryOp::Flow => self.field_access(whole, lhs, rhs),
+            BinaryOp::Flow => match &rhs.kind {
+                ExprKind::Index { base, args } => self.indexed_member(whole, lhs, base, args),
+                _ => self.field_access(whole, lhs, rhs),
+            },
             BinaryOp::Concat => {
                 let left = self.expr(lhs);
                 let right = self.expr(rhs);
@@ -1086,6 +1154,38 @@ impl<'a> Generator<'a> {
             Ty::Record(_) | Ty::Nominal(_) => format!("({base}).{field}"),
             _ => {
                 self.unsupported(whole.span, "this field projection", "M2 (projections)");
+                "0".into()
+            }
+        }
+    }
+
+    /// `x.field[i]` — select the field, then index into it.
+    fn indexed_member(
+        &mut self,
+        whole: &Expr,
+        lhs: &Expr,
+        member: &Expr,
+        args: &[rill_hir::Arg],
+    ) -> String {
+        let base = self.expr(lhs);
+        let field = match member.path_res() {
+            Some((segments, _)) => self.text(segments[0]).to_string(),
+            None => {
+                self.unsupported(whole.span, "this indexed `.` selection", "M3");
+                return "0".into();
+            }
+        };
+        let index = args
+            .first()
+            .map(|arg| self.expr(&arg.value))
+            .unwrap_or_else(|| "0".into());
+        // The member's own type was recorded while checking.
+        match self.expr_ty(member) {
+            Ty::Array { len: Some(_), .. } => format!("({base}).{field}.v[{index}]"),
+            Ty::Array { len: None, .. } => format!("({base}).{field}.ptr[{index}]"),
+            Ty::Text => format!("((r_u8)({base}).{field}[{index}])"),
+            _ => {
+                self.unsupported(whole.span, "this indexed member", "M3");
                 "0".into()
             }
         }

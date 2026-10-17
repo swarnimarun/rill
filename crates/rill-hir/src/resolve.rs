@@ -400,6 +400,9 @@ impl<'a> Resolver<'a> {
             return Res::Import(path.clone());
         }
         let text = self.text(head).to_string();
+        if is_builtin(&text) {
+            return Res::Builtin;
+        }
         self.err(span, format!("unknown name `{text}`"));
         Res::Error
     }
@@ -617,12 +620,12 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    /// Resolution without an unknown-name diagnostic.
+    /// Resolution for *member* position (the right of `.`): locals are never
+    /// members, so a field named after a local still selects the field. Items
+    /// are consulted because methods (`xs.split_at[i]`, `from.balance_mut`) are
+    /// functions and projections.
     fn resolve_quietly(&self, segments: &[Symbol]) -> Res {
         let head = segments[0];
-        if let Some(res) = self.lookup_local(head) {
-            return res;
-        }
         if let Some(id) = self.lookup_scoped_item(head) {
             return Res::Item(id);
         }
@@ -634,6 +637,10 @@ impl<'a> Resolver<'a> {
         }
         if let Some(path) = self.imports.get(&head) {
             return Res::Import(path.clone());
+        }
+        let text = self.text(head);
+        if is_builtin(text) {
+            return Res::Builtin;
         }
         Res::Field
     }
@@ -914,4 +921,9 @@ fn pattern_bindings(pattern: &AstPattern) -> Vec<(Symbol, Span)> {
         AstPattern::Constructor { args, .. } => args.iter().flat_map(pattern_bindings).collect(),
         _ => Vec::new(),
     }
+}
+
+/// Compiler-provided names the front end knows by name.
+pub fn is_builtin(name: &str) -> bool {
+    matches!(name, "zeroed")
 }

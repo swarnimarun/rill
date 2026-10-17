@@ -132,3 +132,43 @@ fn capturing_closures_are_reported() {
     let rendered = rill_diagnostics::render_all(&sm, &diagnostics);
     assert!(rendered.contains("captures locals"), "{rendered}");
 }
+
+#[test]
+fn range_forms_iterate_as_the_table_specifies() {
+    // §2.5: `..` is inclusive, `..<` is half-open. Pin both so `for` loops
+    // cannot quietly change meaning (the v1 benchmark mismatch came from this).
+    let (source, diagnostics) = emit(
+        "let count_inclusive (n: i32) -> i32 <computes> = {\n\
+             var c = 0;\n\
+             for (i := 0..n) set c = c + 1;\n\
+             c\n\
+         };\n\
+         let count_half_open (n: i32) -> i32 <computes> = {\n\
+             var c = 0;\n\
+             for (i := 0..<n) set c = c + 1;\n\
+             c\n\
+         };\n\
+         let main () -> i32 <computes> = count_inclusive 3 * 10 + count_half_open 3;\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    // `for (i := 0..n)` -> `i_x <= n`; `for (i := 0..<n)` -> `i_x < n`.
+    assert!(
+        source.contains("<= p_n"),
+        "inclusive `..` uses `<=`:\n{source}"
+    );
+    assert!(
+        source.contains("< p_n"),
+        "half-open `..<` uses `<`:\n{source}"
+    );
+}
+
+#[test]
+fn range_iteration_counts_at_runtime() {
+    // 0..3 iterates 3 times, 0..<3 iterates 3 times, 0..2 iterates 3 times.
+    let (_, diagnostics) = emit(
+        "let a (n: i32) -> i32 <computes> = { var c = 0; for (i := 0..n) set c = c + 1; c };\n\
+         let b (n: i32) -> i32 <computes> = { var c = 0; for (i := 0..<n) set c = c + 1; c };\n\
+         let main () -> i32 <computes> = a 2 * 100 + b 3 * 10 + a 0;\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+}
