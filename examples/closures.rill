@@ -1,0 +1,14 @@
+use std::io;
+
+# Non-capturing closures become plain function pointers.
+
+let apply (n: i32) -> i32 <computes> = {
+    inc := { x -> x + 1 };
+    dbl := { x -> x * 2 };
+    dbl (inc n)
+};
+
+let main () -> i32 <io> = {
+    io::println ("apply 20 = " ++ (apply 20 as String));
+    apply 20
+};

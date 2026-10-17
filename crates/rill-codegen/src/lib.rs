@@ -363,6 +363,27 @@ impl<'a> Generator<'a> {
         }
     }
 
+    /// A declaration of `name` with type `ty`. Function pointers need the
+    /// name inside the declarator (`r_i32 (*f)(r_i32)`), not before it.
+    fn c_decl(&mut self, ty: &Ty, name: &str) -> String {
+        match ty {
+            Ty::Fn { params, ret, .. } => {
+                let ret = self.c_type(ret);
+                let params: Vec<String> = params.iter().map(|p| self.c_type(p)).collect();
+                let params = if params.is_empty() {
+                    "void".to_string()
+                } else {
+                    params.join(", ")
+                };
+                format!("{ret} (*{name})({params})")
+            }
+            other => {
+                let c_ty = self.c_type(other);
+                format!("{c_ty} {name}")
+            }
+        }
+    }
+
     fn mangle(&mut self, ty: &Ty) -> String {
         match ty {
             Ty::Int { bits, signed } => format!("{}{}", if *signed { 'i' } else { 'u' }, bits),
@@ -452,6 +473,83 @@ impl<'a> Generator<'a> {
 
     /// Parameter list from the *checked* signature: nominal parameters must use
     /// their checked C type (`en_Shape`), never a syntax guess.
+    /// A lambda becomes a C function. A lambda whose body reads locals declared
+    /// outside itself needs a closure environment, which is reported until the
+    /// closure pass lands.
+    fn lambda(&mut self, whole: &Expr, params: &[Pattern], body: &Block) -> String {
+        let mut referenced = Vec::new();
+        collect_local_refs_block(body, &mut referenced);
+        let captured: Vec<LocalId> = referenced
+            .into_iter()
+            .filter(|id| {
+                let info = self.hir.local(*id);
+                // A local whose declaration lies outside the lambda's own span
+                // is a capture.
+                let inside = info.span.start >= whole.span.start
+                    && info.span.end <= whole.span.end
+                    && !whole.span.is_dummy();
+                !inside
+            })
+            .collect();
+        if !captured.is_empty() {
+            self.unsupported(
+                whole.span,
+                "a closure that captures locals",
+                "M3 (closure environments)",
+            );
+            return "0".into();
+        }
+
+        let name = self.fresh("lambda");
+        let param_tys: Vec<Ty> = params
+            .iter()
+            .map(|pattern| self.pattern_ty(pattern))
+            .collect();
+        let ret_ty = match &body.tail {
+            Some(tail) => self.expr_ty(tail),
+            None => Ty::Unit,
+        };
+        let ret = self.c_type(&ret_ty);
+        let params_c: Vec<String> = param_tys
+            .iter()
+            .enumerate()
+            .map(|(index, ty)| {
+                let ty = ty.clone();
+                self.c_decl(&ty, &format!("a{index}"))
+            })
+            .collect();
+
+        let previous_body = std::mem::take(&mut self.body);
+        let previous_scopes = std::mem::take(&mut self.scopes);
+        let previous_temp = self.temp;
+        self.temp = 0;
+        self.push_scope();
+        for (index, pattern) in params.iter().enumerate() {
+            self.bind_pattern(pattern, &format!("a{index}"));
+        }
+        let value = self.block(body);
+        let mut lambda_body = std::mem::take(&mut self.body);
+        if matches!(ret_ty, Ty::Unit) {
+            lambda_body.push_str("  return rill_unit();\n");
+        } else {
+            lambda_body.push_str(&format!("  return {value};\n"));
+        }
+        self.pop_scope();
+        self.body = previous_body;
+        self.scopes = previous_scopes;
+        self.temp = previous_temp;
+
+        self.defs.push_str(&format!(
+            "static {ret} {name}({}) {{\n{lambda_body}}}\n",
+            if params_c.is_empty() {
+                "void".to_string()
+            } else {
+                params_c.join(", ")
+            }
+        ));
+        name
+    }
+
     fn param_list(&mut self, id: ItemId, def: &rill_hir::FnDef) -> String {
         let checked_params: Vec<Ty> = match self.checked.item_ty(id).cloned() {
             Some(ItemTy::Fn { params, .. }) => params,
@@ -471,7 +569,15 @@ impl<'a> Generator<'a> {
                 .name
                 .map(|n| self.text(n).to_string())
                 .unwrap_or_else(|| "_".to_string());
-            parts.push(format!("{ty} p_{name}"));
+            let ty_struct = match checked_params.get(index).cloned() {
+                Some(ty) if !matches!(ty, Ty::Error) => ty,
+                _ => Ty::Error,
+            };
+            if let Ty::Fn { .. } = ty_struct {
+                parts.push(self.c_decl(&ty_struct, &format!("p_{name}")));
+            } else {
+                parts.push(format!("{ty} p_{name}"));
+            }
         }
         if parts.is_empty() {
             "void".to_string()
@@ -657,14 +763,7 @@ impl<'a> Generator<'a> {
                 }
             }
             ExprKind::Block(block) => self.block(block),
-            ExprKind::Lambda { .. } => {
-                self.unsupported(
-                    expr.span,
-                    "a closure",
-                    "M3 (needs capture analysis; `FOLD`-style helpers arrive with the stdlib)",
-                );
-                "0".into()
-            }
+            ExprKind::Lambda { params, body } => self.lambda(expr, params, body),
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Index { base, args } => {
                 let base = self.expr(base);
@@ -1184,9 +1283,9 @@ impl<'a> Generator<'a> {
             Pattern::Binding { local, .. } => {
                 let name = format!("v_{}", self.text(self.hir.local(*local).name));
                 let ty = self.local_ty(*local);
-                let c_ty = self.c_type(&ty);
+                let decl = self.c_decl(&ty, &name);
                 self.bind(*local, name.clone());
-                vec![format!("  {c_ty} {name} = {value};")]
+                vec![format!("  {decl} = {value};")]
             }
             Pattern::Tuple { elems, .. } => {
                 let temp = self.fresh("tup_");
@@ -1431,6 +1530,97 @@ impl<'a> Generator<'a> {
                 return "0".into();
             }
         }
+    }
+}
+
+/// Locals referenced anywhere in `expr` (used for capture analysis).
+fn collect_local_refs_expr(expr: &Expr, out: &mut Vec<LocalId>) {
+    match &expr.kind {
+        ExprKind::Path { res: Res::Local(id), .. } => {
+            if !out.contains(id) {
+                out.push(*id);
+            }
+        }
+        ExprKind::Tuple(elems) | ExprKind::Array(elems) => {
+            for element in elems {
+                collect_local_refs_expr(element, out);
+            }
+        }
+        ExprKind::Block(block) | ExprKind::Comptime { body: block } | ExprKind::Unsafe { body: block } => {
+            collect_local_refs_block(block, out)
+        }
+        ExprKind::Lambda { body, .. } => collect_local_refs_block(body, out),
+        ExprKind::Call { callee, args } | ExprKind::Index { base: callee, args } => {
+            collect_local_refs_expr(callee, out);
+            for arg in args {
+                collect_local_refs_expr(&arg.value, out);
+            }
+        }
+        ExprKind::Try { base } => collect_local_refs_expr(base, out),
+        ExprKind::Unary { operand, .. } => collect_local_refs_expr(operand, out),
+        ExprKind::Binary { lhs, rhs, .. } => {
+            collect_local_refs_expr(lhs, out);
+            collect_local_refs_expr(rhs, out);
+        }
+        ExprKind::Cast { expr, .. } | ExprKind::Is { expr, .. } => {
+            collect_local_refs_expr(expr, out)
+        }
+        ExprKind::If { cond, then_branch, else_branch } => {
+            match cond {
+                Cond::Expr(expr) => collect_local_refs_expr(expr, out),
+                Cond::Bind { value, .. } => collect_local_refs_expr(value, out),
+            }
+            collect_local_refs_block(then_branch, out);
+            match else_branch {
+                Some(ElseBranch::Block(block)) => collect_local_refs_block(block, out),
+                Some(ElseBranch::If(expr)) => collect_local_refs_expr(expr, out),
+                None => {}
+            }
+        }
+        ExprKind::Match { scrutinee, arms } => {
+            collect_local_refs_expr(scrutinee, out);
+            for arm in arms {
+                if let Some(guard) = &arm.guard {
+                    collect_local_refs_expr(guard, out);
+                }
+                collect_local_refs_expr(&arm.body, out);
+            }
+        }
+        ExprKind::Handler { body, .. } => collect_local_refs_block(body, out),
+        ExprKind::Concurrent { arms, .. } => {
+            for arm in arms {
+                collect_local_refs_expr(arm, out);
+            }
+        }
+        ExprKind::Literal { .. } | ExprKind::Path { .. } | ExprKind::Error => {}
+    }
+}
+
+fn collect_local_refs_block(block: &Block, out: &mut Vec<LocalId>) {
+    for stmt in &block.stmts {
+        match stmt {
+            Stmt::Var { init, .. } => collect_local_refs_expr(init, out),
+            Stmt::Set { place, value, .. } => {
+                collect_local_refs_expr(place, out);
+                collect_local_refs_expr(value, out);
+            }
+            Stmt::Yield { value, .. } => collect_local_refs_expr(value, out),
+            Stmt::Bind { value, .. } => collect_local_refs_expr(value, out),
+            Stmt::TryBind { value, .. } => collect_local_refs_expr(value, out),
+            Stmt::When { cond, .. } => match cond {
+                Cond::Expr(expr) => collect_local_refs_expr(expr, out),
+                Cond::Bind { value, .. } => collect_local_refs_expr(value, out),
+            },
+            Stmt::For { iter, body, .. } => {
+                collect_local_refs_expr(iter, out);
+                collect_local_refs_block(body, out);
+            }
+            Stmt::Expr(expr) => collect_local_refs_expr(expr, out),
+            Stmt::Let { .. } | Stmt::Error(_) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_local_refs_expr(tail, out);
     }
 }
 

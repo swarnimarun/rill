@@ -100,3 +100,35 @@ fn enums_match_and_guards_lower() {
     // Three arms + the guard, all inside one `done`-flagged sequence.
     assert!(source.contains("done"), "{source}");
 }
+
+#[test]
+fn non_capturing_closures_become_function_pointers() {
+    let (source, diagnostics) = emit(
+        "let apply (n: i32) -> i32 <computes> = {\n\
+             inc := { x -> x + 1 };\n\
+             inc n\n\
+         };\n\
+         let main () -> i32 <computes> = apply 41;\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    assert!(source.contains("lambda0"), "{source}");
+    // The binding is a function-pointer variable, not a value copy.
+    assert!(source.contains("(*v_inc)"), "{source}");
+}
+
+#[test]
+fn capturing_closures_are_reported() {
+    let (frontend, sm) = parse_and_lower_text(
+        "c.rill",
+        "let f (n: i32) -> i32 <computes> = {\n\
+             g := { x -> x + n };\n\
+             g 1\n\
+         };\n\
+         let main () -> i32 <computes> = f 1;\n",
+    );
+    let hir = lower(&frontend);
+    let checked = check(&frontend, &hir);
+    let (_, diagnostics) = emit_c(&frontend, &hir, &checked);
+    let rendered = rill_diagnostics::render_all(&sm, &diagnostics);
+    assert!(rendered.contains("captures locals"), "{rendered}");
+}
