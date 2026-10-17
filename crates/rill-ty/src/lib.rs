@@ -274,14 +274,10 @@ impl<'a> Checker<'a> {
         // Unconstrained numeric literals default like Rust: `{integer}` -> i32,
         // `{float}` -> f64.
         for id in self.int_literals.clone() {
-            if !self.subst.contains_key(&id) {
-                self.subst.insert(id, Ty::i32());
-            }
+            self.subst.entry(id).or_insert(Ty::i32());
         }
         for id in self.float_literals.clone() {
-            if !self.subst.contains_key(&id) {
-                self.subst.insert(id, Ty::Float { bits: 64 });
-            }
+            self.subst.entry(id).or_insert(Ty::Float { bits: 64 });
         }
         let mut resolved = HashMap::new();
         for (id, ty) in self.expr_types.iter() {
