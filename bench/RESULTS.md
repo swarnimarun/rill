@@ -37,6 +37,17 @@ casts (`as`), string concatenation and `io::println`.
 Reproduce: `sh bench/run.sh` (regenerates the input, builds all three, times
 three runs each).
 
+## v2 status: work in progress, no numbers yet
+
+`bench/json_query.v2.rill` (zero-copy pool over an mmapped document, query +
+flatbuffer-style serialisation) compiles with the new compiler features but is
+**not yet correct**: after fixing a pool-overflow (65k nodes for a document
+needing ~88k) and two scan loops that spun over the whole file, the tiny
+fixture still faults. Its own cursor/span bookkeeping in the nested-object
+branch is the suspect. Rust and Zig counterparts will be written against the
+same design only once the Rill version is verified, so the three stay
+comparable.
+
 ## Planned rounds
 
 * **v2** — real JSON parsing: strings with escapes, numbers, whitespace

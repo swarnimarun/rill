@@ -1,31 +1,45 @@
 use std::io;
 
-# v2: zero-copy JSON query engine. The document is mmap'ed; parsing builds a
-# node pool of (kind, span) records that point back into the mapped bytes, so
-# no string is copied and no heap allocation happens. Queries then walk the
-# pool: count rows whose "score" is above a threshold and sum their "id".
+# WIP — NOT YET CORRECT. This program exercises the new compiler
+# features (mmap input, `.`-selected indexed members, zeroed pools) but its own
+# cursor/span bookkeeping still crashes on the tiny fixture; it is committed as
+# a work item, not as a verified benchmark. See bench/RESULTS.md.
+#
+# v2: zero-copy JSON query engine.
+# The document is mmap'ed (no copy); parsing fills a node pool where every node
+# is a (kind, span, first-child, next-sibling, child-count) record pointing back
+# into the mapped bytes. Queries then walk the pool, and a flatbuffer-style
+# pass serialises the query result into a byte buffer and reads it back.
 
 type Node = record {
-    kind: u8;       # 0 object, 1 array, 2 string, 3 number, 4 literal
+    kind: u8;
     start: usize;
     end: usize;
     first: usize;
+    next: usize;
     count: usize;
 };
 
 type Pool = record {
-    nodes: [Node; 65536];
+    nodes: [Node; 16384];
     used: usize;
+    failed: Bool;
 };
 
+let capacity () -> usize <computes> = 16384u64;
+
 let push (p: inout Pool, kind: u8, start: usize, end: usize) -> usize <computes> = {
-    var idx = p.used;
-    set p.nodes[idx].kind = kind;
-    set p.nodes[idx].start = start;
-    set p.nodes[idx].end = end;
-    set p.nodes[idx].first = 0;
-    set p.nodes[idx].count = 0;
-    set p.used = idx + 1;
+    var idx: usize = 0u64;
+    if (p.used < capacity ()) {
+        set idx = p.used;
+        set p.nodes[idx].kind = kind;
+        set p.nodes[idx].start = start;
+        set p.nodes[idx].end = end;
+        set p.nodes[idx].first = 0u64;
+        set p.nodes[idx].next = 0u64;
+        set p.nodes[idx].count = 0u64;
+        set p.used = idx + 1u64
+    } else { set p.failed = true };
     idx
 };
 
@@ -34,107 +48,62 @@ let is_ws (b: u8) -> Bool <computes> = b = ' ' or b = '\n' or b = '\r' or b = '\
 let skip_ws (s: Text, i: inout usize, n: usize) -> () <computes> = {
     if (i < n) {
         if (is_ws s[i]) {
-            set i = i + 1;
+            set i = i + 1u64;
             skip_ws (s, inout i, n)
         } else { () }
     } else { () }
 };
 
-let scan_string (s: Text, i: inout usize, n: usize) -> () <computes> = {
-    set i = i + 1;
-    for (k := 0..<n) {
-        if (i < n) {
-            var b: u8 = s[i];
-            set i = i + 1;
-            if (b = '\\') { set i = i + 1 }
-            else if (b = '"') { set i = i + 1000000000 }
+let scan_string_tail (s: Text, i: inout usize, n: usize) -> () <computes> = {
+    if (i < n) {
+        var b: u8 = s[i];
+        set i = i + 1u64;
+        if (b = '\\') {
+            set i = i + 1u64;
+            scan_string_tail (s, inout i, n)
+        } else if (b = '"') {
+            ()
+        } else {
+            scan_string_tail (s, inout i, n)
         }
-    }
+    } else { () }
+};
+
+let scan_string (s: Text, i: inout usize, n: usize) -> () <computes> = {
+    set i = i + 1u64;
+    scan_string_tail (s, inout i, n)
 };
 
 let scan_bare (s: Text, i: inout usize, n: usize) -> () <computes> = {
-    for (k := 0..<n) {
-        if (i < n) {
-            var b: u8 = s[i];
-            if (b = ',' or b = '}' or b = ']' or is_ws b) { set i = i + 1000000000 }
-            else { set i = i + 1 }
+    if (i < n) {
+        var b: u8 = s[i];
+        if (b = ',' or b = '}' or b = ']' or is_ws b) { () }
+        else {
+            set i = i + 1u64;
+            scan_bare (s, inout i, n)
         }
-    }
+    } else { () }
 };
 
-let parse_value (s: Text, i: inout usize, n: usize, p: inout Pool) -> usize <computes> = {
-    skip_ws (s, inout i, n);
-    var start = i;
-    var b: u8 = s[i];
-    if (b = '{') {
-        var node = push (inout p, 0u8, start, start);
-        set i = i + 1;
-        var first: usize = 0u64;
-        var count: usize = 0u64;
-        for (k := 0..<n) {
-            skip_ws (s, inout i, n);
-            if (i < n) {
-                if (s[i] = '}') { set i = i + 1; set k = k + 1000000000 }
-                else {
-                    var key = push (inout p, 2u8, i, i);
-                    scan_string (s, inout i, n);
-                    set p.nodes[key].end = i;
-                    skip_ws (s, inout i, n);
-                    set i = i + 1; # ':'
-                    var child = parse_value (s, inout i, n, inout p);
-                    if (first = 0u64) { set first = child } else { () };
-                    set p.nodes[child].count = count;
-                    set count = count + 1;
-                    skip_ws (s, inout i, n);
-                    if (i < n) { if (s[i] = ',') { set i = i + 1 } else { () } } else { () }
-                }
-            }
-        };
-        set p.nodes[node].first = first;
-        set p.nodes[node].count = count;
-        set p.nodes[node].end = i;
-        node
-    } else if (b = '[') {
-        var node = push (inout p, 1u8, start, start);
-        set i = i + 1;
-        var first: usize = 0u64;
-        var count: usize = 0u64;
-        for (k := 0..<n) {
-            skip_ws (s, inout i, n);
-            if (i < n) {
-                if (s[i] = ']') { set i = i + 1; set k = k + 1000000000 }
-                else {
-                    var child = parse_value (s, inout i, n, inout p);
-                    if (first = 0u64) { set first = child } else { () };
-                    set p.nodes[child].count = count;
-                    set count = count + 1;
-                    skip_ws (s, inout i, n);
-                    if (i < n) { if (s[i] = ',') { set i = i + 1 } else { () } } else { () }
-                }
-            }
-        };
-        set p.nodes[node].first = first;
-        set p.nodes[node].count = count;
-        set p.nodes[node].end = i;
-        node
-    } else if (b = '"') {
-        var node = push (inout p, 2u8, start, start);
-        scan_string (s, inout i, n);
-        set p.nodes[node].end = i;
-        node
-    } else {
-        var node = push (inout p, 3u8, start, start);
-        scan_bare (s, inout i, n);
-        set p.nodes[node].end = i;
-        node
-    }
+let number_value (s: Text, start: usize, end: usize) -> i64 <computes> = {
+    var value: i64 = 0;
+    var negative = false;
+    var len: usize = 0u64;
+    if (end > start) { set len = end - start } else { () };
+    for (k := 0..<len) {
+        var b: u8 = s[start + k];
+        if (b = '-') { set negative = true }
+        else { if (b >= '0' and b <= '9') { set value = value * 10 + ((b - '0') as i64) } else { () } }
+    };
+    if (negative) { 0 - value } else { value }
 };
 
 let text_eq (s: Text, start: usize, end: usize, lit: Text) -> Bool <computes> = {
     var same = true;
-    var len = end - start;
+    var len: usize = 0u64;
+    if (end > start) { set len = end - start } else { set same = false };
     if (len = size lit) { () } else { set same = false };
-    for (k := 0..<len) {
+    for (k := 0..<size lit) {
         if (same) {
             if (s[start + k] = lit[k]) { () } else { set same = false }
         } else { () }
@@ -142,32 +111,167 @@ let text_eq (s: Text, start: usize, end: usize, lit: Text) -> Bool <computes> = 
     same
 };
 
-let number_gt (s: Text, start: usize, end: usize, threshold: i64) -> Bool <computes> = {
-    var value: i64 = 0;
-    for (k := 0..<(end - start)) {
-        var b: u8 = s[start + k];
-        if (b >= '0' and b <= '9') { set value = value * 10 + ((b - '0') as i64) }
-        else { set k = k + 1000000000 }
-    };
-    value > threshold
+# Parses one value; returns (node, next_index) packed with the cursor kept in
+# `i` through an inout parameter.
+let parse_value (s: Text, i: inout usize, n: usize, p: inout Pool) -> usize <computes> = {
+    skip_ws (s, inout i, n);
+    var start = i;
+    var node: usize = 0u64;
+    if (i < n) {
+        var b: u8 = s[i];
+        if (b = '{') {
+            set node = push (inout p, 0u8, start, start);
+            set i = i + 1u64;
+            var last: usize = 0u64;
+            var count: usize = 0u64;
+            var members = true;
+            for (k := 0..<n) {
+                if (members and i < n) {
+                    skip_ws (s, inout i, n);
+                    if (i < n) {
+                        if (s[i] = '}') { set i = i + 1u64; set members = false }
+                        else {
+                            var key = push (inout p, 2u8, i, i);
+                            scan_string (s, inout i, n);
+                            set p.nodes[key].end = i;
+                            if (count = 0u64) { set p.nodes[node].first = key }
+                            else { set p.nodes[last].next = key };
+                            set last = key;
+                            skip_ws (s, inout i, n);
+                            if (i < n) { if (s[i] = ':') { set i = i + 1u64 } else { () } } else { () }
+                            var value = parse_value (s, inout i, n, inout p);
+                            set p.nodes[key].next = value;
+                            set last = value;
+                            set count = count + 1u64;
+                            set p.nodes[node].count = count;
+                            skip_ws (s, inout i, n);
+                            if (i < n) {
+                                if (s[i] = ',') { set i = i + 1u64 } else { () }
+                            } else { () }
+                        }
+                    } else { () }
+                } else { () }
+            };
+            set p.nodes[node].end = i;
+            node
+        } else if (b = '[') {
+            set node = push (inout p, 1u8, start, start);
+            set i = i + 1u64;
+            var last: usize = 0u64;
+            var count: usize = 0u64;
+            var members = true;
+            for (k := 0..<n) {
+                if (members and i < n) {
+                    skip_ws (s, inout i, n);
+                    if (i < n) {
+                        if (s[i] = ']') { set i = i + 1u64; set members = false }
+                        else {
+                            var value = parse_value (s, inout i, n, inout p);
+                            if (count = 0u64) { set p.nodes[node].first = value }
+                            else { set p.nodes[last].next = value };
+                            set last = value;
+                            set count = count + 1u64;
+                            set p.nodes[node].count = count;
+                            skip_ws (s, inout i, n);
+                            if (i < n) {
+                                if (s[i] = ',') { set i = i + 1u64 } else { () }
+                            } else { () }
+                        }
+                    } else { () }
+                } else { () }
+            };
+            set p.nodes[node].end = i;
+            node
+        } else if (b = '"') {
+            set node = push (inout p, 2u8, start, start);
+            scan_string (s, inout i, n);
+            set p.nodes[node].end = i;
+            node
+        } else {
+            set node = push (inout p, 3u8, start, start);
+            scan_bare (s, inout i, n);
+            set p.nodes[node].end = i;
+            node
+        }
+    } else { node };
+    node
 };
 
-let query (s: Text, p: Pool, threshold: i64, rows: usize) -> i64 <computes> = {
-    var ids: i64 = 0;
-    for (r := 0..<rows) {
-        var id = p.nodes[p.nodes[r].first].count;
-        set ids = ids + (id as i64)
+# The value node of `key` inside object `object`, or 0 when absent.
+let member_from (s: Text, p: Pool, child: usize, key: Text) -> usize <computes> = {
+    if (child = 0u64) { 0u64 }
+    else if (text_eq (s, p.nodes[child].start + 1u64, p.nodes[child].end - 1u64, key)) {
+        p.nodes[child].next
+    } else {
+        member_from (s, p, p.nodes[child].next, key)
+    }
+};
+
+let member (s: Text, p: Pool, object: usize, key: Text) -> usize <computes> = {
+    member_from (s, p, p.nodes[object].first, key)
+};
+
+let rows_of (s: Text, p: Pool, root: usize) -> usize <computes> = member (s, p, root, "rows");
+
+# Query: count rows whose "score" exceeds `threshold` and sum their "id".
+let query_rows (s: Text, p: Pool, row: usize, threshold: i64) -> i64 <computes> = {
+    if (row = 0u64) { 0 }
+    else {
+        var score = member (s, p, row, "score");
+        var contribution: i64 = 0;
+        if (score != 0u64) {
+            if (number_value (s, p.nodes[score].start, p.nodes[score].end) > threshold) {
+                var id = member (s, p, row, "id");
+                if (id != 0u64) {
+                    set contribution = number_value (s, p.nodes[id].start, p.nodes[id].end)
+                } else { () }
+            } else { () }
+        } else { () };
+        contribution + query_rows (s, p, p.nodes[row].next, threshold)
+    }
+};
+
+let query (s: Text, p: Pool, root: usize, threshold: i64) -> i64 <computes> = {
+    query_rows (s, p, p.nodes[rows_of (s, p, root)].first, threshold)
+};
+
+# Flatbuffer-style serialisation of the query result into a byte buffer, then
+# read back, so the benchmark covers structured write/read as well.
+let serialise (sum: i64, count: i64, out: inout [u8; 64]) -> i64 <computes> = {
+    var k: usize = 0u64;
+    for (byte := 0..<8) {
+        set out[k] = ((sum >> ((byte as i64) * 8)) as u8);
+        set k = k + 1u64
     };
-    ids
+    for (byte := 0..<8) {
+        set out[k] = ((count >> ((byte as i64) * 8)) as u8);
+        set k = k + 1u64
+    };
+    var read_back: i64 = 0;
+    for (byte := 0..<8) {
+        set read_back = read_back + ((out[byte] as i64) << ((byte as i64) * 8))
+    };
+    read_back + count
+};
+
+let run_once (s: Text, n: usize, threshold: i64) -> i64 <computes> = {
+    var pool: Pool = comptime { zeroed () };
+    var i: usize = 0u64;
+    var root = parse_value (s, inout i, n, inout pool);
+    var sum = query (s, pool, root, threshold);
+    var buffer: [u8; 64] = comptime { zeroed () };
+    var check = serialise (sum, pool.used as i64, inout buffer);
+    if (pool.failed) { 0 - 1 } else { sum + check - check }
 };
 
 let main () -> i32 <io> = {
-    var path = "/tmp/bench.json";
+    var path = "/tmp/bench_small.json";
     var s = io::map_file path;
     var n = io::file_size path;
-    var p: Pool = comptime { zeroed () };
-    var i: usize = 0;
-    var root = parse_value (s, inout i, n, inout p);
-    io::println ("nodes " ++ (p.used as String) ++ " root " ++ (root as String));
+    var total: i64 = 0;
+    for (rep := 0..<200i64) {
+        set total = total + run_once (s, n, 500i64)
+    };
+    io::println ("rill v2 total=" ++ (total as String));
     0
 };
