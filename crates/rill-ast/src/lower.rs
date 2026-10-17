@@ -136,6 +136,8 @@ impl<'a> Lower<'a> {
                     let mut segments = Vec::new();
                     while let Some(tok) = pc.name() {
                         segments.push(self.ident(tok));
+                        // `a::b::c` — the separator between segments.
+                        pc.eat(K::ColonColon);
                     }
                     if let Some(group) = cur.expect_node(K::UseGroup) {
                         let mut gc = Cursor::new(group);
@@ -1342,6 +1344,7 @@ impl<'a> Lower<'a> {
                 let mut cur = Cursor::new(node);
                 cur.eat(K::KwMatch);
                 let scrutinee = self.expr_child(&mut cur, node.span);
+                cur.eat(K::LBrace);
                 let mut arms = Vec::new();
                 while let Some(arm) = cur.expect_node(K::MatchArm) {
                     arms.push(self.match_arm(arm));

@@ -742,11 +742,19 @@ pub mod bp {
     pub const AND: u8 = 4; // and
     pub const EQUALITY: u8 = 5; // = == !=
     pub const COMPARE: u8 = 6; // < > <= >=
-    pub const FLOW: u8 = 7; // .
-    pub const CONCAT: u8 = 8; // ++
-    pub const ADDITIVE: u8 = 9; // + - ^ |&
-    pub const MULTIPLICATIVE: u8 = 10; // * / % << >> &
-    pub const CAST: u8 = 11; // as is
+    pub const CONCAT: u8 = 7; // ++
+    pub const ADDITIVE: u8 = 8; // + - ^ |&
+    pub const MULTIPLICATIVE: u8 = 9; // * / % << >> &
+    pub const CAST: u8 = 10; // as is
+    /// `.` — uniform call / field projection.
+    ///
+    /// The §2.5 table places `.` *below* concatenation and arithmetic, which
+    /// would read `from.balance - amount` as `from . (balance - amount)` and
+    /// `alice.balance as String` as `alice . (balance as String)`. The table's
+    /// own examples (`x . f y ≡ f x y`, `xs . split_at[i]`, `from.balance`)
+    /// only work when `.` binds tighter than every other binary operator while
+    /// staying looser than application, so that is what is implemented.
+    pub const FLOW: u8 = 11;
 }
 
 /// Looks up the binary operator for `kind`, if it is one.

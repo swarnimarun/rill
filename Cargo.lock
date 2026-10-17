@@ -31,6 +31,16 @@ dependencies = [
 ]
 
 [[package]]
+name = "rill-hir"
+version = "0.1.0"
+dependencies = [
+ "rill-ast",
+ "rill-diagnostics",
+ "rill-span",
+ "rill-syntax",
+]
+
+[[package]]
 name = "rill-lexer"
 version = "0.1.0"
 dependencies = [

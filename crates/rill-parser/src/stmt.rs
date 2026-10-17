@@ -29,7 +29,12 @@ impl<'a> Parser<'a> {
             K::KwSet => self.set_stmt(),
             K::KwYield => self.yield_stmt(),
             K::KwWhen => self.when_stmt(),
-            K::KwFor => self.for_stmt(),
+            K::KwFor => {
+                self.for_stmt();
+                // The body may already have consumed the `;`, so its trailing
+                // semicolon is opportunistic rather than required.
+                self.eat(K::Semi);
+            }
             K::Name | K::Underscore if self.nth(1) == K::ColonEq => {
                 self.bind_stmt();
                 self.semi_or_block_end();

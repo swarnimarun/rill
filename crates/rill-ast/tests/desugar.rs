@@ -162,6 +162,11 @@ fn write_expr(frontend: &Frontend, expr: &Expr, out: &mut String) {
             for arm in arms {
                 out.push_str(" (arm ");
                 out.push_str(&pattern_text(frontend, &arm.pattern));
+                if let Some(guard) = &arm.guard {
+                    out.push_str(" (guard ");
+                    write_expr(frontend, guard, out);
+                    out.push(')');
+                }
                 out.push(' ');
                 write_expr(frontend, &arm.body, out);
                 out.push(')');
@@ -528,4 +533,27 @@ fn plain_blocks_and_lambdas_are_left_alone() {
         !body.contains("::bind"),
         "ordinary closures are not builder calls: {body}"
     );
+}
+
+#[test]
+fn match_arms_keep_their_patterns_and_bodies() {
+    let (f, _) = frontend(
+        "let classify (p: Pair) = match p {\n\
+             | Pair (a, b) if a > b -> a,\n\
+             | Pair (a, b) -> b,\n\
+             _ -> 0\n\
+         };\n",
+    );
+    let body = dump(&f, &body_of(&f, "classify"));
+    assert!(body.contains("(match p"), "{body}");
+    assert_eq!(
+        body.matches("(arm ").count(),
+        3,
+        "three arms survive lowering: {body}"
+    );
+    assert!(
+        body.contains("(arm (Pair (a b)) (guard (Gt a b)) a)"),
+        "guard keeps its condition: {body}"
+    );
+    assert!(body.contains("(arm _ 0)"), "wildcard arm: {body}");
 }

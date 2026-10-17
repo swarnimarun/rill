@@ -79,6 +79,22 @@ fn flow_operator_takes_the_application_spine() {
 }
 
 #[test]
+fn flow_binds_tighter_than_arithmetic() {
+    // `from.balance - amount` is `(from.balance) - amount`, and
+    // `alice.balance as String` is `(alice.balance) as String`.
+    let (parse, _) = parse_ok("let f (a: Account, b: i64) = a.balance - b;\n");
+    let root = root(&parse);
+    let sub = root.find(K::BinaryExpr).expect("subtraction");
+    assert!(sub.has_token(K::Minus), "the outermost operator is `-`");
+    let flow = sub.child_list()[0];
+    assert!(
+        flow.has_token(K::Dot),
+        "its left operand is the field access: {flow:?}"
+    );
+    assert_eq!(root.count(K::BinaryExpr), 2, "field access + subtraction");
+}
+
+#[test]
 fn precedence_follows_the_table() {
     let (parse, _) = parse_ok("let r = a + b * c == d;\n");
     let ops = root(&parse).descendants(K::BinaryExpr);
