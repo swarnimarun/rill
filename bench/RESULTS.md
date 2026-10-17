@@ -68,6 +68,27 @@ How it got here, because both gaps were instructive:
 The backend itself was never the bottleneck: v1's byte scan and v2's structured
 parse both emit C that clang optimises to the same shape as the Rust/Zig code.
 
+## v3 — the query engine at scale (577 KB, 262,144-node pool)
+
+Same programs as v2 with the document grown to 576,943 bytes, the node pool
+grown to 262,144 records and 20 repetitions (≈11.5 MB parsed per program). The
+pool lives outside the stack in every language: a module-level `var` becomes a
+file-scope static in Rill (`var pool: Pool = comptime { zeroed () }`), a
+file-scope `var` in Zig, and a heap `Vec` in Rust.
+
+| Program | best of 3 | checksum |
+| --- | --- | --- |
+| Rill (`bench/json_query.v3.rill`) | 0.50s | 159714640 |
+| Rust (`bench/json_query.v3.rs`) | 0.51s | 159714640 |
+| Zig (`bench/json_query.v3.zig`) | 0.50s | 159714640 |
+
+Parity again, and this time it includes the memory-management shape that matters
+for real programs: the pool is placed once, reused across repetitions, and reset
+by an index (`used = 0`), not re-zeroed. Rill needs no new features for that
+beyond module-level statics; `<alloc>`/arenas would let the pool grow instead of
+being sized up front, which is the next benchmark to write (v4: dynamic output,
+i.e. parsed values and serialised buffers whose size is not known in advance).
+
 Two silent miscompilations were found and fixed while making v2 correct:
 a Unit-returning call in a block tail, an `if` branch, or a function body's tail
 was computed and then dropped (so scanner recursion vanished), and `.`-selected

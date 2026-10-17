@@ -207,6 +207,9 @@ impl<'a> Generator<'a> {
     // -- module ------------------------------------------------------------
 
     fn module(&mut self) {
+        // A module scope holds the file-scope statics below, so functions can
+        // refer to them without parameters.
+        self.push_scope();
         // Type definitions first: structs may reference each other.
         for item in self.hir.items() {
             let ItemKind::Type(def) = &item.kind else {
@@ -260,8 +263,48 @@ impl<'a> Generator<'a> {
                 | ItemKind::Trait(_)
                 | ItemKind::Impl(_)
                 | ItemKind::Use(_) => {}
-                ItemKind::Type(_) | ItemKind::Stmt(_) | ItemKind::Placeholder => {}
+                ItemKind::Stmt(stmt) => self.module_static(stmt),
+                ItemKind::Type(_) | ItemKind::Placeholder => {}
             }
+        }
+    }
+
+    /// Module-level `var` / `x := …` declarations become file-scope statics:
+    /// pools, arenas and scratch buffers live outside the stack.
+    fn module_static(&mut self, stmt: &Stmt) {
+        match stmt {
+            Stmt::Var {
+                local, ty, init, ..
+            } => {
+                let init_code = self.expr(init);
+                let checked_ty = self.local_ty(*local);
+                let declared = if matches!(checked_ty, Ty::Error) {
+                    ty.as_ref()
+                        .cloned()
+                        .map(|ast| self.syntax_to_c(&ast))
+                        .unwrap_or_else(|| "r_i64".to_string())
+                } else {
+                    self.c_type(&checked_ty)
+                };
+                let name = format!("g_{}", self.text(self.hir.local(*local).name));
+                self.defs
+                    .push_str(&format!("static {declared} {name} = {init_code};\n"));
+                self.bind(*local, name);
+            }
+            Stmt::Bind { pattern, value, .. } => {
+                // Let a module-level binding initialise from a static too.
+                let value_code = self.expr(value);
+                self.bind_pattern(pattern, &value_code);
+            }
+            Stmt::Expr(expr) => {
+                let value = self.expr(expr);
+                self.emit_discarded(&value);
+                // Module-level expressions run before `main`; keep them in a
+                // synthetic initialiser so they cannot land in a function body.
+                let body = std::mem::take(&mut self.body);
+                self.defs.push_str(&body);
+            }
+            _ => {}
         }
     }
 
@@ -483,9 +526,11 @@ impl<'a> Generator<'a> {
             .push_str(&format!("{linkage}{ret_decl} {final_name}({params});\n"));
 
         let previous = std::mem::take(&mut self.body);
+        // A body sees module-level statics but no enclosing function's locals.
         let previous_scopes = std::mem::take(&mut self.scopes);
-        let previous_temp = self.temp;
         self.temp = 0;
+        self.scopes
+            .push(previous_scopes.first().cloned().unwrap_or_default());
         self.push_scope();
         for param in &def.params {
             if let (Some(local), Some(name)) = (param.local, param.name) {
@@ -521,7 +566,6 @@ impl<'a> Generator<'a> {
         self.pop_scope();
         self.body = previous;
         self.scopes = previous_scopes;
-        self.temp = previous_temp;
         self.defs.push_str(&format!(
             "{linkage}{ret_decl} {final_name}({params}) {{\n{body}}}\n"
         ));
@@ -577,8 +621,9 @@ impl<'a> Generator<'a> {
 
         let previous_body = std::mem::take(&mut self.body);
         let previous_scopes = std::mem::take(&mut self.scopes);
-        let previous_temp = self.temp;
         self.temp = 0;
+        self.scopes
+            .push(previous_scopes.first().cloned().unwrap_or_default());
         self.push_scope();
         for (index, pattern) in params.iter().enumerate() {
             self.bind_pattern(pattern, &format!("a{index}"));
@@ -596,7 +641,6 @@ impl<'a> Generator<'a> {
         self.pop_scope();
         self.body = previous_body;
         self.scopes = previous_scopes;
-        self.temp = previous_temp;
 
         self.defs.push_str(&format!(
             "static {ret} {name}({}) {{\n{lambda_body}}}\n",

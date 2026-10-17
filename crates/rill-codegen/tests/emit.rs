@@ -273,3 +273,25 @@ fn break_exits_only_its_loop() {
     );
     assert!(!diagnostics.has_errors(), "{diagnostics:?}");
 }
+
+#[test]
+fn module_level_vars_become_file_scope_statics() {
+    // Pools and arenas must not sit on the stack: a module-level `var` becomes a
+    // static, and functions refer to it without a parameter.
+    let (source, diagnostics) = emit(
+        "type Node = record { value: i64; };\n\
+         var pool: [Node; 1024] = comptime { zeroed () };\n\
+         var used: usize = 0u64;\n\
+         let push (value: i64) -> usize <computes> = {\n\
+             var idx = used;\n\
+             set pool[idx].value = value;\n\
+             set used = idx + 1u64;\n\
+             idx\n\
+         };\n\
+         let main () -> i32 <computes> = push 41i64 as i32;\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    assert!(source.contains("static "), "a file-scope static:\n{source}");
+    assert!(source.contains("g_pool"), "the pool is a static:\n{source}");
+    assert!(source.contains("g_used"), "{source}");
+}
