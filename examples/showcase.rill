@@ -1,0 +1,67 @@
+use core::slice;
+use core::alloc::StackArena;
+
+# 1. Record with mutable fields and deterministic RAII deinit
+type Account = record {
+    id: u64;
+    var balance: i64;
+};
+
+# 2. First-class `inout` Projection (no `'a` lifetimes needed!)
+project balance_mut (acc: inout Account) -> inout i64 <computes> = {
+    yield inout acc.balance;
+};
+
+# 3. Transactional & Failable Systems Function (`<decides | transacts>`)
+# If `amount > from.balance` or `to.balance` overflows, `<decides>` fails
+# and `<transacts>` automatically rolls back `from.balance`!
+let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | transacts> = {
+    amount > 0;
+    set (from . balance_mut) = from.balance - amount;
+    # If `from.balance` went negative, fail!
+    # The prior mutation to `from.balance` is rolled back automatically!
+    from.balance >= 0;
+    set (to . balance_mut) = to.balance + amount;
+};
+
+# 4. In-place Quicksort using Hylo-style disjoint slice splitting (`<computes>`)
+let quicksort (xs: inout Slice i64) -> () <computes> = {
+    if (size xs > 1) {
+        pivot_idx := partition (inout xs);
+        if (pair := xs . split_at[pivot_idx]) {
+            # `pair.0` and `pair.1` are statically proven disjoint by `rill-borrow`!
+            quicksort (inout pair.0);
+            quicksort (inout pair.1);
+        } else { () }
+    } else { () }
+};
+
+# 5. Main entrypoint combining Arena allocation, Speculative Choice, and Structured Concurrency
+let main () -> i32 <io | suspends> = {
+    var alice = Account 1u64 500i64;
+    var bob   = Account 2u64 100i64;
+
+    # Try transferring 800 (fails & rolls back!), fallback via `|` to transferring 200 (succeeds!)
+    _ := option {
+        transfer[inout alice, inout bob, 800]
+        | transfer[inout alice, inout bob, 200]
+    };
+
+    # `alice.balance` is now 300, `bob.balance` is 300.
+    io::println ("Alice: " ++ (alice.balance as String));
+
+    # Stack-allocated 16KB arena discharges `<alloc>` completely on the stack!
+    var scratch: [u8; 16384] = comptime { zeroed () };
+    StackArena::run (inout scratch) {
+        # Nondeterministic comprehension (`all`) allocated inside `scratch` arena
+        pairs := all {
+            x := 1..5;
+            y := 1..x;
+            when (x + y = 5);
+            (x, y)
+        };
+        io::println ("Valid pairs count: " ++ (size pairs as String))
+    };
+
+    0i32
+};

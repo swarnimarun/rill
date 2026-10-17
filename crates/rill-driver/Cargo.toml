@@ -1,0 +1,15 @@
+[package]
+name = "rill-driver"
+version.workspace = true
+edition.workspace = true
+
+[[bin]]
+name = "rillc"
+path = "src/main.rs"
+
+[dependencies]
+rill-span.workspace = true
+rill-syntax.workspace = true
+rill-parser.workspace = true
+rill-ast.workspace = true
+rill-diagnostics.workspace = true

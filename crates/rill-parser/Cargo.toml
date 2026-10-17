@@ -1,0 +1,10 @@
+[package]
+name = "rill-parser"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+rill-span.workspace = true
+rill-syntax.workspace = true
+rill-lexer.workspace = true
+rill-diagnostics.workspace = true

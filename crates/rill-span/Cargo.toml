@@ -1,0 +1,6 @@
+[package]
+name = "rill-span"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]

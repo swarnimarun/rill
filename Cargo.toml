@@ -1,0 +1,26 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rill-span",
+    "crates/rill-diagnostics",
+    "crates/rill-syntax",
+    "crates/rill-lexer",
+    "crates/rill-parser",
+    "crates/rill-ast",
+    "crates/rill-driver",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+
+[workspace.dependencies]
+rustc-hash = "2"
+smallvec = "1"
+rill-span = { path = "crates/rill-span" }
+rill-diagnostics = { path = "crates/rill-diagnostics" }
+rill-syntax = { path = "crates/rill-syntax" }
+rill-lexer = { path = "crates/rill-lexer" }
+rill-parser = { path = "crates/rill-parser" }
+rill-ast = { path = "crates/rill-ast" }
+rill-driver = { path = "crates/rill-driver" }
