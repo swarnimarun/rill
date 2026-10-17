@@ -400,7 +400,7 @@ impl<'a> Generator<'a> {
             _ => Ty::Unit,
         };
         let ret = self.c_type(&ret_ty);
-        let params = self.param_list(def);
+        let params = self.param_list(id, def);
         let is_main = self
             .hir
             .item(id)
@@ -450,22 +450,23 @@ impl<'a> Generator<'a> {
         ));
     }
 
-    fn param_list(&mut self, def: &rill_hir::FnDef) -> String {
+    /// Parameter list from the *checked* signature: nominal parameters must use
+    /// their checked C type (`en_Shape`), never a syntax guess.
+    fn param_list(&mut self, id: ItemId, def: &rill_hir::FnDef) -> String {
+        let checked_params: Vec<Ty> = match self.checked.item_ty(id).cloned() {
+            Some(ItemTy::Fn { params, .. }) => params,
+            _ => Vec::new(),
+        };
         let mut parts = Vec::new();
-        for param in &def.params {
-            let ty = param
-                .ty
-                .as_ref()
-                .map(|ast| {
-                    let name = param
-                        .name
-                        .map(|n| self.text(n).to_string())
-                        .unwrap_or_default();
-                    let _ = name;
-                    ast.clone()
-                })
-                .map(|ast| self.ast_param_ty(&ast))
-                .unwrap_or_else(|| "r_i64".to_string());
+        for (index, param) in def.params.iter().enumerate() {
+            let ty = match checked_params.get(index).cloned() {
+                Some(ty) if !matches!(ty, Ty::Error) => self.c_type(&ty),
+                _ => param
+                    .ty
+                    .clone()
+                    .map(|ast| self.syntax_to_c(&ast))
+                    .unwrap_or_else(|| "r_i64".to_string()),
+            };
             let name = param
                 .name
                 .map(|n| self.text(n).to_string())
@@ -478,14 +479,6 @@ impl<'a> Generator<'a> {
             parts.join(", ")
         }
     }
-
-    fn ast_param_ty(&mut self, ast: &rill_ast::Type) -> String {
-        // Parameters were typed during checking; re-derive the C type from the
-        // checked signature instead of the syntax.
-        let ty = self.syntax_to_c(ast);
-        ty
-    }
-
     fn syntax_to_c(&mut self, ast: &rill_ast::Type) -> String {
         match ast {
             rill_ast::Type::Path { segments, .. } => {
@@ -602,7 +595,15 @@ impl<'a> Generator<'a> {
                         "0".into()
                     }
                 },
-                Res::Item(id) => self.item_c_name(*id),
+                Res::Item(id) => {
+                    // A nominal in value position: a payload-less variant is a
+                    // value (`Empty`), anything else needs arguments.
+                    if let Some(ItemTy::Nominal(nominal)) = self.checked.item_ty(*id) {
+                        let nominal = *nominal;
+                        return self.construct(expr, nominal, segments, &[]);
+                    }
+                    self.item_c_name(*id)
+                }
                 Res::Import(_) => {
                     let text: Vec<&str> = segments.iter().map(|s| self.text(*s)).collect();
                     if text.len() == 2 && text[0] == "io" && text[1] == "println" {
@@ -781,15 +782,7 @@ impl<'a> Generator<'a> {
                     result
                 }
             }
-            ExprKind::Match { scrutinee, .. } => {
-                self.expr(scrutinee);
-                self.unsupported(
-                    expr.span,
-                    "`match`",
-                    "M3 (enum lowering lands with the tagged-union pass)",
-                );
-                "0".into()
-            }
+            ExprKind::Match { scrutinee, arms } => self.match_expr(expr, scrutinee, arms),
             ExprKind::Comptime { .. } => {
                 self.unsupported(expr.span, "`comptime` evaluation", "M3 (rill-comptime)");
                 "0".into()
@@ -1012,10 +1005,14 @@ impl<'a> Generator<'a> {
                 local, ty, init, ..
             } => {
                 let init_code = self.expr(init);
-                let declared = ty
-                    .as_ref()
-                    .map(|ast| self.syntax_to_c(ast))
-                    .unwrap_or_else(|| self.c_type(&self.local_ty(*local)));
+                let checked_ty = self.local_ty(*local);
+                let declared = if matches!(checked_ty, Ty::Error) {
+                    ty.as_ref()
+                        .map(|ast| self.syntax_to_c(&ast.clone()))
+                        .unwrap_or_else(|| "r_i64".to_string())
+                } else {
+                    self.c_type(&checked_ty)
+                };
                 let name = format!("v_{}", self.text(self.hir.local(*local).name));
                 self.body
                     .push_str(&format!("  {declared} {name} = {init_code};\n"));
@@ -1174,21 +1171,158 @@ impl<'a> Generator<'a> {
     }
 
     fn bind_pattern(&mut self, pattern: &Pattern, value: &str) {
+        for line in self.pattern_bindings(pattern, value) {
+            self.body.push_str(&line);
+            self.body.push('\n');
+        }
+    }
+
+    /// C declarations binding a pattern's variables to parts of `value`.
+    fn pattern_bindings(&mut self, pattern: &Pattern, value: &str) -> Vec<String> {
         match pattern {
-            Pattern::Wildcard(_) | Pattern::Error(_) | Pattern::Literal { .. } => {}
+            Pattern::Wildcard(_) | Pattern::Error(_) | Pattern::Literal { .. } => Vec::new(),
             Pattern::Binding { local, .. } => {
                 let name = format!("v_{}", self.text(self.hir.local(*local).name));
                 let ty = self.local_ty(*local);
                 let c_ty = self.c_type(&ty);
-                self.body.push_str(&format!("  {c_ty} {name} = {value};\n"));
-                self.bind(*local, name);
+                self.bind(*local, name.clone());
+                vec![format!("  {c_ty} {name} = {value};")]
             }
-            Pattern::Tuple { .. } => {
-                self.unsupported(pattern.span(), "tuple destructuring in a binding", "M3");
+            Pattern::Tuple { elems, .. } => {
+                let temp = self.fresh("tup_");
+                let ty = self.pattern_ty(pattern);
+                let c_ty = self.c_type(&ty);
+                let mut lines = vec![format!("  {c_ty} {temp} = {value};")];
+                for (index, elem) in elems.iter().enumerate() {
+                    let field = format!("{temp}._{index}");
+                    lines.extend(self.pattern_bindings(elem, &field));
+                }
+                lines
             }
-            Pattern::Constructor { .. } => {
-                self.unsupported(pattern.span(), "this destructuring pattern", "M3");
+            Pattern::Constructor { path, args, .. } => {
+                let variant = self.text(path[0]).to_string();
+                let base = format!("({value}).payload.{variant}");
+                let mut lines = Vec::new();
+                for (index, arg) in args.iter().enumerate() {
+                    let access = format!("{base}._{index}");
+                    lines.extend(self.pattern_bindings(arg, &access));
+                }
+                lines
             }
+        }
+    }
+
+    /// The C type of a destructuring pattern: a tuple of its bindings' types.
+    fn pattern_ty(&mut self, pattern: &Pattern) -> Ty {
+        match pattern {
+            Pattern::Binding { local, .. } => self.local_ty(*local),
+            Pattern::Wildcard(_) => Ty::i32(),
+            Pattern::Tuple { elems, .. } => {
+                Ty::Tuple(elems.iter().map(|e| self.pattern_ty(e)).collect())
+            }
+            _ => Ty::i32(),
+        }
+    }
+
+    /// `match` — a guarded arm sequence with a `done` flag: guards work without
+    /// gotos, and the result is zero-initialised when no arm matches.
+    fn match_expr(&mut self, whole: &Expr, scrutinee: &Expr, arms: &[rill_hir::MatchArm]) -> String {
+        let value = self.expr(scrutinee);
+        let scrutinee_ty = self.expr_ty(scrutinee);
+        let c_ty = self.c_type(&scrutinee_ty);
+        let slot = self.fresh("scrut");
+        self.body.push_str(&format!("  {c_ty} {slot} = {value};\n"));
+        let result_ty = self.expr_ty(whole);
+        let result_ty = if matches!(result_ty, Ty::Unit) { Ty::i32() } else { result_ty };
+        let result = self.fresh("matched");
+        let result_c = self.c_type(&result_ty);
+        self.body.push_str(&format!("  {result_c} {result} = 0;\n"));
+        let done = self.fresh("done");
+        self.body.push_str(&format!("  r_bool {done} = 0;\n"));
+        for arm in arms {
+            let test = self.arm_test(&slot, &scrutinee_ty, arm);
+            self.body.push_str(&format!("  if (!{done} && ({test})) {{\n"));
+            self.push_scope();
+            for line in self.pattern_bindings(&arm.pattern, &slot) {
+                self.body.push_str(&format!("  {line}\n"));
+            }
+            let guarded = match &arm.guard {
+                Some(guard) => {
+                    let guard_code = self.expr(guard);
+                    self.body.push_str(&format!("    if ({guard_code}) {{\n"));
+                    true
+                }
+                None => false,
+            };
+            let body = self.expr(&arm.body);
+            self.body.push_str(&format!("    {result} = {body};\n"));
+            self.body.push_str(&format!("    {done} = 1;\n"));
+            if guarded {
+                self.body.push_str("    }\n");
+            }
+            self.pop_scope();
+            self.body.push_str("  }\n");
+        }
+        result
+    }
+
+    /// The C condition an arm tests; payload bindings come from
+    /// [`Self::pattern_bindings`].
+    fn arm_test(&mut self, slot: &str, scrutinee_ty: &Ty, arm: &rill_hir::MatchArm) -> String {
+        match &arm.pattern {
+            Pattern::Wildcard(_) | Pattern::Binding { .. } | Pattern::Tuple { .. } => "1".to_string(),
+            Pattern::Literal { text, .. } => {
+                let trimmed = text.trim();
+                if trimmed.starts_with('"') {
+                    format!(
+                        "strcmp({slot}, {}) == 0",
+                        self.literal(rill_ast::LiteralKind::Text, trimmed)
+                    )
+                } else if trimmed == "true" {
+                    format!("({slot} != 0)")
+                } else if trimmed == "false" {
+                    format!("({slot} == 0)")
+                } else if trimmed.starts_with('\'') {
+                    format!("{slot} == {}", self.literal(rill_ast::LiteralKind::Char, trimmed))
+                } else {
+                    format!("{slot} == ({trimmed})")
+                }
+            }
+            Pattern::Constructor { path, .. } => {
+                let variant = self.text(path[0]).to_string();
+                match scrutinee_ty {
+                    Ty::Nominal(id) | Ty::Record(id) => match &self.checked.nominal(*id).kind {
+                        NominalKind::Enum(variants) => {
+                            match variants.iter().position(|v| self.text(v.name) == variant) {
+                                Some(_) => {
+                                    let enum_name = format!("en_{}", self.nominal_name(*id));
+                                    format!("{slot}.tag == {enum_name}_TAG_{variant}")
+                                }
+                                None if self.nominal_name(*id) == variant => "1".to_string(),
+                                None => {
+                                    let names: Vec<&str> =
+                                        variants.iter().map(|v| self.text(v.name)).collect();
+                                    self.diagnostics.push(
+                                        Diagnostic::error(
+                                            arm.span,
+                                            format!("`{variant}` is not a variant"),
+                                        )
+                                        .note(format!("variants: {}", names.join(", "))),
+                                    );
+                                    "0".to_string()
+                                }
+                            }
+                        }
+                        _ => "1".to_string(),
+                    },
+                    Ty::Error => "0".to_string(),
+                    _ => {
+                        self.unsupported(arm.span, "this match pattern", "M3");
+                        "0".to_string()
+                    }
+                }
+            }
+            Pattern::Error(_) => "0".to_string(),
         }
     }
 
@@ -1234,7 +1368,7 @@ impl<'a> Generator<'a> {
         &mut self,
         whole: &Expr,
         nominal: NominalId,
-        _segments: &[Symbol],
+        segments: &[Symbol],
         args: &[rill_hir::Arg],
     ) -> String {
         let kind = self.checked.nominal(nominal).kind.clone();
@@ -1254,9 +1388,43 @@ impl<'a> Generator<'a> {
                 ));
                 temp
             }
-            NominalKind::Enum(_) => {
-                self.unsupported(whole.span, "an enum constructor", "M3 (tagged-union pass)");
-                return "0".into();
+            NominalKind::Enum(variants) => {
+                let variant_name = match segments.last() {
+                    Some(name) => self.text(*name).to_string(),
+                    None => {
+                        self.unsupported(whole.span, "this enum constructor", "M3");
+                        return "0".into();
+                    }
+                };
+                let Some(index) = variants.iter().position(|v| self.text(v.name) == variant_name)
+                else {
+                    let names: Vec<&str> = variants.iter().map(|v| self.text(v.name)).collect();
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            whole.span,
+                            format!("`{variant_name}` is not a variant"),
+                        )
+                        .note(format!("variants: {}", names.join(", "))),
+                    );
+                    return "0".into();
+                };
+                let c_name = self.c_type(&Ty::Nominal(nominal));
+                let temp = self.fresh("variant_");
+                if values.is_empty() {
+                    self.body
+                        .push_str(&format!("  {c_name} {temp} = {{ .tag = {index} }};\n"));
+                } else {
+                    let inits: Vec<String> = values
+                        .iter()
+                        .enumerate()
+                        .map(|(field, value)| format!("._{field} = {value}"))
+                        .collect();
+                    self.body.push_str(&format!(
+                        "  {c_name} {temp} = {{ .tag = {index}, .payload.{variant_name} = {{ {} }} }};\n",
+                        inits.join(", ")
+                    ));
+                }
+                temp
             }
             NominalKind::Opaque | NominalKind::Alias(_) => {
                 self.unsupported(whole.span, "this constructor", "M3");

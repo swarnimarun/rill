@@ -1065,9 +1065,33 @@ impl Checker<'_> {
                             effects,
                         }
                     }
-                    Some(ItemTy::Nominal(id)) => Ty::Nominal(id),
+                    Some(ItemTy::Nominal(nominal)) => {
+                        // A nominal in value position is its constructor; the
+                        // path's last segment selects the variant.
+                        let last = segments.last().map(|s| self.text(*s).to_string());
+                        let payload = last.and_then(|name| {
+                            match &self.nominals[nominal.0 as usize].kind {
+                                NominalKind::Enum(variants) => variants
+                                    .iter()
+                                    .find(|v| self.text(v.name) == name)
+                                    .map(|v| v.payload.clone()),
+                                NominalKind::Record(fields) | NominalKind::View(fields) => {
+                                    Some(fields.iter().map(|f| f.ty.clone()).collect())
+                                }
+                                _ => None,
+                            }
+                        });
+                        match payload {
+                            // A payload-less variant is a value, not a function.
+                            Some(params) if !params.is_empty() => Ty::Fn {
+                                params,
+                                ret: Box::new(Ty::Nominal(nominal)),
+                                effects: Vec::new(),
+                            },
+                            _ => Ty::Nominal(nominal),
+                        }
+                    }
                     _ => match self.nominal_by_item.get(id).copied() {
-                        // A type name in value position is its constructor.
                         Some(nominal) => Ty::Nominal(nominal),
                         None => Ty::Error,
                     },
@@ -1680,15 +1704,18 @@ impl Checker<'_> {
                 }
                 let _ = expected;
             }
-            Pattern::Constructor {
-                path, args, span, ..
-            } => {
+            Pattern::Constructor { path, args, span, res } => {
                 let name = path[0];
-                let nominal = self
-                    .hir
-                    .named_items(name)
-                    .into_iter()
-                    .find_map(|id| self.nominal_by_item.get(&id).copied());
+                // The resolver already bound the pattern's head: an enum
+                // variant, or a type name used as a record pattern.
+                let nominal = match res {
+                    Res::Item(id) => self.nominal_by_item.get(id).copied(),
+                    _ => self
+                        .hir
+                        .named_items(name)
+                        .into_iter()
+                        .find_map(|id| self.nominal_by_item.get(&id).copied()),
+                };
                 let Some(id) = nominal else {
                     self.err(
                         *span,

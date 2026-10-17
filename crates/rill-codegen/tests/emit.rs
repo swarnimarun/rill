@@ -80,3 +80,23 @@ fn unsupported_constructs_are_reported_not_miscompiled() {
     // The program still type-checks; only code generation refuses it.
     assert!(source.contains("int main(void)"));
 }
+
+#[test]
+fn enums_match_and_guards_lower() {
+    let (source, diagnostics) = emit(
+        "type Shape = | Circle i32 | Rect i32 i32 | Empty;\n\
+         let area (s: Shape) -> i32 <computes> = match s {\n\
+             Circle r -> 3 * r * r,\n\
+             Rect w h if w == h -> w * h,\n\
+             Rect w h -> 2 * (w + h),\n\
+             Empty -> 0\n\
+         };\n\
+         let main () -> i32 <computes> = area (Rect 6 7) + area (Circle 2) + area Empty;\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    assert!(source.contains("en_Shape"), "{source}");
+    assert!(source.contains("en_Shape_TAG_Rect"), "{source}");
+    assert!(source.contains("payload.Rect._0"), "{source}");
+    // Three arms + the guard, all inside one `done`-flagged sequence.
+    assert!(source.contains("done"), "{source}");
+}
