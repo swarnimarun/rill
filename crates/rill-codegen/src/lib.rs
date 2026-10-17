@@ -508,6 +508,12 @@ impl<'a> Generator<'a> {
             let value = tail_value.unwrap_or_else(|| "0".to_string());
             body.push_str(&format!("  return (int)({value});\n"));
         } else if matches!(ret_ty, Ty::Unit) {
+            // A unit-returning tail call still has side effects.
+            if let Some(value) = tail_value.as_deref() {
+                if value != "rill_unit()" {
+                    body.push_str(&format!("  (void)({value});\n"));
+                }
+            }
             body.push_str("  return rill_unit();\n");
         } else if let Some(value) = tail_value {
             body.push_str(&format!("  return {value};\n"));
@@ -580,6 +586,9 @@ impl<'a> Generator<'a> {
         let value = self.block(body);
         let mut lambda_body = std::mem::take(&mut self.body);
         if matches!(ret_ty, Ty::Unit) {
+            if value != "rill_unit()" {
+                lambda_body.push_str(&format!("  (void)({value});\n"));
+            }
             lambda_body.push_str("  return rill_unit();\n");
         } else {
             lambda_body.push_str(&format!("  return {value};\n"));
@@ -735,6 +744,12 @@ impl<'a> Generator<'a> {
         let name = format!("{prefix}{}", self.temp);
         self.temp += 1;
         name
+    }
+
+    /// Emits an expression whose value is discarded. The emitted text carries
+    /// the expression's side effects, so dropping it silently would lose calls.
+    fn emit_discarded(&mut self, value: &str) {
+        self.body.push_str(&format!("  (void)({value});\n"));
     }
 
     fn typed_temp(&mut self, ty: &Ty) -> String {
@@ -954,7 +969,10 @@ impl<'a> Generator<'a> {
                 let condition = self.condition(cond);
                 self.body.push_str(&format!("  if ({condition}) {{\n"));
                 let then_value = self.block(then_branch);
-                if !matches!(ty, Ty::Unit) {
+                if matches!(ty, Ty::Unit) {
+                    // A unit branch still has to run its tail expression.
+                    self.emit_discarded(&then_value);
+                } else {
                     self.body
                         .push_str(&format!("    {result} = {then_value};\n"));
                 }
@@ -963,7 +981,9 @@ impl<'a> Generator<'a> {
                     Some(ElseBranch::Block(block)) => {
                         self.body.push_str(" else {\n");
                         let value = self.block(block);
-                        if !matches!(ty, Ty::Unit) {
+                        if matches!(ty, Ty::Unit) {
+                            self.emit_discarded(&value);
+                        } else {
                             self.body.push_str(&format!("    {result} = {value};\n"));
                         }
                         self.body.push_str("  }\n");
@@ -971,7 +991,9 @@ impl<'a> Generator<'a> {
                     Some(ElseBranch::If(other)) => {
                         self.body.push_str(" else {\n");
                         let value = self.expr(other);
-                        if !matches!(ty, Ty::Unit) {
+                        if matches!(ty, Ty::Unit) {
+                            self.emit_discarded(&value);
+                        } else {
                             self.body.push_str(&format!("    {result} = {value};\n"));
                         }
                         self.body.push_str("  }\n");
@@ -1346,7 +1368,12 @@ impl<'a> Generator<'a> {
             self.stmt(stmt);
         }
         if let Some(tail) = &block.tail {
-            self.expr(tail);
+            let value = self.expr(tail);
+            if !matches!(self.expr_ty(tail), Ty::Unit) {
+                self.emit_discarded(&value);
+            } else {
+                self.body.push_str(&format!("  {value};\n"));
+            }
         }
     }
 

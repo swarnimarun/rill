@@ -172,3 +172,54 @@ fn range_iteration_counts_at_runtime() {
     );
     assert!(!diagnostics.has_errors(), "{diagnostics:?}");
 }
+
+#[test]
+fn unit_returning_calls_are_emitted_in_every_position() {
+    // Regression: a call whose value is discarded was computed and dropped when
+    // it sat in a block tail or an `if` branch (a silent miscompilation that
+    // made scanner recursion vanish).
+    let (source, diagnostics) = emit(
+        "let bump (n: inout i64) -> () <computes> = { set n = n + 1i64; };\n\
+         let step (n: inout i64) -> () <computes> = {\n\
+             if (n < 3i64) { bump (inout n); step (inout n) } else { () }\n\
+         };\n\
+         let branchy (n: inout i64, c: Bool) -> () <computes> = {\n\
+             if (c) { bump (inout n) } else { bump (inout n) }\n\
+         };\n\
+         let main () -> i32 <computes> = {\n\
+             var n: i64 = 0i64;\n\
+             step (inout n);\n\
+             branchy (inout n, true);\n\
+             n as i32\n\
+         };\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    // `step`'s body: both the recursive tail call and the loop-branch call.
+    assert!(source.contains("(void)(rill_step("), "tail call emitted:\n{source}");
+    assert!(source.contains("(void)(rill_bump("), "branch call emitted:\n{source}");
+    // The `branchy` helper's two call sites are both emitted.
+    assert!(
+        source.contains("if (p_c)") && source.matches("rill_bump(").count() >= 3,
+        "every call site emitted:\n{source}"
+    );
+}
+
+#[test]
+fn unit_tail_call_in_a_function_body_runs() {
+    // The scanner shape: `scan` advances the cursor then hands over to `tail`.
+    let (_, diagnostics) = emit(
+        "let tail (i: inout i64, n: i64) -> () <computes> = {\n\
+             if (i < n) { set i = i + 1i64; tail (inout i, n) } else { () }\n\
+         };\n\
+         let scan (i: inout i64, n: i64) -> () <computes> = {\n\
+             set i = i + 1i64;\n\
+             tail (inout i, n)\n\
+         };\n\
+         let main () -> i32 <computes> = {\n\
+             var i: i64 = 0i64;\n\
+             scan (inout i, 7i64);\n\
+             i as i32\n\
+         };\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+}

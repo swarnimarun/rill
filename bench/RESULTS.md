@@ -37,16 +37,33 @@ casts (`as`), string concatenation and `io::println`.
 Reproduce: `sh bench/run.sh` (regenerates the input, builds all three, times
 three runs each).
 
-## v2 status: work in progress, no numbers yet
+## v2 — zero-copy JSON query engine (node pools, query, serialisation)
 
-`bench/json_query.v2.rill` (zero-copy pool over an mmapped document, query +
-flatbuffer-style serialisation) compiles with the new compiler features but is
-**not yet correct**: after fixing a pool-overflow (65k nodes for a document
-needing ~88k) and two scan loops that spun over the whole file, the tiny
-fixture still faults. Its own cursor/span bookkeeping in the nested-object
-branch is the suspect. Rust and Zig counterparts will be written against the
-same design only once the Rill version is verified, so the three stay
-comparable.
+Same design in all three: parse the 55,299-byte document into a pool of
+`(kind, span, first child, next sibling, child count)` records pointing into the
+input, query the `rows` array for `score > 500` summing `id`, and serialise the
+result into a 64-byte buffer and read it back. Pool reused across 200 reps.
+
+| Program | best of 3 | checksum |
+| --- | --- | --- |
+| Rill (`bench/json_query.v2.rill`) | 9.07s | 11724000 |
+| Rust (`bench/json_query.v2.rs`) | 0.51s | 11724000 |
+| Zig (`bench/json_query.v2.zig`) | 0.02s | 11724000 |
+
+All three produce the same checksum, so the work is identical. **Rill is ~18x
+slower here, and the cause is a missing language feature, not the backend:**
+Rill has no `while`/`break`, so the object/array member loops are written as
+`for (k := 0..<n)` with a `done` flag — they still spin `n` times per container.
+Every other part of the scanner is equivalent (recursive early-exit scans, same
+node layout, same query code). Zig's tight `while` loops are why it is fastest;
+Rust's per-node `Vec` bounds/copy costs sit between. The fix is to add
+`while (cond) { … }` with `break` to Rill and rewrite those loops; the backend
+itself emits the same C quality (v1's byte scan is at parity).
+
+Two silent miscompilations were found and fixed while making v2 correct:
+a Unit-returning call in a block tail, an `if` branch, or a function body's tail
+was computed and then dropped (so scanner recursion vanished), and `.`-selected
+indexed members (`p.nodes[i].kind`) were not lowered.
 
 ## Planned rounds
 
