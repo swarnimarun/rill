@@ -242,6 +242,10 @@ struct Checker<'a> {
     handler: Option<rill_ast::HandlerKind>,
     /// The nominal standing in for `Option` results.
     option_id: NominalId,
+    /// Unsuffixed numeric literals: they take the type their context requires
+    /// and fall back to `i32`/`f64`, like Rust's `{integer}`/`{float}`.
+    int_literals: Vec<u32>,
+    float_literals: Vec<u32>,
 }
 
 impl<'a> Checker<'a> {
@@ -261,10 +265,24 @@ impl<'a> Checker<'a> {
             effects_of: HashMap::new(),
             handler: None,
             option_id: NominalId(0),
+            int_literals: Vec::new(),
+            float_literals: Vec::new(),
         }
     }
 
     fn finish(mut self) -> Checked {
+        // Unconstrained numeric literals default like Rust: `{integer}` -> i32,
+        // `{float}` -> f64.
+        for id in self.int_literals.clone() {
+            if !self.subst.contains_key(&id) {
+                self.subst.insert(id, Ty::i32());
+            }
+        }
+        for id in self.float_literals.clone() {
+            if !self.subst.contains_key(&id) {
+                self.subst.insert(id, Ty::Float { bits: 64 });
+            }
+        }
         let mut resolved = HashMap::new();
         for (id, ty) in self.expr_types.iter() {
             resolved.insert(*id, self.zonk(ty));
@@ -999,52 +1017,30 @@ impl Checker<'_> {
             ExprKind::Error => Ty::Error,
             ExprKind::Literal { kind, text } => match kind {
                 rill_ast::LiteralKind::Int => {
-                    // A literal takes the type required by context; the default
-                    // is `i32` (PLAN's examples are all `i32`/`i64`).
-                    match text.rsplit_once(|c: char| c.is_alphabetic()) {
-                        Some((_, suffix)) if !suffix.is_empty() => match suffix {
-                            "i8" => Ty::Int {
-                                bits: 8,
-                                signed: true,
-                            },
-                            "i16" => Ty::Int {
-                                bits: 16,
-                                signed: true,
-                            },
-                            "i32" => Ty::i32(),
-                            "i64" | "isize" => Ty::Int {
-                                bits: 64,
-                                signed: true,
-                            },
-                            "u8" => Ty::Int {
-                                bits: 8,
-                                signed: false,
-                            },
-                            "u16" => Ty::Int {
-                                bits: 16,
-                                signed: false,
-                            },
-                            "u32" => Ty::Int {
-                                bits: 32,
-                                signed: false,
-                            },
-                            "u64" | "usize" => Ty::usize_(),
-                            _ => Ty::i32(),
-                        },
-                        _ => Ty::i32(),
+                    match numeric_suffix(text) {
+                        Some(ty) => ty,
+                        None => {
+                            let var = self.fresh();
+                            if let Ty::Var(id) = var {
+                                self.int_literals.push(id);
+                            }
+                            var
+                        }
                     }
                 }
-                rill_ast::LiteralKind::Float => match text.rsplit_once(|c: char| c.is_alphabetic())
-                {
-                    Some((_, "f32")) => Ty::Float { bits: 32 },
-                    _ => Ty::Float { bits: 64 },
+                rill_ast::LiteralKind::Float => match numeric_suffix(text) {
+                    Some(ty) => ty,
+                    None => {
+                        let var = self.fresh();
+                        if let Ty::Var(id) = var {
+                            self.float_literals.push(id);
+                        }
+                        var
+                    }
                 },
                 rill_ast::LiteralKind::Bool => Ty::Bool,
                 rill_ast::LiteralKind::Text | rill_ast::LiteralKind::RawText => Ty::Text,
-                rill_ast::LiteralKind::Char => Ty::Int {
-                    bits: 8,
-                    signed: false,
-                },
+                rill_ast::LiteralKind::Char => Ty::Int { bits: 8, signed: false },
             },
             ExprKind::Path { segments, res } => match res {
                 Res::Local(id) => self
@@ -1106,6 +1102,12 @@ impl Checker<'_> {
                             ret: Box::new(Ty::Unit),
                             effects: vec![Effect::Io],
                         }
+                    } else if last.as_deref() == Some("read_file") {
+                        Ty::Fn {
+                            params: vec![Ty::Text],
+                            ret: Box::new(Ty::Text),
+                            effects: vec![Effect::Io, Effect::Fs],
+                        }
                     } else {
                         Ty::Fn {
                             params: Vec::new(),
@@ -1159,6 +1161,16 @@ impl Checker<'_> {
                         let _ = len;
                         (*elem).clone()
                     }
+                    Ty::Text => {
+                        if args.len() != 1 {
+                            self.err(expr.span, "indexing text takes exactly one index");
+                        }
+                        for arg in args {
+                            let index = self.expr(&arg.value);
+                            self.unify(&Ty::usize_(), &index, arg.span, "checking an index");
+                        }
+                        Ty::Int { bits: 8, signed: false }
+                    }
                     Ty::Error => Ty::Error,
                     other => {
                         // `f[x]` — a failable call on a function value.
@@ -1193,12 +1205,14 @@ impl Checker<'_> {
                     UnaryOp::Size => {
                         self.add_effects(&[]);
                         match self.resolve_deep(&operand_ty) {
-                            Ty::Array { .. } | Ty::Error => {}
+                            // `size` is `len` for arrays/slices and `strlen` for
+                            // text, so byte-oriented programs need no stdlib.
+                            Ty::Array { .. } | Ty::Text | Ty::Error => {}
                             other => {
                                 let display = self.display(&other);
                                 self.err(
                                     expr.span,
-                                    format!("`size` expects an array, found `{display}`"),
+                                    format!("`size` expects an array or text, found `{display}`"),
                                 );
                             }
                         }
@@ -1784,6 +1798,49 @@ impl Checker<'_> {
             }
         }
     }
+}
+
+/// Numeric type suffixes (§2.1), longest first so `i128` wins over `i8`.
+pub const NUMERIC_SUFFIXES: &[&str] = &[
+    "i128", "isize", "usize", "u128", "i64", "i32", "i16", "i8", "u64", "u32", "u16", "u8", "f64",
+    "f32", "f16",
+];
+
+/// Splits `200i64` into digits and suffix. Only a *known* suffix counts, so hex
+/// digits (`0x1f`) and exponents never look like one.
+pub fn split_numeric_suffix(text: &str) -> (&str, Option<&str>) {
+    for suffix in NUMERIC_SUFFIXES {
+        if let Some(digits) = text.strip_suffix(suffix) {
+            let last_digit = digits.chars().last();
+            match last_digit {
+                Some(c) if c.is_ascii_digit() || c.is_ascii_hexdigit() => return (digits, Some(suffix)),
+                _ => continue,
+            }
+        }
+    }
+    (text, None)
+}
+
+/// The type a numeric suffix names, if the literal carries one.
+pub fn numeric_suffix(text: &str) -> Option<Ty> {
+    let cleaned = text.replace('_', "");
+    let (_, suffix) = split_numeric_suffix(&cleaned);
+    Some(match suffix? {
+        "i8" => Ty::Int { bits: 8, signed: true },
+        "i16" => Ty::Int { bits: 16, signed: true },
+        "i32" => Ty::i32(),
+        "i64" | "isize" => Ty::Int { bits: 64, signed: true },
+        "i128" => Ty::Int { bits: 128, signed: true },
+        "u8" => Ty::Int { bits: 8, signed: false },
+        "u16" => Ty::Int { bits: 16, signed: false },
+        "u32" => Ty::Int { bits: 32, signed: false },
+        "u64" | "usize" => Ty::usize_(),
+        "u128" => Ty::Int { bits: 128, signed: false },
+        "f16" => Ty::Float { bits: 16 },
+        "f32" => Ty::Float { bits: 32 },
+        "f64" => Ty::Float { bits: 64 },
+        _ => return None,
+    })
 }
 
 fn describe_effects(effects: &[String]) -> String {

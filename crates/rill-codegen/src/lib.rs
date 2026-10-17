@@ -100,6 +100,21 @@ static r_text rill_f64_to_text(r_f64 v) {
 }
 
 static void rill_println(r_text s) { printf("%s\n", s); }
+
+// Reads a whole file as text; programs get their input without a stdlib.
+static r_text rill_read_file(r_text path) {
+  FILE *f = fopen(path, "rb");
+  if (!f) { return ""; }
+  fseek(f, 0, SEEK_END);
+  long size = ftell(f);
+  fseek(f, 0, SEEK_SET);
+  char *buffer = (char *)malloc((size_t)size + 1);
+  if (!buffer) { fclose(f); return ""; }
+  size_t read = fread(buffer, 1, (size_t)size, f);
+  buffer[read] = 0;
+  fclose(f);
+  return buffer;
+}
 static r_i64 rill_size_i64(r_i64 n) { return n; }
 static size_t rill_size_slice(size_t n) { return n; }
 // ---- end runtime ---------------------------------------------------------
@@ -118,8 +133,10 @@ struct Generator<'a> {
     temp: usize,
     emitted_types: HashSet<String>,
     diagnostics: Diagnostics,
-    /// Locals that hold no C storage (unit values).
     scopes: Vec<Vec<(LocalId, String)>>,
+    /// `inout` parameters are C pointers; the local reads as `(*p_x)` so every
+    /// existing place/expression path keeps working.
+    inout_locals: std::collections::HashMap<LocalId, String>,
 }
 
 impl<'a> Generator<'a> {
@@ -137,6 +154,7 @@ impl<'a> Generator<'a> {
             emitted_types: HashSet::new(),
             diagnostics: Diagnostics::new(),
             scopes: Vec::new(),
+            inout_locals: std::collections::HashMap::new(),
         }
     }
 
@@ -448,7 +466,15 @@ impl<'a> Generator<'a> {
         for param in &def.params {
             if let (Some(local), Some(name)) = (param.local, param.name) {
                 let c_name = format!("p_{}", self.text(name));
-                self.bind(local, c_name);
+                if param.convention == Some(rill_ast::Convention::Inout) {
+                    // A mutable view: the C parameter is a pointer and the local
+                    // denotes the pointee, so `t.field` and `set t.field = v`
+                    // need no special cases.
+                    self.inout_locals.insert(local, c_name.clone());
+                    self.bind(local, format!("(*{c_name})"));
+                } else {
+                    self.bind(local, c_name);
+                }
             }
         }
         let tail_value = def.body.as_ref().map(|body| self.expr(body));
@@ -557,6 +583,20 @@ impl<'a> Generator<'a> {
         };
         let mut parts = Vec::new();
         for (index, param) in def.params.iter().enumerate() {
+            if param.convention == Some(rill_ast::Convention::Inout) {
+                let element = checked_params
+                    .get(index)
+                    .cloned()
+                    .filter(|ty| !matches!(ty, Ty::Error))
+                    .map(|ty| self.c_type(&ty))
+                    .unwrap_or_else(|| "r_i64".to_string());
+                let name = param
+                    .name
+                    .map(|n| self.text(n).to_string())
+                    .unwrap_or_else(|| "_".to_string());
+                parts.push(format!("{element} *p_{name}"));
+                continue;
+            }
             let ty = match checked_params.get(index).cloned() {
                 Some(ty) if !matches!(ty, Ty::Error) => self.c_type(&ty),
                 _ => param
@@ -714,6 +754,8 @@ impl<'a> Generator<'a> {
                     let text: Vec<&str> = segments.iter().map(|s| self.text(*s)).collect();
                     if text.len() == 2 && text[0] == "io" && text[1] == "println" {
                         "rill_println".into()
+                    } else if text.len() == 2 && text[0] == "io" && text[1] == "read_file" {
+                        "rill_read_file".into()
                     } else {
                         self.unsupported(
                             expr.span,
@@ -775,6 +817,7 @@ impl<'a> Generator<'a> {
                 match base_ty {
                     Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
                     Ty::Array { len: None, .. } => format!("({base}).ptr[{index}]"),
+                    Ty::Text => format!("((r_u8)({base})[{index}])"),
                     _ => {
                         self.unsupported(expr.span, "this index expression", "M3");
                         "0".into()
@@ -796,6 +839,7 @@ impl<'a> Generator<'a> {
                         match operand_ty {
                             Ty::Array { len: Some(n), .. } => n.to_string(),
                             Ty::Array { len: None, .. } => format!("((r_i64)({value}).len)"),
+                            Ty::Text => format!("((r_i64)strlen({value}))"),
                             _ => "0".into(),
                         }
                     }
@@ -922,46 +966,26 @@ impl<'a> Generator<'a> {
         match kind {
             LiteralKind::Int => {
                 let cleaned = text.replace('_', "");
-                let (digits, suffix) = match cleaned.rsplit_once(|c: char| c.is_alphabetic()) {
-                    Some((digits, suffix)) => {
-                        // `0x1f` and `1e9` end in letters that belong to the number.
-                        let is_suffix = matches!(
-                            suffix,
-                            "i8" | "i16"
-                                | "i32"
-                                | "i64"
-                                | "i128"
-                                | "isize"
-                                | "u8"
-                                | "u16"
-                                | "u32"
-                                | "u64"
-                                | "u128"
-                                | "usize"
-                        );
-                        if is_suffix {
-                            (digits, Some(suffix))
-                        } else {
-                            (cleaned.as_str(), None)
-                        }
-                    }
-                    None => (cleaned.as_str(), None),
-                };
+                let (digits, suffix) = rill_ty::split_numeric_suffix(&cleaned);
                 match suffix {
-                    Some("i64") => format!("((r_i64){digits})"),
-                    Some("u64") | Some("usize") => format!("((r_u64){digits})"),
+                    Some("i8") => format!("((r_i8){digits})"),
+                    Some("i16") => format!("((r_i16){digits})"),
                     Some("i32") => format!("((r_i32){digits})"),
-                    Some("u32") => format!("((r_u32){digits})"),
+                    Some("i64") | Some("isize") => format!("((r_i64){digits})"),
                     Some("u8") => format!("((r_u8){digits})"),
+                    Some("u16") => format!("((r_u16){digits})"),
+                    Some("u32") => format!("((r_u32){digits})"),
+                    Some("u64") | Some("usize") => format!("((r_u64){digits})"),
                     _ => digits.to_string(),
                 }
             }
             LiteralKind::Float => {
                 let cleaned = text.replace('_', "");
-                match cleaned.rsplit_once(|c: char| c.is_alphabetic()) {
-                    Some((digits, "f32")) => format!("((r_f32){digits})"),
-                    Some((digits, "f64")) => format!("((r_f64){digits})"),
-                    _ => format!("((r_f64){cleaned})"),
+                let (digits, suffix) = rill_ty::split_numeric_suffix(&cleaned);
+                match suffix {
+                    Some("f32") => format!("((r_f32){digits})"),
+                    Some("f64") => format!("((r_f64){digits})"),
+                    _ => format!("((r_f64){digits})"),
                 }
             }
             LiteralKind::Bool => {
@@ -1465,7 +1489,18 @@ impl<'a> Generator<'a> {
         }
         let callee_code = self.expr(callee);
         let callee_ty = self.expr_ty(callee);
-        let mut arguments: Vec<String> = args.iter().map(|arg| self.expr(&arg.value)).collect();
+        let mut arguments: Vec<String> = args
+            .iter()
+            .map(|arg| {
+                let value = self.expr(&arg.value);
+                match arg.convention {
+                    // An `inout` argument passes the place itself; when the place
+                    // is already a pointer local this is `&(*p_x)`, i.e. `p_x`.
+                    Some(rill_ast::Convention::Inout) => format!("&({value})"),
+                    _ => value,
+                }
+            })
+            .collect();
         if let Ty::Fn { params, .. } = &callee_ty {
             // Pass conventions do not change the C ABI for value types.
             for (param, argument) in params.iter().zip(arguments.iter_mut()) {

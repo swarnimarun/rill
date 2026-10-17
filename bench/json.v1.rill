@@ -1,0 +1,47 @@
+use std::io;
+
+# v1: one pass over the bytes — framing validation + rolling checksum.
+# Only basics: functions, `var`/`set`, byte indexing, `for`, casts, `else if`.
+
+let checksum (s: Text, n: usize) -> i64 <computes> = {
+    var sum: i64 = 0;
+    var depth: i64 = 0;
+    var in_string: Bool = false;
+    var escaped: Bool = false;
+    for (k := 0..n) {
+        var b: u8 = s[k];
+        set sum = sum + (b as i64);
+        if (in_string) {
+            if (escaped) { set escaped = false }
+            else if (b = '\\') { set escaped = true }
+            else if (b = '"') { set in_string = false }
+        } else if (b = '"') {
+            set in_string = true
+        } else if (b = '{') {
+            set depth = depth + 1
+        } else if (b = '[') {
+            set depth = depth + 1
+        } else if (b = '}') {
+            set depth = depth - 1
+        } else if (b = ']') {
+            set depth = depth - 1
+        };
+    };
+    sum + depth
+};
+
+let run (s: Text, n: usize, reps: i64) -> i64 <computes> = {
+    var acc: i64 = 0;
+    for (r := 0..reps) {
+        set acc = acc + checksum s n
+    };
+    acc
+};
+
+let main () -> i32 <io> = {
+    var s = io::read_file "/tmp/bench.json";
+    var n = size s;
+    var total = run s n 200i64;
+    io::println ("rill   bytes=" ++ (n as String) ++ " total=" ++ (total as String));
+    0
+};
