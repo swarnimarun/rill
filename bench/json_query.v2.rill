@@ -46,43 +46,28 @@ let push (p: inout Pool, kind: u8, start: usize, end: usize) -> usize <computes>
 let is_ws (b: u8) -> Bool <computes> = b = ' ' or b = '\n' or b = '\r' or b = '\t';
 
 let skip_ws (s: Text, i: inout usize, n: usize) -> () <computes> = {
-    if (i < n) {
-        if (is_ws s[i]) {
-            set i = i + 1u64;
-            skip_ws (s, inout i, n)
-        } else { () }
-    } else { () }
-};
-
-let scan_string_tail (s: Text, i: inout usize, n: usize) -> () <computes> = {
-    if (i < n) {
-        var b: u8 = s[i];
-        set i = i + 1u64;
-        if (b = '\\') {
-            set i = i + 1u64;
-            scan_string_tail (s, inout i, n)
-        } else if (b = '"') {
-            ()
-        } else {
-            scan_string_tail (s, inout i, n)
-        }
-    } else { () }
+    var skipping = true;
+    while (skipping and i < n) {
+        if (is_ws s[i]) { set i = i + 1u64 } else { set skipping = false }
+    }
 };
 
 let scan_string (s: Text, i: inout usize, n: usize) -> () <computes> = {
     set i = i + 1u64;
-    scan_string_tail (s, inout i, n)
+    while (i < n) {
+        var b: u8 = s[i];
+        set i = i + 1u64;
+        if (b = '\\') { set i = i + 1u64 }
+        else if (b = '"') { break }
+        else { () }
+    }
 };
 
 let scan_bare (s: Text, i: inout usize, n: usize) -> () <computes> = {
-    if (i < n) {
+    while (i < n) {
         var b: u8 = s[i];
-        if (b = ',' or b = '}' or b = ']' or is_ws b) { () }
-        else {
-            set i = i + 1u64;
-            scan_bare (s, inout i, n)
-        }
-    } else { () }
+        if (b = ',' or b = '}' or b = ']' or is_ws b) { break } else { set i = i + 1u64 }
+    }
 };
 
 let number_value (s: Text, start: usize, end: usize) -> i64 <computes> = {
@@ -124,13 +109,12 @@ let parse_value (s: Text, i: inout usize, n: usize, p: inout Pool) -> usize <com
             set i = i + 1u64;
             var last: usize = 0u64;
             var count: usize = 0u64;
-            var members = true;
-            for (k := 0..<n) {
-                if (members and i < n) {
-                    skip_ws (s, inout i, n);
-                    if (i < n) {
-                        if (s[i] = '}') { set i = i + 1u64; set members = false }
-                        else {
+            while (i < n) {
+                var started = i;
+                skip_ws (s, inout i, n);
+                if (i < n) {
+                    if (s[i] = '}') { set i = i + 1u64; break }
+                    else {
                             var key = push (inout p, 2u8, i, i);
                             scan_string (s, inout i, n);
                             set p.nodes[key].end = i;
@@ -149,8 +133,8 @@ let parse_value (s: Text, i: inout usize, n: usize, p: inout Pool) -> usize <com
                                 if (s[i] = ',') { set i = i + 1u64 } else { () }
                             } else { () }
                         }
-                    } else { () }
-                } else { () }
+                };
+                if (i = started) { break } else { () }
             };
             set p.nodes[node].end = i;
             node
@@ -159,13 +143,12 @@ let parse_value (s: Text, i: inout usize, n: usize, p: inout Pool) -> usize <com
             set i = i + 1u64;
             var last: usize = 0u64;
             var count: usize = 0u64;
-            var members = true;
-            for (k := 0..<n) {
-                if (members and i < n) {
-                    skip_ws (s, inout i, n);
-                    if (i < n) {
-                        if (s[i] = ']') { set i = i + 1u64; set members = false }
-                        else {
+            while (i < n) {
+                var started = i;
+                skip_ws (s, inout i, n);
+                if (i < n) {
+                    if (s[i] = ']') { set i = i + 1u64; break }
+                    else {
                             var value = parse_value (s, inout i, n, inout p);
                             if (count = 0u64) { set p.nodes[node].first = value }
                             else { set p.nodes[last].next = value };
@@ -177,8 +160,8 @@ let parse_value (s: Text, i: inout usize, n: usize, p: inout Pool) -> usize <com
                                 if (s[i] = ',') { set i = i + 1u64 } else { () }
                             } else { () }
                         }
-                    } else { () }
-                } else { () }
+                };
+                if (i = started) { break } else { () }
             };
             set p.nodes[node].end = i;
             node
@@ -198,15 +181,18 @@ let parse_value (s: Text, i: inout usize, n: usize, p: inout Pool) -> usize <com
 };
 
 # The value node of `key` inside object `object`, or 0 when absent.
-let member_from (s: Text, p: inout Pool, child: usize, key: Text) -> usize <computes> = {
-    if (child = 0u64) { 0u64 }
-    else if (text_eq (s, p.nodes[child].start + 1u64, p.nodes[child].end - 1u64, key)) {
-        p.nodes[child].next
-    } else {
-        // Object members are stored as key -> value -> next key, so the next
-        // key is two links away.
-        member_from (s, inout p, p.nodes[p.nodes[child].next].next, key)
-    }
+let member_from (s: Text, p: inout Pool, child0: usize, key: Text) -> usize <computes> = {
+    var found: usize = 0u64;
+    var child = child0;
+    while (child != 0u64 and found = 0u64) {
+        if (text_eq (s, p.nodes[child].start + 1u64, p.nodes[child].end - 1u64, key)) {
+            set found = p.nodes[child].next
+        } else {
+            // Object members are key -> value -> next key.
+            set child = p.nodes[p.nodes[child].next].next
+        }
+    };
+    found
 };
 
 let member (s: Text, p: inout Pool, object: usize, key: Text) -> usize <computes> = {
@@ -216,21 +202,22 @@ let member (s: Text, p: inout Pool, object: usize, key: Text) -> usize <computes
 let rows_of (s: Text, p: inout Pool, root: usize) -> usize <computes> = member (s, inout p, root, "rows");
 
 # Query: count rows whose "score" exceeds `threshold` and sum their "id".
-let query_rows (s: Text, p: inout Pool, row: usize, threshold: i64) -> i64 <computes> = {
-    if (row = 0u64) { 0 }
-    else {
+let query_rows (s: Text, p: inout Pool, row0: usize, threshold: i64) -> i64 <computes> = {
+    var sum: i64 = 0;
+    var row = row0;
+    while (row != 0u64) {
         var score = member (s, inout p, row, "score");
-        var contribution: i64 = 0;
         if (score != 0u64) {
             if (number_value (s, p.nodes[score].start, p.nodes[score].end) > threshold) {
                 var id = member (s, inout p, row, "id");
                 if (id != 0u64) {
-                    set contribution = number_value (s, p.nodes[id].start, p.nodes[id].end)
+                    set sum = sum + number_value (s, p.nodes[id].start, p.nodes[id].end)
                 } else { () }
             } else { () }
         } else { () };
-        contribution + query_rows (s, inout p, p.nodes[row].next, threshold)
-    }
+        set row = p.nodes[row].next
+    };
+    sum
 };
 
 let query (s: Text, p: inout Pool, root: usize, threshold: i64) -> i64 <computes> = {

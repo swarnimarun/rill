@@ -195,8 +195,14 @@ fn unit_returning_calls_are_emitted_in_every_position() {
     );
     assert!(!diagnostics.has_errors(), "{diagnostics:?}");
     // `step`'s body: both the recursive tail call and the loop-branch call.
-    assert!(source.contains("(void)(rill_step("), "tail call emitted:\n{source}");
-    assert!(source.contains("(void)(rill_bump("), "branch call emitted:\n{source}");
+    assert!(
+        source.contains("(void)(rill_step("),
+        "tail call emitted:\n{source}"
+    );
+    assert!(
+        source.contains("(void)(rill_bump("),
+        "branch call emitted:\n{source}"
+    );
     // The `branchy` helper's two call sites are both emitted.
     assert!(
         source.contains("if (p_c)") && source.matches("rill_bump(").count() >= 3,
@@ -220,6 +226,50 @@ fn unit_tail_call_in_a_function_body_runs() {
              scan (inout i, 7i64);\n\
              i as i32\n\
          };\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+}
+
+#[test]
+fn while_conditions_re_evaluate_each_iteration() {
+    // A condition containing `and`/`or` desugars to an `if` expression, whose
+    // statements hoist; `while` must therefore evaluate it inside the loop.
+    let (source, diagnostics) = emit(
+        "let count (n: i32) -> i32 <computes> = {\n\
+             var i = 0;\n\
+             var alive = true;\n\
+             while (alive and i < n) {\n\
+                 set i = i + 1;\n\
+                 if (i = 3) { set alive = false } else { () }\n\
+             };\n\
+             i\n\
+         };\n\
+         let main () -> i32 <computes> = count 100;\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    assert!(
+        source.contains("for (;;)"),
+        "condition stays inside the loop:\n{source}"
+    );
+    assert!(source.contains("break;"), "{source}");
+}
+
+#[test]
+fn break_exits_only_its_loop() {
+    let (_, diagnostics) = emit(
+        "let f (n: i32) -> i32 <computes> = {\n\
+             var total = 0;\n\
+             for (i := 0..<4) {\n\
+                 var j = 0;\n\
+                 while (j < 10) {\n\
+                     set j = j + 1;\n\
+                     if (j > n) { break } else { () }\n\
+                 };\n\
+                 set total = total + j\n\
+             };\n\
+             total\n\
+         };\n\
+         let main () -> i32 <computes> = f 2;\n",
     );
     assert!(!diagnostics.has_errors(), "{diagnostics:?}");
 }

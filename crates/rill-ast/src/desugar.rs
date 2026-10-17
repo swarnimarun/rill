@@ -624,6 +624,12 @@ impl<'a> Desugar<'a> {
                 body: self.block(body),
                 span,
             },
+            Stmt::While { cond, body, span } => Stmt::While {
+                cond: self.expr(cond),
+                body: self.block(body),
+                span,
+            },
+            Stmt::Break { span } => Stmt::Break { span },
             Stmt::Let(mut decl) => {
                 if let Some(body) = decl.body.take() {
                     decl.body = Some(self.expr(body));

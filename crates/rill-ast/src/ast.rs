@@ -395,6 +395,16 @@ pub enum Stmt {
         body: Block,
         span: Span,
     },
+    /// `while (cond) body`
+    While {
+        cond: Expr,
+        body: Block,
+        span: Span,
+    },
+    /// `break;`
+    Break {
+        span: Span,
+    },
     /// A `let` declaration at block scope.
     Let(FnDecl),
     /// A bare expression statement.
@@ -412,6 +422,8 @@ impl Stmt {
             | Stmt::TryBind { span, .. }
             | Stmt::When { span, .. }
             | Stmt::For { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::Break { span }
             | Stmt::Error(span) => *span,
             Stmt::Let(d) => d.span,
             Stmt::Expr(e) => e.span(),

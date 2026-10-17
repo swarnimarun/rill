@@ -139,6 +139,8 @@ pub enum SyntaxKind {
     TryBindStmt, // `let? x = expr;`
     WhenStmt,
     ForStmt,
+    WhileStmt,
+    BreakStmt,
     // Types
     TypeRef,
     TypePath,

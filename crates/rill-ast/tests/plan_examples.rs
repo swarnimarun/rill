@@ -440,6 +440,11 @@ impl ErrorFinder {
             }
             Stmt::TryBind { value, .. } => self.expr(value),
             Stmt::When { cond, .. } => self.cond(cond),
+            Stmt::While { cond, body, .. } => {
+                self.expr(cond);
+                self.block(body);
+            }
+            Stmt::Break { .. } => {}
             Stmt::For {
                 pattern,
                 iter,

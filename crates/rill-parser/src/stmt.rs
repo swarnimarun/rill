@@ -29,6 +29,12 @@ impl<'a> Parser<'a> {
             K::KwSet => self.set_stmt(),
             K::KwYield => self.yield_stmt(),
             K::KwWhen => self.when_stmt(),
+            K::Name if self.current_text() == "while" && self.nth(1) == K::LParen => {
+                self.while_stmt();
+                // A block-bodied loop may be followed by `;`.
+                self.eat(K::Semi);
+            }
+            K::Name if self.current_text() == "break" => self.break_stmt(),
             K::KwFor => {
                 self.for_stmt();
                 // The body may already have consumed the `;`, so its trailing
@@ -190,6 +196,29 @@ impl<'a> Parser<'a> {
             } else {
                 p.statement();
             }
+        });
+    }
+
+    /// `while (cond) body` — an early-exit loop, which scanners need.
+    fn while_stmt(&mut self) {
+        self.node(K::WhileStmt, |p| {
+            p.bump(); // `while`
+            p.expect(K::LParen, "`(`");
+            p.expr();
+            p.expect(K::RParen, "`)`");
+            if p.at(K::LBrace) {
+                p.block();
+            } else {
+                p.statement();
+            }
+        });
+    }
+
+    /// `break ;` — leaves the innermost loop.
+    fn break_stmt(&mut self) {
+        self.node(K::BreakStmt, |p| {
+            p.bump(); // `break`
+            p.semi_or_block_end();
         });
     }
 

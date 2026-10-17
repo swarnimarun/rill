@@ -1283,6 +1283,21 @@ impl<'a> Generator<'a> {
             Stmt::When { span, .. } => {
                 self.unsupported(*span, "`when` guards", "M3 (`<decides>`)");
             }
+            Stmt::While { cond, body, .. } => {
+                // `while` is emitted as a counted-free loop with an explicit
+                // break: a condition that desugars to an `if` (`a and b`, `a or
+                // b`) hoists statements, and those must run *per iteration*, not
+                // once before the loop.
+                self.body.push_str("  for (;;) {\n");
+                self.push_scope();
+                let condition = self.expr(cond);
+                self.body
+                    .push_str(&format!("    if (!({condition})) {{ break; }}\n"));
+                self.block_inner(body);
+                self.pop_scope();
+                self.body.push_str("  }\n");
+            }
+            Stmt::Break { .. } => self.body.push_str("  break;\n"),
             Stmt::For {
                 pattern,
                 iter,
@@ -1799,6 +1814,11 @@ fn collect_local_refs_block(block: &Block, out: &mut Vec<LocalId>) {
                 collect_local_refs_expr(iter, out);
                 collect_local_refs_block(body, out);
             }
+            Stmt::While { cond, body, .. } => {
+                collect_local_refs_expr(cond, out);
+                collect_local_refs_block(body, out);
+            }
+            Stmt::Break { .. } => {}
             Stmt::Expr(expr) => collect_local_refs_expr(expr, out),
             Stmt::Let { .. } | Stmt::Error(_) => {}
         }

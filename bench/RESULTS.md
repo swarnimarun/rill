@@ -46,19 +46,27 @@ result into a 64-byte buffer and read it back. Pool reused across 200 reps.
 
 | Program | best of 3 | checksum |
 | --- | --- | --- |
-| Rill (`bench/json_query.v2.rill`) | 9.07s | 11724000 |
-| Rust (`bench/json_query.v2.rs`) | 0.51s | 11724000 |
-| Zig (`bench/json_query.v2.zig`) | 0.02s | 11724000 |
+| Rill (`bench/json_query.v2.rill`) | **0.03s** | 11724000 |
+| Rust (`bench/json_query.v2.rs`) | **0.03s** | 11724000 |
+| Zig (`bench/json_query.v2.zig`) | **0.02s** | 11724000 |
 
-All three produce the same checksum, so the work is identical. **Rill is ~18x
-slower here, and the cause is a missing language feature, not the backend:**
-Rill has no `while`/`break`, so the object/array member loops are written as
-`for (k := 0..<n)` with a `done` flag — they still spin `n` times per container.
-Every other part of the scanner is equivalent (recursive early-exit scans, same
-node layout, same query code). Zig's tight `while` loops are why it is fastest;
-Rust's per-node `Vec` bounds/copy costs sit between. The fix is to add
-`while (cond) { … }` with `break` to Rill and rewrite those loops; the backend
-itself emits the same C quality (v1's byte scan is at parity).
+All three produce the same checksum, so the work is identical, and all three are
+within noise of each other.
+
+How it got here, because both gaps were instructive:
+
+1. **Rill had no early-exit loop.** With only `for (k := 0..<n)` plus a done
+   flag, every container loop spun the full document length, and the scanner was
+   9.07s — ~18x slower than Zig. Adding `while (cond) { … }` and `break`
+   (contextual keywords, so existing code is unaffected) and rewriting the member
+   loops brought Rill to 0.03s, at parity with Rust and Zig.
+2. **Rust was measured with a per-rep pool.** The Rust version allocated and
+   zeroed a 786 KB node pool *per repetition*; hoisting it (as the Zig and Rill
+   versions already did) accounts for its 0.51s → 0.03s. The remaining parity is
+   what the algorithms actually cost on 55 KB of JSON.
+
+The backend itself was never the bottleneck: v1's byte scan and v2's structured
+parse both emit C that clang optimises to the same shape as the Rust/Zig code.
 
 Two silent miscompilations were found and fixed while making v2 correct:
 a Unit-returning call in a block tail, an `if` branch, or a function body's tail

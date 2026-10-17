@@ -291,6 +291,14 @@ fn write_stmt(frontend: &Frontend, stmt: &Stmt, out: &mut String) {
             write_block(frontend, body, out);
             out.push(')');
         }
+        Stmt::While { cond, body, .. } => {
+            out.push_str("(while ");
+            write_expr(frontend, cond, out);
+            out.push(' ');
+            write_block(frontend, body, out);
+            out.push(')');
+        }
+        Stmt::Break { .. } => out.push_str("(break)"),
         Stmt::Let(decl) => {
             out.push_str("(let ");
             out.push_str(frontend.text(decl.name));

@@ -258,6 +258,16 @@ pub enum Stmt {
         body: Block,
         span: Span,
     },
+    /// `while (cond) body`
+    While {
+        cond: Expr,
+        body: Block,
+        span: Span,
+    },
+    /// `break;`
+    Break {
+        span: Span,
+    },
     Expr(Expr),
     Error(Span),
 }
@@ -273,6 +283,8 @@ impl Stmt {
             | Stmt::TryBind { span, .. }
             | Stmt::When { span, .. }
             | Stmt::For { span, .. }
+            | Stmt::While { span, .. }
+            | Stmt::Break { span }
             | Stmt::Error(span) => *span,
             Stmt::Expr(expr) => expr.span,
         }

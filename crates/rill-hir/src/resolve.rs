@@ -786,6 +786,16 @@ impl<'a> Resolver<'a> {
                     span: *span,
                 }
             }
+            AstStmt::While { cond, body, span } => {
+                let cond = self.expr(cond);
+                let body = self.block(body);
+                Stmt::While {
+                    cond,
+                    body,
+                    span: *span,
+                }
+            }
+            AstStmt::Break { span } => Stmt::Break { span: *span },
             AstStmt::Let(decl) => {
                 // A block-level `let` is an item declared in the block scope,
                 // before its body is lowered so it can recurse.

@@ -240,6 +240,8 @@ struct Checker<'a> {
     /// Set while checking the body of a lenient handler (`option`/`one`/`all`),
     /// where `x := e` iterates over `e` instead of binding it whole.
     handler: Option<rill_ast::HandlerKind>,
+    /// Loop nesting, so `break` outside a loop is an error.
+    loop_depth: u32,
     /// The nominal standing in for `Option` results.
     option_id: NominalId,
     /// Unsuffixed numeric literals: they take the type their context requires
@@ -264,6 +266,7 @@ impl<'a> Checker<'a> {
             body_effects: Vec::new(),
             effects_of: HashMap::new(),
             handler: None,
+            loop_depth: 0,
             option_id: NominalId(0),
             int_literals: Vec::new(),
             float_literals: Vec::new(),
@@ -1735,7 +1738,26 @@ impl Checker<'_> {
                 let iter_ty = self.expr(iter);
                 let elem = self.loop_element_ty(&iter_ty);
                 self.pattern(pattern, &elem);
+                self.loop_depth += 1;
                 self.block(body);
+                self.loop_depth -= 1;
+            }
+            Stmt::While { cond, body, .. } => {
+                let cond_ty = self.expr(cond);
+                self.unify(
+                    &Ty::Bool,
+                    &cond_ty,
+                    cond.span,
+                    "checking a `while` condition",
+                );
+                self.loop_depth += 1;
+                self.block(body);
+                self.loop_depth -= 1;
+            }
+            Stmt::Break { span } => {
+                if self.loop_depth == 0 {
+                    self.err(*span, "`break` outside a loop");
+                }
             }
             Stmt::Expr(expr) => {
                 self.expr(expr);

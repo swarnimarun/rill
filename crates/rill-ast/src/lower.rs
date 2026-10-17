@@ -954,6 +954,42 @@ impl<'a> Lower<'a> {
                     span: node.span,
                 }
             }
+            K::WhileStmt => {
+                let mut cur = Cursor::new(node);
+                cur.eat(K::Name); // `while`
+                cur.eat(K::LParen);
+                let cond = self.expr_child(&mut cur, node.span);
+                cur.eat(K::RParen);
+                let body = match cur.peek_kind() {
+                    Some(K::Block) => {
+                        let block_node = cur.node().expect("peeked block");
+                        self.block(block_node)
+                    }
+                    Some(k) if is_stmt_kind(k) || is_expr_kind(k) => {
+                        let element = cur.bump().expect("peeked statement");
+                        let single = self.stmt_or_expr_inline(element);
+                        Block {
+                            stmts: vec![single],
+                            tail: None,
+                            span: node.span,
+                        }
+                    }
+                    _ => {
+                        self.err(node.span, "expected a loop body");
+                        Block::empty(node.span)
+                    }
+                };
+                Stmt::While {
+                    cond,
+                    body,
+                    span: node.span,
+                }
+            }
+            K::BreakStmt => {
+                let mut cur = Cursor::new(node);
+                cur.eat(K::Name);
+                Stmt::Break { span: node.span }
+            }
             K::LetDecl => Stmt::Let(self.fn_decl(node)),
             K::ExprStmt => {
                 let mut cur = Cursor::new(node);
@@ -1592,6 +1628,8 @@ fn is_stmt_kind(kind: K) -> bool {
             | K::TryBindStmt
             | K::WhenStmt
             | K::ForStmt
+            | K::WhileStmt
+            | K::BreakStmt
             | K::LetDecl
             | K::ExprStmt
     )
