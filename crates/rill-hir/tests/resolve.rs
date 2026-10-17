@@ -377,7 +377,8 @@ let evens (n: i32) = seq {
     for (i : 0..n) { yield i }
 };
 ";
-    let (frontend, hir, _sm) = resolve(src);
+    // `Step` is an undeclared external in this fixture, so resolve leniently.
+    let (frontend, hir, _sm) = resolve_leniently(src);
     let seq_refs = refs(&frontend, &hir, "seq");
     assert!(!seq_refs.is_empty(), "the builder is applied");
     for reference in seq_refs {

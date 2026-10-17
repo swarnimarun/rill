@@ -251,6 +251,9 @@ struct Checker<'a> {
     handler: Option<rill_ast::HandlerKind>,
     /// Loop nesting, so `break` outside a loop is an error.
     loop_depth: u32,
+    /// Type parameters in scope (`trait Show a = …`, `impl Show Point = …`):
+    /// they stand for the types the constraint is instantiated with.
+    type_params: Vec<Symbol>,
     /// The nominal standing in for `Option` results.
     option_id: NominalId,
     /// The nominal standing in for growable byte buffers (`<alloc>`).
@@ -278,6 +281,7 @@ impl<'a> Checker<'a> {
             effects_of: HashMap::new(),
             handler: None,
             loop_depth: 0,
+            type_params: Vec::new(),
             option_id: NominalId(0),
             buf_id: NominalId(1),
             int_literals: Vec::new(),
@@ -652,6 +656,8 @@ impl<'a> Checker<'a> {
             }
         }
         for item in self.hir.items() {
+            // Members inherit the enclosing declaration's type parameters.
+            self.type_params = self.enclosing_type_params(item.id);
             match &item.kind {
                 ItemKind::Fn(def) => {
                     let params: Vec<Ty> = def.params.iter().map(|p| self.param_ty(p)).collect();
@@ -692,6 +698,30 @@ impl<'a> Checker<'a> {
         for item in self.hir.items() {
             self.check_declared_effects(item);
         }
+    }
+
+    /// The type parameters declared by the item that owns `id` (a trait, impl,
+    /// builder or type), if any.
+    fn enclosing_type_params(&self, id: ItemId) -> Vec<Symbol> {
+        for item in self.hir.items() {
+            let members = match &item.kind {
+                ItemKind::Trait(def) => &def.members,
+                ItemKind::Impl(def) => &def.members,
+                ItemKind::Builder(def) => &def.members,
+                _ => continue,
+            };
+            if members.contains(&id) {
+                return match &item.kind {
+                    ItemKind::Trait(def) => def.params.clone(),
+                    // `impl Show Point` — `Point` is a concrete type there, so an
+                    // impl's members have no type parameters of their own.
+                    ItemKind::Impl(_) => Vec::new(),
+                    ItemKind::Builder(def) => def.params.clone(),
+                    _ => Vec::new(),
+                };
+            }
+        }
+        Vec::new()
     }
 
     fn declare_nominal(&mut self, item: &rill_hir::Item, def: &rill_hir::TypeDef) {
@@ -858,6 +888,11 @@ impl<'a> Checker<'a> {
             "Bool" => Ty::Bool,
             "String" | "Text" => Ty::Text,
             "Buf" => Ty::Nominal(self.buf_id),
+            _ if self.type_params.iter().any(|p| self.text(*p) == name) => {
+                // A type parameter of the enclosing declaration (`a` in
+                // `trait Show a`): a fresh variable for inference to fill in.
+                self.fresh()
+            }
             _ => {
                 // A declared nominal: the item name resolves to a type.
                 let item = self

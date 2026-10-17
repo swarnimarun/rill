@@ -195,6 +195,9 @@ struct Generator<'a> {
     /// `inout` parameters are C pointers; the local reads as `(*p_x)` so every
     /// existing place/expression path keeps working.
     inout_locals: std::collections::HashMap<LocalId, String>,
+    /// Static trait dispatch: (trait, method) -> impls keyed by first-parameter
+    /// type, with the C function implementing each.
+    trait_impls: std::collections::HashMap<(String, String), Vec<(Ty, String)>>,
 }
 
 impl<'a> Generator<'a> {
@@ -213,6 +216,7 @@ impl<'a> Generator<'a> {
             diagnostics: Diagnostics::new(),
             scopes: Vec::new(),
             inout_locals: std::collections::HashMap::new(),
+            trait_impls: std::collections::HashMap::new(),
         }
     }
 
@@ -297,9 +301,52 @@ impl<'a> Generator<'a> {
                 | ItemKind::Trait(_)
                 | ItemKind::Impl(_)
                 | ItemKind::Use(_) => {}
+                ItemKind::Impl(def) => self.emit_impl(item, def),
                 ItemKind::Stmt(stmt) => self.module_static(stmt),
                 ItemKind::Type(_) | ItemKind::Placeholder => {}
             }
+        }
+    }
+
+    /// `impl Trait Type = { … }` — emit each member and record it for static
+    /// dispatch. The impl's `name` is the trait; the first entry of `params` is
+    /// the type it is implemented for (both come from the head syntax).
+    fn emit_impl(&mut self, item: &rill_hir::Item, def: &rill_hir::ImplDef) {
+        let trait_name = item
+            .name
+            .map(|n| self.text(n).to_string())
+            .unwrap_or_default();
+        let target = def
+            .params
+            .first()
+            .map(|sym| self.text(*sym).to_string())
+            .unwrap_or_default();
+        for member in &def.members {
+            let Some(inner) = self.hir.try_item(*member) else {
+                continue;
+            };
+            let ItemKind::Fn(member_def) = &inner.kind else {
+                continue;
+            };
+            if member_def.body.is_none() {
+                continue;
+            }
+            let method = inner
+                .name
+                .map(|n| self.text(n).to_string())
+                .unwrap_or_default();
+            let c_name = format!("rill_impl{}_{}", item.id.0, method);
+            // The implementing type is the member's first parameter type.
+            let first_param = match self.checked.item_ty(*member) {
+                Some(ItemTy::Fn { params, .. }) => params.first().cloned().unwrap_or(Ty::Error),
+                _ => Ty::Error,
+            };
+            let _ = target;
+            self.trait_impls
+                .entry((trait_name.clone(), method.clone()))
+                .or_default()
+                .push((first_param, c_name.clone()));
+            self.emit_fn_named(*member, member_def, c_name, false);
         }
     }
 
@@ -339,6 +386,36 @@ impl<'a> Generator<'a> {
                 self.defs.push_str(&body);
             }
             _ => {}
+        }
+    }
+
+    /// The trait named by `id`: either the trait item itself (a call by the
+    /// method's name resolves to it) or one of its members.
+    fn trait_of(&self, id: ItemId) -> Option<String> {
+        for item in self.hir.items() {
+            if let ItemKind::Trait(def) = &item.kind {
+                if item.id == id || def.members.contains(&id) {
+                    return item.name.map(|n| self.text(n).to_string());
+                }
+            }
+        }
+        None
+    }
+
+    fn display_ty(&self, ty: &Ty) -> String {
+        match ty {
+            Ty::Int { bits, signed } => format!("{}{bits}", if *signed { 'i' } else { 'u' }),
+            Ty::Float { bits } => format!("f{bits}"),
+            Ty::Bool => "Bool".into(),
+            Ty::Unit => "()".into(),
+            Ty::Text => "String".into(),
+            Ty::Record(id) | Ty::Nominal(id) => self.nominal_name(*id),
+            Ty::Tuple(elems) => format!("({} fields)", elems.len()),
+            Ty::Array { .. } => "array".into(),
+            Ty::Range(_) => "range".into(),
+            Ty::Fn { .. } => "function".into(),
+            Ty::Choice(inner) => self.display_ty(inner),
+            Ty::Var(_) | Ty::Error => "<unknown>".into(),
         }
     }
 
@@ -538,6 +615,11 @@ impl<'a> Generator<'a> {
 
     fn emit_fn(&mut self, id: ItemId, def: &rill_hir::FnDef) {
         let name = self.item_c_name(id);
+        self.emit_fn_named(id, def, name, true);
+    }
+
+    /// `emit_fn` with an explicit C name (`is_main` controls the entry point).
+    fn emit_fn_named(&mut self, id: ItemId, def: &rill_hir::FnDef, name: String, allow_main: bool) {
         let ret_ty = match self.checked.item_ty(id) {
             Some(ItemTy::Fn { ret, .. }) => ret.clone(),
             _ => Ty::Unit,
@@ -1700,6 +1782,54 @@ impl<'a> Generator<'a> {
     }
 
     fn call(&mut self, whole: &Expr, callee: &Expr, args: &[rill_hir::Arg]) -> String {
+        // Static trait dispatch: a call to a trait method is routed to the impl
+        // whose first parameter type matches the first argument.
+        if let ExprKind::Path {
+            segments,
+            res: Res::Item(id),
+        } = &callee.kind
+        {
+            if let Some(method) = segments.last().map(|s| self.text(*s).to_string()) {
+                if let Some(trait_name) = self.trait_of(*id) {
+                    let first_arg = args
+                        .first()
+                        .map(|arg| self.expr_ty(&arg.value))
+                        .unwrap_or(Ty::Error);
+                    let mut rest: Vec<String> =
+                        args.iter().map(|arg| self.expr(&arg.value)).collect();
+                    let candidates = self
+                        .trait_impls
+                        .get(&(trait_name.clone(), method.clone()))
+                        .cloned()
+                        .unwrap_or_default();
+                    let chosen = candidates
+                        .iter()
+                        .find(|(param, _)| *param == first_arg)
+                        .or_else(|| candidates.first());
+                    match chosen {
+                        Some((_, c_name)) => {
+                            let c_name = c_name.clone();
+                            // `rest` were evaluated above; they stay in order.
+                            return format!("{c_name}({})", rest.join(", "));
+                        }
+                        None => {
+                            let display = self.display_ty(&first_arg);
+                            self.diagnostics.push(
+                                Diagnostic::error(
+                                    whole.span,
+                                    format!(
+                                        "no impl of `{trait_name}` for `{display}` (`{method}`)"
+                                    ),
+                                )
+                                .note("add an `impl` block for this type".to_string()),
+                            );
+                            let _ = rest.drain(..).count();
+                            return "0".into();
+                        }
+                    }
+                }
+            }
+        }
         // Enum construction: `Type::Variant a b` or a record construction
         // `Name a b`.
         if let ExprKind::Path {

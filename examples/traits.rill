@@ -1,0 +1,40 @@
+use std::io;
+
+# Traits with static dispatch: `show p` resolves to the impl for the argument's
+# type at compile time — no vtable, no indirection.
+
+trait Show a = {
+    let show (x: a) -> String <io>;
+};
+
+trait Area a = {
+    let area (x: a) -> i32 <computes>;
+};
+
+type Point = record { x: i32; y: i32; };
+type Rect = record { w: i32; h: i32; };
+
+impl Show Point = {
+    let show (p: Point) -> String <io> = { "Point(" ++ (p.x as String) ++ ", " ++ (p.y as String) ++ ")" }
+};
+
+impl Show Rect = {
+    let show (r: Rect) -> String <io> = {
+        "Rect(" ++ (r.w as String) ++ "x" ++ (r.h as String) ++ ")"
+    }
+};
+
+impl Area Point = {
+    let area (p: Point) -> i32 <computes> = { 0 }
+};
+
+impl Area Rect = {
+    let area (r: Rect) -> i32 <computes> = { r.w * r.h }
+};
+
+let main () -> i32 <io> = {
+    var p = Point 3 4;
+    var r = Rect 6 7;
+    io::println ("p " ++ (show p) ++ " r " ++ (show r));
+    area r
+};

@@ -536,6 +536,15 @@ pub(crate) struct HirBuilder {
 }
 
 impl HirBuilder {
+    /// The item table, for passes that run while the HIR is being built.
+    pub(crate) fn items(&self) -> &[Item] {
+        &self.hir.items
+    }
+
+    pub(crate) fn try_item(&self, id: ItemId) -> Option<&Item> {
+        self.hir.try_item(id)
+    }
+
     pub(crate) fn add_item(&mut self, item: Item, module_level: bool) -> ItemId {
         let id = item.id;
         debug_assert_eq!(id.0 as usize, self.hir.items.len());

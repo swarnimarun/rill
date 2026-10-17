@@ -310,6 +310,7 @@ impl<'a> Lower<'a> {
         };
         let params = self.type_params(&mut cur);
         let constraints = self.constraints_opt(&mut cur);
+        cur.eat(K::Assign);
         let members = self.members(&mut cur);
         TraitDecl {
             name,
@@ -329,6 +330,7 @@ impl<'a> Lower<'a> {
         };
         let params = self.type_params(&mut cur);
         let constraints = self.constraints_opt(&mut cur);
+        cur.eat(K::Assign);
         let members = self.members(&mut cur);
         ImplDecl {
             name,
@@ -350,6 +352,7 @@ impl<'a> Lower<'a> {
             }
         };
         let params = self.type_params(&mut cur);
+        cur.eat(K::Assign);
         let members = self.members(&mut cur);
         BuilderDecl {
             name,

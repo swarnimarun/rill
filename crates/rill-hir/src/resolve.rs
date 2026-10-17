@@ -91,8 +91,46 @@ impl<'a> Resolver<'a> {
 
     fn module(&mut self, module: &Module) {
         let slots = self.declare_module(module);
-        for (item, slot) in module.items.iter().zip(slots) {
-            self.item(item, Some(slot));
+        // Traits, impls and builders first: their member names must be in scope
+        // before any body that calls them is resolved.
+        let declarations = |item: &AstItem| {
+            matches!(
+                item,
+                AstItem::Trait(_) | AstItem::Impl(_) | AstItem::Builder(_)
+            )
+        };
+        for (item, slot) in module.items.iter().zip(&slots) {
+            if declarations(item) {
+                self.item(item, Some(*slot));
+            }
+        }
+        // Trait and impl members are nameable from the module: `show p` names
+        // the trait's method, and static dispatch finds the impl.
+        let members: Vec<(Symbol, ItemId)> = {
+            let mut found = Vec::new();
+            for item in self.out.items() {
+                let member_ids = match &item.kind {
+                    ItemKind::Trait(def) => &def.members,
+                    ItemKind::Impl(def) => &def.members,
+                    _ => continue,
+                };
+                for member in member_ids {
+                    if let Some(name) = self.out.try_item(*member).and_then(|m| m.name) {
+                        found.push((name, item.id));
+                    }
+                }
+            }
+            found
+        };
+        for (name, owner) in members {
+            self.module_values
+                .entry(name)
+                .or_insert_with(|| vec![owner]);
+        }
+        for (item, slot) in module.items.iter().zip(&slots) {
+            if !declarations(item) {
+                self.item(item, Some(*slot));
+            }
         }
     }
 
@@ -114,6 +152,18 @@ impl<'a> Resolver<'a> {
         for item in &module.items {
             if let AstItem::Use(decl) = item {
                 self.declare_use(&decl.path);
+            }
+        }
+        // Trait methods are callable by name; static dispatch picks the impl.
+        for (item, slot) in module.items.iter().zip(&slots) {
+            let AstItem::Trait(decl) = item else { continue };
+            for member in &decl.members {
+                if let AstItem::Fn(member_fn) = member {
+                    self.module_values
+                        .entry(member_fn.name.sym)
+                        .or_default()
+                        .push(*slot);
+                }
             }
         }
         // Enum variants are nameable on their own (`Circle r`, `Rect 6 7`) as
