@@ -12,9 +12,17 @@ Times are best-of-3 wall clock for the whole process (`/usr/bin/time -p`).
 
 | Program | run 1 | run 2 | run 3 | checksum |
 | --- | --- | --- | --- | --- |
-| **Rill** (`bench/json.v1.rill`) | 0.63s | **0.12s** | **0.12s** | 9171776200 |
-| Rust (`bench/json.v1.rs`) | 0.63s | 0.13s | 0.13s | 9171776200 |
-| Zig (`bench/json.v1.zig`) | 0.62s | 0.13s | 0.13s | 9171776200 |
+| **Rill** (`bench/json.v1.rill`) | 0.31s | **0.12s** | **0.12s** | 9171776200 |
+| Rust (`bench/json.v1.rs`) | 0.32s | 0.13s | 0.13s | 9171776200 |
+| Zig (`bench/json.v1.zig`) | 0.63s | 0.13s | 0.13s | 9171776200 |
+
+Every program prints the same byte count and the same checksum, and the harness
+asserts it: a first cut compared runs where the Rill range was written `0..reps`
+(inclusive in Rill, per the §2.5 table) against Rust's exclusive `0..reps`, so
+Rill did one extra pass and the totals differed by exactly one pass
+(45,858,881). The programs now use `..<` in Rill to match, and text indexing
+goes through `const unsigned char *` explicitly. Timing an unmatched workload is
+meaningless, so the numbers above are from the corrected, identical runs.
 
 Run 1 includes cold caches for all three; runs 2–3 are the steady state.
 **Rill is at parity with Rust and Zig** on this workload: the C bootstrap backend

@@ -8,7 +8,7 @@ let checksum (s: Text, n: usize) -> i64 <computes> = {
     var depth: i64 = 0;
     var in_string: Bool = false;
     var escaped: Bool = false;
-    for (k := 0..n) {
+    for (k := 0..<n) {
         var b: u8 = s[k];
         set sum = sum + (b as i64);
         if (in_string) {
@@ -32,7 +32,7 @@ let checksum (s: Text, n: usize) -> i64 <computes> = {
 
 let run (s: Text, n: usize, reps: i64) -> i64 <computes> = {
     var acc: i64 = 0;
-    for (r := 0..reps) {
+    for (r := 0..<reps) {
         set acc = acc + checksum s n
     };
     acc

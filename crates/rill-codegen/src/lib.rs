@@ -817,7 +817,9 @@ impl<'a> Generator<'a> {
                 match base_ty {
                     Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
                     Ty::Array { len: None, .. } => format!("({base}).ptr[{index}]"),
-                    Ty::Text => format!("((r_u8)({base})[{index}])"),
+                    Ty::Text => {
+                        format!("((r_u8)((const unsigned char *)({base}))[{index}])")
+                    }
                     _ => {
                         self.unsupported(expr.span, "this index expression", "M3");
                         "0".into()
