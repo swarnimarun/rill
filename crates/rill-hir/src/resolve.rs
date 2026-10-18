@@ -980,7 +980,9 @@ pub fn is_builtin(name: &str) -> bool {
     matches!(
         name,
         // `fail` is the failure of a `<decides>` expression (PLAN §3).
-        "fail"
+        "arena_bind"
+            | "arena_unbind"
+            | "fail"
             | "zeroed"
             | "buf_new"
             | "buf_push"

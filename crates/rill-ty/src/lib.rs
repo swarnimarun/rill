@@ -1762,6 +1762,10 @@ impl Checker<'_> {
         let buf = Ty::Nominal(self.buf_id);
         let arena = Ty::Nominal(self.arena_id);
         Some(match name {
+            // The ambient arena: bound at the top scope, consulted in layers by whatever
+            // needs storage (PLAN §11). `unbind` returns to the previous binding.
+            "arena_bind" => (vec![arena.clone()], Ty::Unit, vec![Effect::Writes]),
+            "arena_unbind" => (Vec::new(), Ty::Unit, vec![Effect::Writes]),
             "buf_new" => (Vec::new(), buf, vec![Effect::Alloc]),
             "buf_push" => (
                 vec![

@@ -162,6 +162,23 @@ typedef struct rill_arena {
   size_t used;
 } rill_arena;
 
+/* The ambient arena (PLAN §11): bound at the top scope and read in layers, so
+   storage-using operations need not thread a handle through every call. */
+static rill_arena *rill_arena_layers[64];
+static int rill_arena_depth;
+static void rill_arena_bind(rill_arena *a) {
+  if (rill_arena_depth < 64) {
+    rill_arena_layers[rill_arena_depth] = a;
+    rill_arena_depth += 1;
+  }
+}
+static void rill_arena_unbind(void) {
+  if (rill_arena_depth > 0) rill_arena_depth -= 1;
+}
+static rill_arena *rill_arena_current(void) {
+  return rill_arena_depth > 0 ? rill_arena_layers[rill_arena_depth - 1] : NULL;
+}
+
 static rill_arena *rill_arena_new(r_u64 bytes) {
   rill_arena *a = (rill_arena *)malloc(sizeof(rill_arena));
   a->cap = (size_t)bytes;
@@ -1291,6 +1308,8 @@ impl<'a> Generator<'a> {
                                 }
                             },
                         },
+                        "arena_bind" => "rill_arena_bind".into(),
+                        "arena_unbind" => "rill_arena_unbind".into(),
                         "buf_new" => "rill_buf_new".into(),
                         "buf_push" => "rill_buf_push".into(),
                         "buf_len" => "rill_buf_len".into(),
@@ -1638,7 +1657,7 @@ impl<'a> Generator<'a> {
                     let out_slice = format!("_s{level}");
                     let capacity = alternatives.len().max(1);
                     self.body.push_str(&format!(
-                        "  {slice} {out_slice}; {out_slice}.ptr = ({ety} *)malloc({capacity} * sizeof({ety})); {out_slice}.len = 0;\n"
+                        "  {slice} {out_slice}; {out_slice}.ptr = rill_arena_current() ? (void *)rill_arena_alloc(rill_arena_current(), {capacity} * sizeof({ety})) : (void *)malloc({capacity} * sizeof({ety})); {out_slice}.len = 0;\n"
                     ));
                     for alt in &alternatives {
                         match self.failable_call(alt) {

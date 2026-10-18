@@ -713,3 +713,37 @@ fn builds_and_runs_all_handler() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_layers() {
+    let dir = workdir("layers");
+    let out = dir.join("layers");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/layers.rill")
+        .canonicalize()
+        .expect("examples/layers.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The collector found two values, and its storage came from the bound arena:
+    // the exact byte count carries allocator overhead, but zero would mean the
+    // heap path was taken.
+    assert!(stdout.contains("found 2"), "unexpected stdout: {stdout}");
+    let used: i64 = stdout
+        .split("arena used ")
+        .nth(1)
+        .and_then(|rest| rest.trim().parse().ok())
+        .unwrap_or_else(|| panic!("no arena figure in {stdout}"));
+    assert!(used > 0, "the arena was not used: {stdout}");
+    assert_eq!(output.status.code(), Some(0));
+}

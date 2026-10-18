@@ -1,0 +1,17 @@
+use std::io;
+
+# The arena is bound at the top scope and consulted in layers: `all { … }` draws
+# its storage from it, which `arena_used` makes visible (it is zero when the
+# collector falls back to the heap, as in examples/all.rill). The exact figure
+# includes the allocator's own overhead.
+
+let first_positive (x: i32, y: i32) -> i32 <decides> =
+    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+
+let main () -> () <io | decides | alloc | writes> = {
+    var a = arena_new 4096u64;
+    arena_bind (a);
+    var found = all { first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] };
+    io::println ("found " ++ (size found as String) ++ " arena used " ++ (arena_used (a) as String));
+    arena_unbind ()
+};
