@@ -1150,33 +1150,37 @@ fn pattern_bindings(pattern: &AstPattern) -> Vec<(Symbol, Span)> {
     }
 }
 
-/// Compiler-provided names the front end knows by name.
+/// Compiler-provided names the front end knows by name. The list is data rather
+/// than a `matches!` because tools enumerate it: completion offers these names,
+/// and the checker's signature table is keyed by them.
+pub const BUILTIN_NAMES: &[&str] = &[
+    // `fail` is the failure of a `<decides>` expression (PLAN §3).
+    "threads_bind",
+    "threads_count",
+    "spawn_thread",
+    "join_threads",
+    "f64x4",
+    "io_bind",
+    "io_unbind",
+    "io_spawn",
+    "io_run",
+    "arena_bind",
+    "arena_unbind",
+    "fail",
+    "zeroed",
+    "buf_new",
+    "buf_push",
+    "buf_len",
+    "buf_get",
+    "buf_text",
+    "arena_new",
+    "arena_mark",
+    "arena_reset",
+    "arena_used",
+    "arena_alloc",
+];
+
+/// Whether `name` is one of the compiler's builtins.
 pub fn is_builtin(name: &str) -> bool {
-    matches!(
-        name,
-        // `fail` is the failure of a `<decides>` expression (PLAN §3).
-        "threads_bind"
-            | "threads_count"
-            | "spawn_thread"
-            | "join_threads"
-            | "f64x4"
-            | "io_bind"
-            | "io_unbind"
-            | "io_spawn"
-            | "io_run"
-            | "arena_bind"
-            | "arena_unbind"
-            | "fail"
-            | "zeroed"
-            | "buf_new"
-            | "buf_push"
-            | "buf_len"
-            | "buf_get"
-            | "buf_text"
-            | "arena_new"
-            | "arena_mark"
-            | "arena_reset"
-            | "arena_used"
-            | "arena_alloc"
-    )
+    BUILTIN_NAMES.contains(&name)
 }

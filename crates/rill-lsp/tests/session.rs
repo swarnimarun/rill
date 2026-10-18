@@ -494,3 +494,223 @@ fn discharged_decides_do_not_blame_the_handled_arm() {
         "the diagnostic must underline the tail's `pick[x]` at {line}:{character}: {diagnostics}"
     );
 }
+
+/// `(line, character)` for an offset, the way a request reports a position.
+fn at(source: &str, offset: usize) -> (usize, usize) {
+    let line = source[..offset].matches('\n').count();
+    let line_start = source[..offset].rfind('\n').map(|at| at + 1).unwrap_or(0);
+    (line, offset - line_start)
+}
+
+#[test]
+fn completion_offers_the_names_in_scope_at_the_cursor() {
+    // A name is offered from where it is bound: `count` and `total` are written
+    // above the cursor, `later` only below it. `sum`, `Point` and the builtins
+    // come from the module and the compiler's own table. A second request types a
+    // prefix, which the server filters, and the edit range covers it.
+    let source = "\
+type Point = record { var x: i32; var y: i32; };
+let sum (p: Point) -> i32 <computes> = p.x + p.y;
+let main () -> i32 <computes> = {
+    var count = 1;
+    var total = 0;
+    
+    var later = 2;
+    tot
+    total
+};
+";
+    let (line, character) = at(source, source.find("    \n").expect("the blank line") + 4);
+    let (prefix_line, prefix_character) =
+        at(source, source.find("    tot\n").expect("the partial name") + 7);
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", "file:///n.rill"), ("TEXT", &json_string(source))],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/completion","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("URI", "file:///n.rill"),
+                ("LINE", &line.to_string()),
+                ("CHAR", &character.to_string()),
+            ],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":10,"method":"textDocument/completion","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("URI", "file:///n.rill"),
+                ("LINE", &prefix_line.to_string()),
+                ("CHAR", &prefix_character.to_string()),
+            ],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let init = output
+        .iter()
+        .find(|body| body.contains(r#""id":1"#))
+        .unwrap_or_else(|| panic!("no initialize answer: {output:?}"));
+    assert!(
+        init.contains("completionProvider"),
+        "completion must be advertised, or no client asks for it: {init}"
+    );
+    let answer = output
+        .iter()
+        .find(|body| body.contains(r#""id":9"#))
+        .unwrap_or_else(|| panic!("no completion answer: {output:?}"));
+    for expected in [
+        r#""label":"count""#,
+        r#""label":"total","kind":6"#,
+        r#""label":"sum","kind":3"#,
+        r#""label":"Point","kind":22"#,
+        r#""label":"Point","kind":22,"detail":"record""#,
+        r#""label":"buf_new","kind":3,"detail":"() -> Buf <alloc>""#,
+    ] {
+        assert!(
+            answer.contains(expected),
+            "{expected} missing from the answer: {answer}"
+        );
+    }
+    assert!(
+        !answer.contains(r#""label":"later""#),
+        "a binding below the cursor is not in scope yet: {answer}"
+    );
+    // An empty prefix replaces the whole name being typed, which is nothing here.
+    let expected_range = format!(
+        r#""range":{{"start":{{"line":{line},"character":{character}}},"end":{{"line":{line},"character":{character}}}}}"#
+    );
+    assert!(
+        answer.contains(&expected_range),
+        "the edit range is the name being typed: {answer}"
+    );
+
+    let filtered = output
+        .iter()
+        .find(|body| body.contains(r#""id":10"#))
+        .unwrap_or_else(|| panic!("no prefixed completion answer: {output:?}"));
+    assert!(
+        filtered.contains(r#""label":"total""#),
+        "`tot` completes to `total`: {filtered}"
+    );
+    for missing in [r#""label":"count""#, r#""label":"later""#] {
+        assert!(
+            !filtered.contains(missing),
+            "{missing} does not start with the typed prefix: {filtered}"
+        );
+    }
+    let expected_range = format!(
+        r#""range":{{"start":{{"line":{prefix_line},"character":{}}}"#,
+        prefix_character - 3
+    );
+    assert!(
+        filtered.contains(&expected_range),
+        "the edit range covers the typed prefix: {filtered}"
+    );
+}
+
+#[test]
+fn completion_after_a_dot_offers_fields_and_methods() {
+    // The fields come from the receiver's type; the methods from the callables in
+    // scope that take it as a first argument, since `p.sum ()` is `sum (p)`. The
+    // record's constructor is not a method - its first parameter is an `i32`.
+    let source = "\
+type Point = record { var x: i32; var y: i32; };
+let sum (p: Point) -> i32 <computes> = p.x + p.y;
+let main () -> i32 <computes> = {
+    var p = Point (1, 2);
+    p.;
+    0
+};
+";
+    let (line, character) = at(source, source.find("    p.;\n").expect("the access") + 6);
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", "file:///d.rill"), ("TEXT", &json_string(source))],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/completion","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("URI", "file:///d.rill"),
+                ("LINE", &line.to_string()),
+                ("CHAR", &character.to_string()),
+            ],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let answer = output
+        .iter()
+        .find(|body| body.contains(r#""id":9"#))
+        .unwrap_or_else(|| panic!("no completion answer: {output:?}"));
+    assert!(
+        answer.contains(r#""label":"x","kind":5,"detail":"i32""#),
+        "the record's fields are offered with their types: {answer}"
+    );
+    assert!(
+        answer.contains(r#""label":"y","kind":5"#),
+        "every field, in declaration order: {answer}"
+    );
+    assert!(
+        answer.contains(r#""label":"sum","kind":2,"detail":"(Point) -> i32 <computes>""#),
+        "`sum` takes a `Point` first, so it is a method of one: {answer}"
+    );
+    assert!(
+        !answer.contains(r#""label":"Point""#),
+        "a constructor whose first parameter is not the receiver is not a method: {answer}"
+    );
+}
+
+#[test]
+fn completion_after_a_module_path_lists_the_header_declarations() {
+    // `M::name` reaches what the header contributed, so a `::` after a module
+    // name offers exactly those declarations - with the same kinds and details a
+    // bare name gets.
+    let dir = std::env::temp_dir().join("rill-lsp-completion-module");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create workdir");
+    std::fs::write(dir.join("m.h"), "extern int triple(int n);\n#define TRIPLE 3\n")
+        .expect("write the header");
+    let source = "type M = @include(\"m.h\");\nlet main () -> i32 <computes> = M::;\n";
+    let (line, character) = at(source, source.find("M::").expect("the module path") + 3);
+    let uri = format!("file://{}", dir.join("m.rill").display());
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", &uri), ("TEXT", &json_string(source))],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/completion","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("URI", &uri),
+                ("LINE", &line.to_string()),
+                ("CHAR", &character.to_string()),
+            ],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let answer = output
+        .iter()
+        .find(|body| body.contains(r#""id":9"#))
+        .unwrap_or_else(|| panic!("no completion answer: {output:?}"));
+    assert!(
+        answer.contains(r#""label":"triple","kind":3,"detail":"(i32) -> i32 <io>""#),
+        "the header's prototype, with the row the import gives it: {answer}"
+    );
+    assert!(
+        answer.contains(r#""label":"TRIPLE","kind":21"#),
+        "the header's `#define` is a constant: {answer}"
+    );
+    assert!(
+        !answer.contains(r#""label":"main""#),
+        "a module path lists the module's members, not the enclosing scope: {answer}"
+    );
+}

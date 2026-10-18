@@ -31,7 +31,7 @@ pub use hir::{
     MatchArm, Namespace, Param, ParamSlot, Pattern, ProjectDef, RefInfo, Res, SignatureDef, Stmt,
     TraitDef, TypeDef, UseDef,
 };
-pub use resolve::{lower, lower_with, Options};
+pub use resolve::{is_builtin, lower, lower_with, Options, BUILTIN_NAMES};
 
 // Type syntax and operator tags live in `rill-ast`; re-exported so consumers
 // of HIR do not need a second import path.

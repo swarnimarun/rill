@@ -599,17 +599,33 @@ impl Hir {
             .iter()
             .copied()
             .filter(|id| self.item(*id).name == Some(name))
-            // A C header's declarations stay inside their module: they become
-            // nameable by the qualified `M::name`, or by `use M::*;`.
-            .filter(|id| {
-                if !self.imported.contains(id) {
-                    return true;
-                }
-                self.modules.iter().any(|(module, members)| {
-                    self.globbed.contains(module) && members.values().any(|member| member == id)
-                })
-            })
+            .filter(|id| self.is_name_visible(*id))
             .collect()
+    }
+
+    /// Whether `id`'s name can be written without qualification: a module-level
+    /// declaration that did not come from a header, or a member of a module
+    /// that was preluded with `use M::*;`. A C header's declarations stay
+    /// inside their module otherwise - nameable by the qualified `M::name`.
+    pub fn is_name_visible(&self, id: ItemId) -> bool {
+        if !self.imported.contains(&id) {
+            return true;
+        }
+        self.modules.iter().any(|(module, members)| {
+            self.globbed.contains(module) && members.values().any(|member| member == &id)
+        })
+    }
+
+    /// The members of an `@include`d module, in declaration order: what `M::`
+    /// can name. Empty for a name that is not a module.
+    pub fn module_members(&self, module: Symbol) -> Vec<(Symbol, ItemId)> {
+        let Some(members) = self.modules.get(&module) else {
+            return Vec::new();
+        };
+        let mut found: Vec<(Symbol, ItemId)> =
+            members.iter().map(|(name, id)| (*name, *id)).collect();
+        found.sort_by_key(|(_, id)| id.0);
+        found
     }
 
     /// References whose recorded name is `name`, in source order.

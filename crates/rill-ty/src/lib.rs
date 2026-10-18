@@ -350,6 +350,13 @@ impl Checked {
         self.item_types.get(id.0 as usize)
     }
 
+    /// A builtin's signature, for tools: completion shows it as the detail of
+    /// the name, and a `.` receiver takes the builtins whose first parameter is
+    /// its type (`x.f (a)` is `f (x, a)`).
+    pub fn builtin_sig(&self, name: &str) -> Option<(Vec<Ty>, Ty, Vec<Effect>)> {
+        Checker::builtin_sig_for(self.buf_id, self.arena_id, self.vec_id, name)
+    }
+
     pub fn nominal(&self, id: NominalId) -> &NominalDef {
         &self.nominals[id.0 as usize]
     }
@@ -2186,9 +2193,22 @@ impl Checker<'_> {
     }
 
     /// Signatures of the compiler-provided builtins.
-    fn builtin_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty, Vec<Effect>)> {
-        let buf = Ty::Nominal(self.buf_id);
-        let arena = Ty::Nominal(self.arena_id);
+    fn builtin_sig(&self, name: &str) -> Option<(Vec<Ty>, Ty, Vec<Effect>)> {
+        Self::builtin_sig_for(self.buf_id, self.arena_id, self.vec_id, name)
+    }
+
+    /// A builtin's signature: parameters, return type and effects; `None` for a
+    /// name the table does not know - `fail` and `zeroed` are typed by the
+    /// checker's own path checks, not here. Keyed by name so that a tool reads
+    /// the same table the checker resolves calls through.
+    fn builtin_sig_for(
+        buf_id: NominalId,
+        arena_id: NominalId,
+        vec_id: NominalId,
+        name: &str,
+    ) -> Option<(Vec<Ty>, Ty, Vec<Effect>)> {
+        let buf = Ty::Nominal(buf_id);
+        let arena = Ty::Nominal(arena_id);
         Some(match name {
             // The ambient arena: bound at the top scope, consulted in layers by whatever
             // needs storage (PLAN §11). `unbind` returns to the previous binding.
@@ -2199,7 +2219,7 @@ impl Checker<'_> {
                     Ty::Float { bits: 64 },
                     Ty::Float { bits: 64 },
                 ],
-                Ty::Nominal(self.vec_id),
+                Ty::Nominal(vec_id),
                 Vec::new(),
             ),
             "arena_bind" => (vec![arena.clone()], Ty::Unit, vec![Effect::Writes]),

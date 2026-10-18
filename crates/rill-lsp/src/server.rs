@@ -136,6 +136,28 @@ impl Server {
                 }
                 self.hover(id, &uri, line, character)?;
             }
+            "textDocument/completion" => {
+                let line = params
+                    .get("position")
+                    .and_then(|p| p.get("line"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let character = params
+                    .get("position")
+                    .and_then(|p| p.get("character"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let uri = params
+                    .get("textDocument")
+                    .and_then(|doc| doc.get("uri"))
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if debug() {
+                    eprintln!("lsp: completion {uri} at {line}:{character}");
+                }
+                self.completion(id, &uri, line, character)?;
+            }
             "textDocument/semanticTokens/full" => {
                 let uri = params
                     .get("textDocument")
@@ -248,6 +270,56 @@ impl Server {
             ("newText", Json::Str(formatted)),
         ]);
         self.respond(id, Json::Arr(vec![edit]))
+    }
+
+    /// Completion: the names a cursor can type. The text before it decides which
+    /// names those are - after `M::` the members of an `@include`d module, after
+    /// `.` the fields and methods of the receiver's type, anywhere else the names
+    /// in scope.
+    fn completion(
+        &mut self,
+        id: Option<Json>,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> std::io::Result<()> {
+        let Some(document) = self.documents.get(uri) else {
+            if debug() {
+                eprintln!("lsp: completion for an unknown document");
+            }
+            return self.respond(id, Json::Null);
+        };
+        let offset = position_to_offset(&document.source, line, character);
+        let (start, candidates) = completions(document, offset);
+        if debug() {
+            eprintln!(
+                "lsp: completion at byte {} -> {} candidates",
+                offset.to_usize(),
+                candidates.len()
+            );
+        }
+        // The name being typed is what the client replaces, so an edit range
+        // covers it and the insertion does not double the text.
+        let edit = span_range(&document.source, start, offset);
+        let items: Vec<Json> = candidates
+            .into_iter()
+            .map(|candidate| {
+                let Candidate { name, kind, detail } = candidate;
+                let mut fields = vec![
+                    ("label", Json::Str(name.clone())),
+                    ("kind", Json::Num(kind)),
+                ];
+                if let Some(detail) = detail {
+                    fields.push(("detail", Json::Str(detail)));
+                }
+                fields.push((
+                    "textEdit",
+                    Json::obj(&[("range", edit.clone()), ("newText", Json::Str(name))]),
+                ));
+                Json::obj(&fields)
+            })
+            .collect();
+        self.respond(id, Json::Arr(items))
     }
 
     /// Hover: the type of the smallest expression containing the cursor.
@@ -742,6 +814,14 @@ fn capabilities() -> Json {
         // hover and references were never declared here.
         ("hoverProvider", Json::Bool(true)),
         ("referencesProvider", Json::Bool(true)),
+        (
+            "completionProvider",
+            Json::obj(&[(
+                // A `.` starts a member list and a `::` a module's members.
+                "triggerCharacters",
+                Json::Arr(vec![Json::Str(".".into()), Json::Str(":".into())]),
+            )]),
+        ),
         ("inlayHintProvider", Json::Bool(true)),
         (
             "semanticTokensProvider",
@@ -1046,4 +1126,541 @@ fn position_to_offset(
         offset += text.len();
     }
     rill_span::BytePos(file.text.len() as u32)
+}
+
+// ---------------------------------------------------------------------------
+// Completion
+// ---------------------------------------------------------------------------
+
+/// One completion candidate: the name the client inserts, how it colours it, and
+/// the type or signature it shows next to it.
+struct Candidate {
+    name: String,
+    kind: f64,
+    detail: Option<String>,
+}
+
+/// `CompletionItemKind` numbers, from the LSP specification.
+const COMPLETION_METHOD: f64 = 2.0;
+const COMPLETION_FUNCTION: f64 = 3.0;
+const COMPLETION_FIELD: f64 = 5.0;
+const COMPLETION_VARIABLE: f64 = 6.0;
+const COMPLETION_CLASS: f64 = 7.0;
+const COMPLETION_CONSTANT: f64 = 21.0;
+const COMPLETION_STRUCT: f64 = 22.0;
+
+/// What the text before `offset` asks to complete, and the names it can be: the
+/// members of an `@include`d module after `::`, the fields and methods of a
+/// receiver after `.`, and the names in scope anywhere else. The first element
+/// is where the name being typed starts - the range a client replaces.
+fn completions(
+    document: &Document,
+    offset: rill_span::BytePos,
+) -> (rill_span::BytePos, Vec<Candidate>) {
+    let bytes = document.text.as_bytes();
+    let end = offset.to_usize().min(bytes.len());
+    let mut start = end;
+    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+        start -= 1;
+    }
+    let prefix = document.text.get(start..end).unwrap_or("");
+    let before = document.text.get(..start).unwrap_or("");
+    let candidates = if let Some(before) = before.strip_suffix("::") {
+        module_candidates(document, before)
+    } else if let Some(before) = before.trim_end().strip_suffix('.') {
+        // `a..b` is a range: the dot before this one ends the receiver's text,
+        // it does not start another access.
+        if before.ends_with('.') {
+            scope_candidates(document, offset)
+        } else {
+            member_candidates(document, before.len(), offset)
+        }
+    } else {
+        scope_candidates(document, offset)
+    };
+    let candidates = if prefix.is_empty() {
+        candidates
+    } else {
+        candidates
+            .into_iter()
+            .filter(|candidate| candidate.name.starts_with(prefix))
+            .collect()
+    };
+    (rill_span::BytePos(start as u32), candidates)
+}
+
+/// The members of the `@include`d module the text before a `::` names, in
+/// declaration order.
+fn module_candidates(document: &Document, before: &str) -> Vec<Candidate> {
+    let Some(module_name) = trailing_ident(before) else {
+        return Vec::new();
+    };
+    let Some(include) = document.hir.includes().iter().find(|include| {
+        document
+            .frontend
+            .text(rill_ast::Ident::new(include.module, include.span))
+            == module_name
+    }) else {
+        return Vec::new();
+    };
+    document
+        .hir
+        .module_members(include.module)
+        .into_iter()
+        .filter_map(|(_, id)| item_candidate(document, id))
+        .collect()
+}
+
+/// The expressions a `.` at `dot` can select from: the fields of the receiver's
+/// type, and the callables that take it as a first argument, since `x.f (a)` is
+/// `f (x, a)`.
+fn member_candidates(
+    document: &Document,
+    dot: usize,
+    offset: rill_span::BytePos,
+) -> Vec<Candidate> {
+    let Some(receiver) = receiver_before(document, dot) else {
+        if debug() {
+            eprintln!("lsp: completion after `.`: no expression ends at byte {dot}");
+        }
+        return Vec::new();
+    };
+    let Some(ty) = document.checked.expr_ty(receiver.id) else {
+        if debug() {
+            eprintln!("lsp: completion after `.`: the receiver has no recorded type");
+        }
+        return Vec::new();
+    };
+    if debug() {
+        eprintln!(
+            "lsp: completion after `.` on `{}`",
+            document.checked.display_ty(&document.frontend, ty)
+        );
+    }
+    let mut candidates = field_candidates(document, ty);
+    candidates.extend(method_candidates(document, ty, offset));
+    dedup(candidates)
+}
+
+/// The expression a `.` at `dot` selects from: the widest one whose text ends
+/// where the receiver's does - `ev.type` starts from `ev`, `f (a).b` from the
+/// access. An access still being typed (`a.`) is a flow whose right side is an
+/// error: it is what is being completed, not a receiver.
+fn receiver_before(document: &Document, dot: usize) -> Option<rill_hir::Expr> {
+    let bytes = document.text.as_bytes();
+    let mut end = dot.min(bytes.len());
+    while end > 0 && bytes[end - 1].is_ascii_whitespace() {
+        end -= 1;
+    }
+    let mut best: Option<(usize, rill_hir::Expr)> = None;
+    for item in document.hir.items() {
+        let Some(body) = item_body(item) else {
+            continue;
+        };
+        let mut exprs = Vec::new();
+        collect_expr(body, &mut exprs);
+        for expr in exprs {
+            if expr.span.is_dummy() || expr.span.end.to_usize() != end {
+                continue;
+            }
+            if let rill_hir::ExprKind::Binary {
+                op: rill_ast::BinaryOp::Flow,
+                rhs,
+                ..
+            } = &expr.kind
+            {
+                if matches!(rhs.kind, rill_hir::ExprKind::Error) {
+                    continue;
+                }
+            }
+            let width = end.saturating_sub(expr.span.start.to_usize());
+            if best.as_ref().map(|(best, _)| *best < width).unwrap_or(true) {
+                best = Some((width, expr));
+            }
+        }
+    }
+    best.map(|(_, expr)| expr)
+}
+
+/// The fields a `.` on `ty` can name, in declaration order. A type without
+/// fields has none: what else a `.` can name comes from the callables in scope.
+fn field_candidates(document: &Document, ty: &rill_ty::Ty) -> Vec<Candidate> {
+    let id = match ty {
+        rill_ty::Ty::Record(id) | rill_ty::Ty::Nominal(id) => *id,
+        _ => return Vec::new(),
+    };
+    let fields = match &document.checked.nominal(id).kind {
+        rill_ty::NominalKind::Record(fields) | rill_ty::NominalKind::View(fields) => fields,
+        _ => return Vec::new(),
+    };
+    fields
+        .iter()
+        .map(|field| Candidate {
+            name: document
+                .frontend
+                .text(rill_ast::Ident::new(field.name, field.span))
+                .to_string(),
+            kind: COMPLETION_FIELD,
+            detail: Some(document.checked.display_ty(&document.frontend, &field.ty)),
+        })
+        .collect()
+}
+
+/// The callables in scope whose first parameter is the receiver's type. The
+/// receiver is passed as the first argument (`x.f (a)` is `f (x, a)`), so a
+/// parameter that needs a convention at the call site (`inout`) is left out -
+/// the desugared call passes a plain value.
+fn method_candidates(
+    document: &Document,
+    ty: &rill_ty::Ty,
+    offset: rill_span::BytePos,
+) -> Vec<Candidate> {
+    let mut found = Vec::new();
+    for id in visible_items(document, &scope_at(&document.hir, offset)) {
+        let Some(item) = document.hir.try_item(id) else {
+            continue;
+        };
+        let rill_hir::ItemKind::Fn(def) = &item.kind else {
+            continue;
+        };
+        let plain = def
+            .params
+            .first()
+            .map(|param| param.convention.is_none())
+            .unwrap_or(false);
+        if !plain {
+            continue;
+        }
+        let Some(rill_ty::ItemTy::Fn { params, .. }) = document.checked.item_ty(id) else {
+            continue;
+        };
+        if params.first() != Some(ty) {
+            continue;
+        }
+        let Some(candidate) = item_candidate(document, id) else {
+            continue;
+        };
+        found.push(Candidate {
+            kind: COMPLETION_METHOD,
+            ..candidate
+        });
+    }
+    for name in rill_hir::BUILTIN_NAMES {
+        let Some((params, ret, effects)) = document.checked.builtin_sig(name) else {
+            continue;
+        };
+        if params.first() != Some(ty) {
+            continue;
+        }
+        let signature = rill_ty::Ty::Fn {
+            params,
+            ret: Box::new(ret),
+            effects,
+        };
+        found.push(Candidate {
+            name: (*name).to_string(),
+            kind: COMPLETION_METHOD,
+            detail: Some(document.checked.display_ty(&document.frontend, &signature)),
+        });
+    }
+    dedup(found)
+}
+
+/// The names in scope at `offset`: the locals the position can see, the items a
+/// bare name reaches, and the builtins. Locals come first, so a shadowed name is
+/// completed from its nearest binding.
+fn scope_candidates(document: &Document, offset: rill_span::BytePos) -> Vec<Candidate> {
+    let scope = scope_at(&document.hir, offset);
+    let mut candidates = Vec::new();
+    for local in &scope.locals {
+        let info = document.hir.local(*local);
+        let name = document
+            .frontend
+            .text(rill_ast::Ident::new(info.name, info.span))
+            .to_string();
+        if name.is_empty() {
+            continue;
+        }
+        let detail = document
+            .checked
+            .local_ty(*local)
+            .map(|ty| document.checked.display_ty(&document.frontend, ty));
+        candidates.push(Candidate {
+            name,
+            kind: COMPLETION_VARIABLE,
+            detail,
+        });
+    }
+    for id in visible_items(document, &scope) {
+        if let Some(candidate) = item_candidate(document, id) {
+            candidates.push(candidate);
+        }
+    }
+    for name in rill_hir::BUILTIN_NAMES {
+        candidates.push(Candidate {
+            name: (*name).to_string(),
+            kind: COMPLETION_FUNCTION,
+            detail: builtin_detail(document, name),
+        });
+    }
+    dedup(candidates)
+}
+
+/// The bindings a cursor at `offset` can see, read from the HIR's own spans: the
+/// parameters of every declaration whose body contains the position, the
+/// statements above it in each enclosing block, and the head bindings of the
+/// enclosing `if`/`for`/`when`/`match` constructs. Walking the tree this way
+/// keeps a sibling block's locals and a later statement's bindings out of the
+/// list, where offering every local of the item would not.
+#[derive(Default)]
+struct Scope {
+    locals: Vec<rill_hir::LocalId>,
+    items: Vec<rill_hir::ItemId>,
+}
+
+fn scope_at(hir: &rill_hir::Hir, offset: rill_span::BytePos) -> Scope {
+    let mut scope = Scope::default();
+    for item in hir.items() {
+        let Some(body) = item_body(item) else {
+            continue;
+        };
+        if !contains(&body.span, offset) {
+            continue;
+        }
+        if let rill_hir::ItemKind::Fn(def) = &item.kind {
+            for param in &def.params {
+                if let Some(local) = param.local {
+                    scope.locals.push(local);
+                }
+            }
+        }
+        let mut exprs = Vec::new();
+        collect_expr(body, &mut exprs);
+        for expr in &exprs {
+            if !contains(&expr.span, offset) {
+                continue;
+            }
+            match &expr.kind {
+                rill_hir::ExprKind::Block(block) => {
+                    for stmt in &block.stmts {
+                        if stmt.span().start > offset {
+                            break;
+                        }
+                        match stmt {
+                            rill_hir::Stmt::Var { local, .. }
+                            | rill_hir::Stmt::TryBind { local, .. } => scope.locals.push(*local),
+                            rill_hir::Stmt::Bind { pattern, .. } => {
+                                pattern_bindings(pattern, &mut scope.locals)
+                            }
+                            rill_hir::Stmt::Let { item, .. } => scope.items.push(*item),
+                            // A guard's binding stays visible for the rest of the block.
+                            rill_hir::Stmt::When { cond, .. } => {
+                                cond_bindings(cond, &mut scope.locals)
+                            }
+                            // A loop variable is in scope for its body only.
+                            rill_hir::Stmt::For { pattern, body, .. } => {
+                                if contains(&body.span, offset) {
+                                    pattern_bindings(pattern, &mut scope.locals)
+                                }
+                            }
+                            _ => {}
+                        }
+                    }
+                }
+                rill_hir::ExprKind::Lambda { params, .. } => {
+                    for param in params {
+                        pattern_bindings(param, &mut scope.locals);
+                    }
+                }
+                // `if (x := e) { … }` binds for the then-branch.
+                rill_hir::ExprKind::If {
+                    cond,
+                    then_branch,
+                    ..
+                } => {
+                    if contains(&then_branch.span, offset) {
+                        cond_bindings(cond, &mut scope.locals)
+                    }
+                }
+                rill_hir::ExprKind::Match { arms, .. } => {
+                    for arm in arms {
+                        let in_arm = contains(&arm.body.span, offset)
+                            || arm
+                                .guard
+                                .as_ref()
+                                .map(|guard| contains(&guard.span, offset))
+                                .unwrap_or(false);
+                        if in_arm {
+                            pattern_bindings(&arm.pattern, &mut scope.locals)
+                        }
+                    }
+                }
+                _ => {}
+            }
+        }
+    }
+    // A shadowed name is completed from its innermost binding, which is the
+    // latest one declared.
+    scope
+        .locals
+        .sort_by_key(|local| std::cmp::Reverse(hir.local(*local).span.start.to_usize()));
+    scope
+}
+
+/// The items a bare name reaches: the block-level `let`s in scope, then the
+/// module's own visible declarations.
+fn visible_items(document: &Document, scope: &Scope) -> Vec<rill_hir::ItemId> {
+    let mut found = scope.items.clone();
+    for id in document.hir.module_item_ids() {
+        if document.hir.is_name_visible(*id) {
+            found.push(*id);
+        }
+    }
+    found
+}
+
+/// A completion for a named item, or `None` for one an editor cannot insert:
+/// `use`, `impl`, `builder` and module-level statements declare no name a call
+/// site writes.
+fn item_candidate(document: &Document, id: rill_hir::ItemId) -> Option<Candidate> {
+    let item = document.hir.try_item(id)?;
+    let name = item.name?;
+    let kind = match &item.kind {
+        rill_hir::ItemKind::Fn(_) | rill_hir::ItemKind::Signature(_) => COMPLETION_FUNCTION,
+        rill_hir::ItemKind::Constant(_) => COMPLETION_CONSTANT,
+        rill_hir::ItemKind::Type(_) => match document.checked.item_ty(id) {
+            Some(rill_ty::ItemTy::Nominal(nominal)) => {
+                match &document.checked.nominal(*nominal).kind {
+                    rill_ty::NominalKind::Record(_) | rill_ty::NominalKind::View(_) => {
+                        COMPLETION_STRUCT
+                    }
+                    _ => COMPLETION_CLASS,
+                }
+            }
+            _ => COMPLETION_CLASS,
+        },
+        _ => return None,
+    };
+    Some(Candidate {
+        name: document
+            .frontend
+            .text(rill_ast::Ident::new(name, item.span))
+            .to_string(),
+        kind,
+        detail: item_detail(document, id),
+    })
+}
+
+/// What an editor shows as an item's type: a function's signature, a constant's
+/// type, or what kind of type a type name is.
+fn item_detail(document: &Document, id: rill_hir::ItemId) -> Option<String> {
+    let detail = match document.checked.item_ty(id)? {
+        rill_ty::ItemTy::Fn {
+            params,
+            ret,
+            effects,
+        } => rill_ty::Ty::Fn {
+            params: params.clone(),
+            ret: Box::new(ret.clone()),
+            effects: effects.clone(),
+        },
+        rill_ty::ItemTy::Constant(ty) => ty.clone(),
+        rill_ty::ItemTy::Nominal(id) => {
+            return Some(match &document.checked.nominal(*id).kind {
+                rill_ty::NominalKind::Record(_) => "record".to_string(),
+                rill_ty::NominalKind::View(_) => "view".to_string(),
+                rill_ty::NominalKind::Enum(_) => "enum".to_string(),
+                rill_ty::NominalKind::Alias(ty) => {
+                    document.checked.display_ty(&document.frontend, ty)
+                }
+                rill_ty::NominalKind::Opaque => "type".to_string(),
+            });
+        }
+        rill_ty::ItemTy::Incomplete => return None,
+    };
+    Some(document.checked.display_ty(&document.frontend, &detail))
+}
+
+/// A builtin's signature as an editor shows it, from the checker's own table.
+fn builtin_detail(document: &Document, name: &str) -> Option<String> {
+    let (params, ret, effects) = document.checked.builtin_sig(name)?;
+    let signature = rill_ty::Ty::Fn {
+        params,
+        ret: Box::new(ret),
+        effects,
+    };
+    Some(document.checked.display_ty(&document.frontend, &signature))
+}
+
+/// One candidate per name, in the order the sources were collected: a name that
+/// several of them offer keeps the first, which is the one the resolver would
+/// pick there.
+fn dedup(candidates: Vec<Candidate>) -> Vec<Candidate> {
+    let mut found: Vec<Candidate> = Vec::new();
+    for candidate in candidates {
+        if candidate.name.is_empty()
+            || found
+                .iter()
+                .any(|seen| seen.name == candidate.name)
+        {
+            continue;
+        }
+        found.push(candidate);
+    }
+    found
+}
+
+/// Every local a pattern binds, including nested constructor and tuple patterns.
+fn pattern_bindings(pattern: &rill_hir::Pattern, locals: &mut Vec<rill_hir::LocalId>) {
+    match pattern {
+        rill_hir::Pattern::Binding { local, .. } => locals.push(*local),
+        rill_hir::Pattern::Constructor { args, .. }
+        | rill_hir::Pattern::Tuple { elems: args, .. } => {
+            for arg in args {
+                pattern_bindings(arg, locals);
+            }
+        }
+        _ => {}
+    }
+}
+
+/// The locals a condition's pattern binds (`if (x := e)`, `when (x := e)`).
+fn cond_bindings(cond: &rill_hir::Cond, locals: &mut Vec<rill_hir::LocalId>) {
+    if let rill_hir::Cond::Bind { pattern, .. } = cond {
+        pattern_bindings(pattern, locals);
+    }
+}
+
+/// The identifier a path's last segment is written as, from the text before a
+/// `::`.
+fn trailing_ident(text: &str) -> Option<&str> {
+    let bytes = text.as_bytes();
+    let mut start = bytes.len();
+    while start > 0 && (bytes[start - 1].is_ascii_alphanumeric() || bytes[start - 1] == b'_') {
+        start -= 1;
+    }
+    (start < bytes.len()).then_some(&text[start..])
+}
+
+/// Whether a position sits inside a span. Spans are half-open at the end, but a
+/// cursor *at* an expression's end is inside it for these queries.
+fn contains(span: &rill_span::Span, offset: rill_span::BytePos) -> bool {
+    !span.is_dummy() && span.start <= offset && offset <= span.end
+}
+
+/// A span as an LSP range. `line_col` counts lines and columns from one; LSP
+/// counts from zero.
+fn span_range(
+    source: &rill_span::SourceMap,
+    start: rill_span::BytePos,
+    end: rill_span::BytePos,
+) -> Json {
+    let from = source.line_col(start);
+    let to = source.line_col(end);
+    range(
+        from.line as i64 - 1,
+        from.col as i64 - 1,
+        to.line as i64 - 1,
+        to.col as i64 - 1,
+    )
 }
