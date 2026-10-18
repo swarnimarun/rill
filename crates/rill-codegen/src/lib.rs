@@ -1665,17 +1665,31 @@ impl<'a> Generator<'a> {
                 // sequential evaluation is observationally identical to real
                 // concurrency, and it is the composition the executors will drive.
                 // `race`/`rush`/`branch` need cancellation and stay reported.
-                if matches!(kind, rill_ast::ConcurrentKind::Sync)
-                    && arms.iter().all(|arm| matches!(self.expr_ty(arm), Ty::Unit))
-                {
+                if matches!(kind, rill_ast::ConcurrentKind::Sync) {
+                    // The arms' values form the tuple the checker promises; unit
+                    // arms just run. Either way they evaluate in order and join.
+                    let elems: Vec<Ty> = arms.iter().map(|arm| self.expr_ty(arm)).collect();
                     let mut out = String::from("({");
+                    let mut values = Vec::new();
                     for arm in arms {
                         let value = self.expr(arm);
-                        if value != "rill_unit()" {
-                            out.push_str(&format!(" (void)({value});"));
+                        if matches!(self.expr_ty(arm), Ty::Unit) {
+                            if value != "rill_unit()" {
+                                out.push_str(&format!(" (void)({value});"));
+                            }
+                        } else {
+                            values.push(value);
                         }
                     }
-                    out.push_str(" rill_unit(); })");
+                    let value = match values.len() {
+                        0 => "rill_unit()".to_string(),
+                        1 => values.pop().expect("one value"),
+                        _ => {
+                            let name = self.c_type(&Ty::Tuple(elems));
+                            format!("({name}){{ {} }}", values.join(", "))
+                        }
+                    };
+                    out.push_str(&format!(" {value}; }})"));
                     return out;
                 }
                 let name = match kind {

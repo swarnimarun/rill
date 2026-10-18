@@ -105,6 +105,26 @@ fn option_body_with_statements_is_reported_not_miscompiled() {
 }
 
 #[test]
+fn a_two_valued_sync_is_a_tuple_not_its_last_arm() {
+    // This is what tells `sync { … }` apart from a plain block with the same
+    // statements: a block's value is its tail (`2 + 2`), while `sync`'s is the
+    // tuple of its arms, which cannot be turned into text.
+    let (frontend, sm) = parse_and_lower_text(
+        "s.rill",
+        "let main () -> () <io | suspends> = {\n    var t = sync { 1 + 1; 2 + 2 };\n    io::println ((t as String))\n};\n",
+    );
+    let hir = lower(&frontend);
+    let checked = check(&frontend, &hir);
+    let (_source, diagnostics) = emit_c(&frontend, &hir, &checked);
+    assert!(
+        diagnostics.has_errors(),
+        "a tuple is not text: {diagnostics:?}"
+    );
+    let rendered = rill_diagnostics::render_all(&sm, &diagnostics);
+    assert!(rendered.contains("String"), "{rendered}");
+}
+
+#[test]
 fn enums_match_and_guards_lower() {
     let (source, diagnostics) = emit(
         "type Shape = | Circle i32 | Rect i32 i32 | Empty;\n\
