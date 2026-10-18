@@ -5,9 +5,17 @@ use std::path::{Path, PathBuf};
 
 use rill_cimport::{scan_header, CModule, CType, CTypeKind};
 
-/// A scratch directory for the fixtures of one test.
+/// A scratch directory for the fixtures of one call. The name is unique per call
+/// rather than per process: the tests run in parallel, and two of them sharing a
+/// directory would race on the remove-and-rewrite of the same fixture.
 fn scratch(tag: &str) -> PathBuf {
-    let dir = std::env::temp_dir().join(format!("rill-cimport-{tag}-{}", std::process::id()));
+    use std::sync::atomic::{AtomicUsize, Ordering};
+    static NEXT: AtomicUsize = AtomicUsize::new(0);
+    let dir = std::env::temp_dir().join(format!(
+        "rill-cimport-{tag}-{}-{}",
+        std::process::id(),
+        NEXT.fetch_add(1, Ordering::Relaxed)
+    ));
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("scratch dir");
     dir
@@ -178,7 +186,10 @@ fn functions_are_split_on_semicolons() {
 fn records_unions_opaque_types_and_aliases() {
     let module = scan_fixture();
 
-    assert!(matches!(type_decl(&module, "FixtureOpaque").kind, CTypeKind::Opaque));
+    assert!(matches!(
+        type_decl(&module, "FixtureOpaque").kind,
+        CTypeKind::Opaque
+    ));
 
     let record = &type_decl(&module, "FixtureRecord").kind;
     let CTypeKind::Record(fields) = record else {
@@ -186,7 +197,13 @@ fn records_unions_opaque_types_and_aliases() {
     };
     let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
     assert_eq!(names, ["a", "name", "handle", "x", "y", "padding"]);
-    assert_eq!(fields[0].ty, CType::Int { bits: 32, signed: true });
+    assert_eq!(
+        fields[0].ty,
+        CType::Int {
+            bits: 32,
+            signed: true
+        }
+    );
     assert_eq!(fields[1].ty, CType::Text);
     assert_eq!(
         fields[2].ty,
@@ -204,11 +221,23 @@ fn records_unions_opaque_types_and_aliases() {
         panic!("FixtureUnion is {union:?}");
     };
     assert_eq!(members[0].name, "type");
-    assert_eq!(members[0].ty, CType::Int { bits: 32, signed: false });
+    assert_eq!(
+        members[0].ty,
+        CType::Int {
+            bits: 32,
+            signed: false
+        }
+    );
 
-    assert!(matches!(type_decl(&module, "FixtureEnum").kind, CTypeKind::Enum));
+    assert!(matches!(
+        type_decl(&module, "FixtureEnum").kind,
+        CTypeKind::Enum
+    ));
     match &type_decl(&module, "FixtureFlags").kind {
-        CTypeKind::Alias(CType::Int { bits: 32, signed: false }) => {}
+        CTypeKind::Alias(CType::Int {
+            bits: 32,
+            signed: false,
+        }) => {}
         other => panic!("FixtureFlags is {other:?}"),
     }
 
@@ -227,7 +256,13 @@ fn constants_and_enumerators() {
 
     let int = constant(&module, "FIXTURE_INT");
     assert_eq!(int.value, "0x00000020u");
-    assert_eq!(int.ty, CType::Int { bits: 32, signed: false });
+    assert_eq!(
+        int.ty,
+        CType::Int {
+            bits: 32,
+            signed: false
+        }
+    );
 
     let float = constant(&module, "FIXTURE_FLOAT");
     assert_eq!(float.value, "1.5f");
@@ -246,7 +281,10 @@ fn constants_and_enumerators() {
             .all(|constant| constant.name != skipped));
     }
 
-    let int_ty = CType::Int { bits: 32, signed: true };
+    let int_ty = CType::Int {
+        bits: 32,
+        signed: true,
+    };
     for (name, value) in [
         ("FIXTURE_A", "0"),
         ("FIXTURE_B", "1"),
@@ -284,7 +322,10 @@ fn unreadable_root_is_an_error() {
 fn sdl3_real_install() {
     let root = Path::new("/opt/homebrew/include/SDL3/SDL.h");
     if !root.exists() {
-        println!("skipping SDL3 scan test: {} is not installed", root.display());
+        println!(
+            "skipping SDL3 scan test: {} is not installed",
+            root.display()
+        );
         return;
     }
     let module = scan_header(root, &[PathBuf::from("/opt/homebrew/include")]).expect("scan SDL3");
@@ -307,8 +348,14 @@ fn sdl3_real_install() {
         params,
         vec![
             CType::Text,
-            CType::Int { bits: 32, signed: true },
-            CType::Int { bits: 32, signed: true },
+            CType::Int {
+                bits: 32,
+                signed: true
+            },
+            CType::Int {
+                bits: 32,
+                signed: true
+            },
             CType::Named("SDL_WindowFlags".to_string()),
         ]
     );
@@ -322,18 +369,33 @@ fn sdl3_real_install() {
         }
     );
 
-    assert!(matches!(type_decl(&module, "SDL_Window").kind, CTypeKind::Opaque));
+    assert!(matches!(
+        type_decl(&module, "SDL_Window").kind,
+        CTypeKind::Opaque
+    ));
 
     let event = &type_decl(&module, "SDL_Event").kind;
     let CTypeKind::Record(fields) = event else {
         panic!("SDL_Event is {event:?}");
     };
     assert_eq!(fields[0].name, "type");
-    assert_eq!(fields[0].ty, CType::Int { bits: 32, signed: false });
+    assert_eq!(
+        fields[0].ty,
+        CType::Int {
+            bits: 32,
+            signed: false
+        }
+    );
 
     let video = constant(&module, "SDL_INIT_VIDEO");
     assert_eq!(video.value, "0x00000020u");
-    assert_eq!(video.ty, CType::Int { bits: 32, signed: false });
+    assert_eq!(
+        video.ty,
+        CType::Int {
+            bits: 32,
+            signed: false
+        }
+    );
 
     let skipped = module
         .functions
@@ -402,13 +464,22 @@ fn raylib_style_prototypes_are_functions() {
     assert_eq!(
         params,
         vec![
-            CType::Int { bits: 32, signed: true },
-            CType::Int { bits: 32, signed: true },
+            CType::Int {
+                bits: 32,
+                signed: true
+            },
+            CType::Int {
+                bits: 32,
+                signed: true
+            },
             CType::Text,
         ]
     );
 
-    assert_eq!(function(&module, "RaylibWindowShouldClose").ret, CType::Bool);
+    assert_eq!(
+        function(&module, "RaylibWindowShouldClose").ret,
+        CType::Bool
+    );
     assert_eq!(
         function(&module, "RaylibClearBackground").params[0].ty,
         CType::Named("RaylibColor".to_string())
@@ -427,13 +498,26 @@ fn raylib_style_prototypes_are_functions() {
         panic!("RaylibColor is {record:?}");
     };
     let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
-    assert_eq!(names, ["r", "g", "b", "a"], "dense declarators share a type");
-    assert_eq!(fields[0].ty, CType::Int { bits: 8, signed: false });
+    assert_eq!(
+        names,
+        ["r", "g", "b", "a"],
+        "dense declarators share a type"
+    );
+    assert_eq!(
+        fields[0].ty,
+        CType::Int {
+            bits: 8,
+            signed: false
+        }
+    );
 
     assert_eq!(constant(&module, "RAYLIB_KEY_ESCAPE").value, "256");
     assert_eq!(constant(&module, "PI").ty, CType::Float { bits: 32 });
     // The marker is decoration, not a declaration of its own.
-    assert!(module.constants.iter().all(|constant| constant.name != "RLAPI"));
+    assert!(module
+        .constants
+        .iter()
+        .all(|constant| constant.name != "RLAPI"));
 }
 
 /// The other real install: raylib marks its prototypes `RLAPI` and hands records
@@ -442,11 +526,13 @@ fn raylib_style_prototypes_are_functions() {
 fn raylib_real_install() {
     let root = Path::new("/opt/homebrew/include/raylib.h");
     if !root.exists() {
-        println!("skipping raylib scan test: {} is not installed", root.display());
+        println!(
+            "skipping raylib scan test: {} is not installed",
+            root.display()
+        );
         return;
     }
-    let module =
-        scan_header(root, &[PathBuf::from("/opt/homebrew/include")]).expect("scan raylib");
+    let module = scan_header(root, &[PathBuf::from("/opt/homebrew/include")]).expect("scan raylib");
 
     let init = function(&module, "InitWindow");
     assert_eq!(init.ret, CType::Void);
@@ -454,8 +540,14 @@ fn raylib_real_install() {
     assert_eq!(
         params,
         vec![
-            CType::Int { bits: 32, signed: true },
-            CType::Int { bits: 32, signed: true },
+            CType::Int {
+                bits: 32,
+                signed: true
+            },
+            CType::Int {
+                bits: 32,
+                signed: true
+            },
             CType::Text,
         ]
     );
@@ -471,7 +563,10 @@ fn raylib_real_install() {
         panic!("Color is {color:?}");
     };
     assert_eq!(fields.len(), 4);
-    assert!(matches!(type_decl(&module, "Rectangle").kind, CTypeKind::Record(_)));
+    assert!(matches!(
+        type_decl(&module, "Rectangle").kind,
+        CTypeKind::Record(_)
+    ));
 
     let skipped = module
         .functions
