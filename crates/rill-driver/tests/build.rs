@@ -380,6 +380,11 @@ fn builds_and_runs_decides() {
         stdout.contains("inline_pick[5] = 5 inline_pick[-1] = 0"),
         "unexpected stdout: {stdout}"
     );
+    // `?` propagates the call's failure to the same fallback.
+    assert!(
+        stdout.contains("try_pick[5, 0] = 5 try_pick[0, 0] = 0"),
+        "unexpected stdout: {stdout}"
+    );
     // A deciding *call* nested inside such an arm is caught by the same fallback:
     // `first_positive[0, 0]` fails inside the arm, so the next arm's 7 wins.
     assert!(

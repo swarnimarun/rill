@@ -20,6 +20,9 @@ let inline_pick (x: i32) -> i32 <computes> = (if (x > 0) { x } else { fail }) | 
 
 # The arm contains a deciding *call* nested inside a block: its failure must be
 # caught by the same fallback, not leave the function.
+# `?` propagates the call's failure, so the same fallback catches it.
+let try_pick (x: i32, y: i32) -> i32 <computes> = first_positive[x, y]? | 0;
+
 let nested (x: i32) -> i32 <computes> =
     (if (x > 0) { first_positive[x, 0] } else { fail }) | first_positive[0, 7] | 0;
 
@@ -32,6 +35,7 @@ let main () -> i32 <io> = {
     io::println ("pick[5, 0] = " ++ (a as String) ++ " pick[0, 7] = " ++ (b as String) ++ " pick[0, 0] = " ++ (c as String));
     io::println ("pick3[0, 0, 9] = " ++ (d as String) ++ " pick3[0, 0, 0] = " ++ (e as String));
     io::println ("inline_pick[5] = " ++ (inline_pick[5] as String) ++ " inline_pick[-1] = " ++ (inline_pick[-1] as String));
+    io::println ("try_pick[5, 0] = " ++ (try_pick[5, 0] as String) ++ " try_pick[0, 0] = " ++ (try_pick[0, 0] as String));
     io::println ("nested[5] = " ++ (nested[5] as String) ++ " nested[0] = " ++ (nested[0] as String) ++ " nested[-1] = " ++ (nested[-1] as String));
     a * 10 + b
 };

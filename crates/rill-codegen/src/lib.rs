@@ -1421,9 +1421,12 @@ impl<'a> Generator<'a> {
                     }
                 }
             }
-            ExprKind::Try { .. } => {
-                self.unsupported(expr.span, "`?` on a failable value", "M3 (`<decides>`)");
-                "0".into()
+            ExprKind::Try { base } => {
+                // `e?` propagates failure (PLAN §3): the base is lowered right
+                // here, so a deciding call's failure leaves through whichever
+                // continuation is innermost - the enclosing fallback, a handler,
+                // or the function.
+                self.expr(base)
             }
             ExprKind::Unary { op, operand } => {
                 let value = self.expr(operand);
