@@ -84,6 +84,27 @@ fn unsupported_constructs_are_reported_not_miscompiled() {
 }
 
 #[test]
+fn option_body_with_statements_is_reported_not_miscompiled() {
+    // The payload is lowered under a failure continuation; a statement before it
+    // would need its own guard, so this shape must be *reported* rather than
+    // emitted with a statement that runs after the body has already failed.
+    let (frontend, sm) = parse_and_lower_text(
+        "o.rill",
+        "let main () -> i32 <decides> = {\n    option {\n        1;\n        2\n    };\n    0\n};\n",
+    );
+    let hir = lower(&frontend);
+    let checked = check(&frontend, &hir);
+    let (source, diagnostics) = emit_c(&frontend, &hir, &checked);
+    assert!(diagnostics.has_errors(), "the handler must be reported");
+    let rendered = rill_diagnostics::render_all(&sm, &diagnostics);
+    assert!(
+        rendered.contains("not lowered by the C backend"),
+        "{rendered}"
+    );
+    assert!(source.contains("int main(void)"));
+}
+
+#[test]
 fn enums_match_and_guards_lower() {
     let (source, diagnostics) = emit(
         "type Shape = | Circle i32 | Rect i32 i32 | Empty;\n\
