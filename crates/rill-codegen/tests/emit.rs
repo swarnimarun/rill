@@ -354,3 +354,24 @@ fn module_level_vars_become_file_scope_statics() {
     assert!(source.contains("g_pool"), "the pool is a static:\n{source}");
     assert!(source.contains("g_used"), "{source}");
 }
+
+#[test]
+fn a_match_that_answers_with_a_record_zeroes_its_slot() {
+    // Every match declares its result slot before the arms run. `= 0` only
+    // compiles for scalars: the slot needs a brace initialiser, which is valid
+    // whatever the arms answer with. A record-answering match - the palette
+    // functions of the raylib match-3 demo - is what first did not compile.
+    let (source, diagnostics) = emit(
+        "type Point = record { var x: i32; var y: i32; };\n\
+         let pick (left: Bool) -> Point <computes> = match left {\n\
+             true -> Point (1, 2),\n\
+             false -> Point (3, 4)\n\
+         };\n\
+         let main () -> i32 <computes> = { var p = pick (true); p.x };\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    assert!(
+        source.contains("st_Point matched1 = {0};"),
+        "the result slot needs a brace initialiser:\n{source}"
+    );
+}

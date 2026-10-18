@@ -983,7 +983,7 @@ impl<'a> Generator<'a> {
             Ty::Int { bits, signed } => format!("{}{bits}", if *signed { 'i' } else { 'u' }),
             Ty::Float { bits } => format!("f{bits}"),
             Ty::Bool => "Bool".into(),
-                        Ty::Unit => "()".into(),
+            Ty::Unit => "()".into(),
             Ty::Never => "()".into(),
             Ty::Text => "String".into(),
             Ty::RawPtr { mutable, pointee } => format!(
@@ -1053,7 +1053,7 @@ impl<'a> Generator<'a> {
             }
             Ty::Float { bits } => format!("r_f{bits}"),
             Ty::Bool => "r_bool".into(),
-                        Ty::Unit => "r_unit".into(),
+            Ty::Unit => "r_unit".into(),
             // A `never`-typed expression is a failure site: whatever lands in this
             // slot is the failure fallback, and that value's C type is the enclosing
             // `decides` function's return. Naming the slot after `()` would give it a
@@ -1192,7 +1192,7 @@ impl<'a> Generator<'a> {
             Ty::Int { bits, signed } => format!("{}{}", if *signed { 'i' } else { 'u' }, bits),
             Ty::Float { bits } => format!("f{bits}"),
             Ty::Bool => "b".into(),
-                        Ty::Unit => "u".into(),
+            Ty::Unit => "u".into(),
             Ty::Never => "u".into(),
             Ty::Text => "s".into(),
             Ty::Tuple(elems) => {
@@ -3541,7 +3541,10 @@ impl<'a> Generator<'a> {
         };
         let result = self.fresh("matched");
         let result_c = self.c_type(&result_ty);
-        self.body.push_str(&format!("  {result_c} {result} = 0;\n"));
+        // `{0}` rather than `0`: a match may answer with a record (or an array),
+        // and only a brace initialiser is valid for every result type.
+        self.body
+            .push_str(&format!("  {result_c} {result} = {{0}};\n"));
         let done = self.fresh("done");
         self.body.push_str(&format!("  r_bool {done} = 0;\n"));
         for arm in arms {
@@ -3626,7 +3629,7 @@ impl<'a> Generator<'a> {
                         }
                         _ => "1".to_string(),
                     },
-                                        Ty::Never => "0".to_string(),
+                    Ty::Never => "0".to_string(),
                     _ => {
                         self.unsupported(arm.span, "this match pattern", "M3");
                         "0".to_string()
