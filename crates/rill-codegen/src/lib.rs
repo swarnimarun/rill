@@ -210,12 +210,35 @@ static int rill_io_run(void) {
   while (rill_io_head < rill_io_tail && ran < 100000) {
     rill_task task = rill_io_queue[rill_io_head];
     rill_io_head += 1;
-    ((void (*)(void *))task.code)(task.env);
+    if (!((int (*)(void *))task.code)(task.env)) {
+      /* Yielded: it goes back on the queue, which is what lets a coroutine resume. */
+      if (rill_io_tail < 1024) {
+        rill_io_queue[rill_io_tail] = task;
+        rill_io_tail += 1;
+      }
+    }
     ran += 1;
   }
   rill_io_head = 0;
   rill_io_tail = 0;
   return ran;
+}
+/* A task step returns 1 when it is done and 0 when it yielded. An ordinary task is
+   wrapped so it reports completion; a coroutine reports for itself. The trampoline
+   is generic, so no wrapper is generated per task. */
+typedef struct { rill_fn inner; } rill_wrap;
+static int rill_io_trampoline(void *env) {
+  rill_wrap *w = (rill_wrap *)env;
+  ((void (*)(void *))w->inner.code)(w->inner.env);
+  return 1;
+}
+static rill_fn rill_io_wrap(rill_fn inner) {
+  rill_wrap *w = (rill_wrap *)malloc(sizeof(rill_wrap));
+  w->inner = inner;
+  rill_fn out;
+  out.code = (void *)&rill_io_trampoline;
+  out.env = w;
+  return out;
 }
 static void rill_io_bind(void) { rill_io_layers += 1; }
 static void rill_io_unbind(void) { if (rill_io_layers > 0) rill_io_layers -= 1; }
@@ -403,6 +426,9 @@ struct Generator<'a> {
     dyn_vtables: std::collections::HashMap<(String, String), String>,
     /// `trait -> its vtable layout type`, which is what a `dyn` call casts to.
     trait_vtables: std::collections::HashMap<String, String>,
+    /// Coroutines: `ItemId -> the C step function`. A coroutine's task reports
+    /// completion itself, so `io_spawn` passes it unwrapped.
+    coroutines: std::collections::HashMap<ItemId, String>,
     /// Projections of the form `project p (x: inout T) = { yield inout x.f }`:
     /// the name maps to the field they project, so uses inline as an alias.
     projections: std::collections::HashMap<String, String>,
@@ -432,6 +458,7 @@ impl<'a> Generator<'a> {
             trait_impls: std::collections::HashMap::new(),
             dyn_vtables: std::collections::HashMap::new(),
             trait_vtables: std::collections::HashMap::new(),
+            coroutines: std::collections::HashMap::new(),
             projections: std::collections::HashMap::new(),
         }
     }
@@ -1021,7 +1048,124 @@ impl<'a> Generator<'a> {
 
     fn emit_fn(&mut self, id: ItemId, def: &rill_hir::FnDef) {
         let name = self.item_c_name(id);
+        // A `<suspends>` function whose body yields is a coroutine: a *state
+        // machine* - a frame holding the state and the locals, and a step the kernel
+        // calls until it reports completion. No new syntax is needed: the effect and
+        // `yield` were already there.
+        if self.is_coroutine(def) {
+            self.emit_coroutine(id, def, &name);
+            return;
+        }
         self.emit_fn_named(id, def, name, true);
+    }
+
+    /// Whether a function is a coroutine: it declares `<suspends>` and yields.
+    fn is_coroutine(&self, def: &rill_hir::FnDef) -> bool {
+        if !def
+            .effects
+            .items
+            .iter()
+            .any(|effect| self.text(effect.name.sym) == "suspends")
+        {
+            return false;
+        }
+        let Some(body) = &def.body else {
+            return false;
+        };
+        let ExprKind::Block(block) = &body.kind else {
+            return false;
+        };
+        block
+            .stmts
+            .iter()
+            .any(|stmt| matches!(stmt, Stmt::Yield { .. }))
+    }
+
+    /// The state machine for a coroutine whose body has one yield at statement
+    /// level: state 0 runs up to the yield and reports `0` (yielded), state 1 runs
+    /// the rest and reports `1` (done).
+    fn emit_coroutine(&mut self, id: ItemId, def: &rill_hir::FnDef, name: &str) {
+        let Some(body) = &def.body else { return };
+        let ExprKind::Block(block) = &body.kind else {
+            return;
+        };
+        let Some(yield_at) = block
+            .stmts
+            .iter()
+            .position(|stmt| matches!(stmt, Stmt::Yield { .. }))
+        else {
+            return;
+        };
+        let frame = format!("{name}_frame");
+        let locals: Vec<(rill_hir::LocalId, rill_hir::LocalInfo)> = self
+            .hir
+            .locals()
+            .iter()
+            .filter(|local| local.owner == Some(id))
+            .map(|local| (local.id, local.clone()))
+            .filter(|(local, _)| {
+                !matches!(
+                    self.checked.local_ty(*local),
+                    None | Some(Ty::Error) | Some(Ty::Unit)
+                )
+            })
+            .collect();
+        let mut fields = String::new();
+        for (local, info) in &locals {
+            let ty = self.checked.local_ty(*local).cloned().unwrap_or(Ty::Error);
+            let cty = self.c_type(&ty);
+            fields.push_str(&format!("  {cty} v_{};\n", self.text(info.name)));
+        }
+        self.types.push_str(&format!(
+            "typedef struct {{ int state;\n{fields}}} {frame};\n"
+        ));
+
+        let previous = std::mem::take(&mut self.body);
+        let previous_scopes = std::mem::take(&mut self.scopes);
+        self.temp = 0;
+        self.scopes
+            .push(previous_scopes.first().cloned().unwrap_or_default());
+        self.push_scope();
+        for (local, info) in &locals {
+            self.bind(
+                *local,
+                format!("(({frame} *)env)->v_{}", self.text(info.name)),
+            );
+        }
+        self.body
+            .push_str(&format!("  switch ((({frame} *)env)->state) {{\n"));
+        self.body.push_str("  case 0:\n");
+        for (index, stmt) in block.stmts.iter().enumerate() {
+            if index >= yield_at {
+                break;
+            }
+            self.stmt(stmt);
+        }
+        self.body.push_str(&format!(
+            "    (({frame} *)env)->state = 1;\n    return 0;\n  case 1:\n"
+        ));
+        for stmt in block.stmts.iter().skip(yield_at + 1) {
+            self.stmt(stmt);
+        }
+        // The block's tail is the coroutine's last act (its value is the
+        // function's, and a coroutine's value is unused).
+        if let Some(tail) = &block.tail {
+            let value = self.expr(tail);
+            if !matches!(value.as_str(), "rill_unit()") {
+                self.body.push_str(&format!("  (void)({value});\n"));
+            }
+        }
+        self.body.push_str("  }\n  return 1;\n");
+        let body_text = std::mem::take(&mut self.body).replace("{frame}", &frame);
+        self.pop_scope();
+        self.body = previous;
+        self.scopes = previous_scopes;
+        self.protos
+            .push_str(&format!("static int {name}_step(void *env);\n"));
+        self.defs.push_str(&format!(
+            "static int {name}_step(void *env) {{\n{body_text}}}\n"
+        ));
+        self.coroutines.insert(id, format!("{name}_step"));
     }
 
     /// `emit_fn` with an explicit C name (`is_main` controls the entry point).
@@ -1653,6 +1797,13 @@ impl<'a> Generator<'a> {
                         "0".into()
                     }
                 },
+                Res::Item(id) if self.coroutines.contains_key(id) => {
+                    let step = self.coroutines[id].clone();
+                    let frame = format!("{}_frame", step.trim_end_matches("_step"));
+                    format!(
+                        "((rill_fn){{ .code = (void *)&{step}, .env = rill_arena_current() ? (void *)rill_arena_alloc(rill_arena_current(), sizeof({frame})) : calloc(1, sizeof({frame})) }})"
+                    )
+                }
                 Res::Item(id)
                     if self
                         .checked
@@ -3203,6 +3354,14 @@ impl<'a> Generator<'a> {
     }
 
     fn call(&mut self, whole: &Expr, callee: &Expr, args: &[rill_hir::Arg]) -> String {
+        // `io_spawn` needs a task that reports completion: a coroutine's step does
+        // that itself, anything else is wrapped. The decision is made here, where
+        // the argument is still an expression.
+        let spawns_coroutine = is_spawn_builtin(callee, self)
+            && matches!(
+                args.first().and_then(|arg| arg.value.path_res()),
+                Some((_, Res::Item(id))) if self.coroutines.contains_key(&id)
+            );
         // Partial application: `add 1` for `add (x, y)` becomes a generated
         // function that closes over the supplied arguments. Captures must be
         // constants, which keeps the value an ordinary function pointer (so it
@@ -3268,7 +3427,20 @@ impl<'a> Generator<'a> {
                 }
             }
         }
-        self.call_through(callee, &arguments)
+        let call = self.call_through(callee, &arguments);
+        if is_spawn_builtin(callee, self) && !spawns_coroutine {
+            let name = call
+                .find('(')
+                .map(|at| call[..at].to_string())
+                .unwrap_or(call.clone());
+            let mut inner = call[name.len() + 1..].to_string();
+            // Exactly one closing paren belongs to the call itself.
+            if inner.ends_with(')') {
+                inner.pop();
+            }
+            return format!("{name}(rill_io_wrap({inner}))");
+        }
+        call
     }
 
     fn construct(
@@ -3444,6 +3616,18 @@ fn collect_local_refs_block(block: &Block, out: &mut Vec<LocalId>) {
 }
 
 /// The base expression of an index, for type queries.
+/// Whether a callee is the `io_spawn` builtin.
+fn is_spawn_builtin(callee: &Expr, generator: &Generator<'_>) -> bool {
+    matches!(
+        callee.path_res(),
+        Some((segments, _))
+            if segments
+                .last()
+                .map(|sym| generator.text(*sym) == "io_spawn")
+                .unwrap_or(false)
+    )
+}
+
 /// The alternatives of a left-associative `|` chain, in source order.
 fn flatten_choice<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
     match &expr.kind {

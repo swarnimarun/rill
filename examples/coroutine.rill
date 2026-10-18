@@ -1,0 +1,27 @@
+use std::io;
+
+# A `<suspends>` function that yields is a coroutine: a state machine with a frame
+# holding its state and locals, and a step the kernel calls until it reports done.
+# Two of them interleave, which is the first time work in this compiler alternates.
+
+let count_a () -> () <io | suspends> = {
+    io::println ("a first");
+    yield ();
+    io::println ("a second")
+};
+
+let count_b () -> () <io | suspends> = {
+    io::println ("b first");
+    yield ();
+    io::println ("b second")
+};
+
+let main () -> i32 <io | suspends | writes> = {
+    io_bind ();
+    io_spawn (count_a);
+    io_spawn (count_b);
+    var steps = io_run ();
+    io::println ("steps " ++ (steps as String));
+    io_unbind ();
+    0
+};

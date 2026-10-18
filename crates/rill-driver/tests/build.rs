@@ -986,3 +986,36 @@ fn builds_and_runs_executor() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_coroutines() {
+    let dir = workdir("coroutine");
+    let out = dir.join("coroutine");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/coroutine.rill")
+        .canonicalize()
+        .expect("examples/coroutine.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Two coroutines interleave: each runs to its yield, then the kernel resumes
+    // them round-robin. This is the first work in this compiler that alternates.
+    let lines: Vec<&str> = stdout.lines().take(4).collect();
+    assert_eq!(
+        lines,
+        vec!["a first", "b first", "a second", "b second"],
+        "unexpected interleaving: {stdout}"
+    );
+    assert!(stdout.contains("steps 4"), "{stdout}");
+    assert_eq!(output.status.code(), Some(0));
+}
