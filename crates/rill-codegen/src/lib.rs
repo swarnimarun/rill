@@ -1616,6 +1616,71 @@ impl<'a> Generator<'a> {
                     self.body.push_str(&format!("  {held} = ({value});\n"));
                     return format!("(({repr}){{ .some = {ok}, .value = {held} }})");
                 }
+                if matches!(kind, rill_ast::HandlerKind::All) {
+                    // `all { chain }` tries every arm and collects the successes
+                    // into a slice. At most one value per arm, so the storage is
+                    // allocated once - from the heap until the layered context
+                    // can supply a top-scope-bound arena.
+                    let Some(tail) = body.tail.as_ref() else {
+                        self.unsupported(expr.span, "an `all { }` without a chain", "M4");
+                        return "0".into();
+                    };
+                    let Ty::Array { elem, .. } = self.expr_ty(expr) else {
+                        self.unsupported(expr.span, "an `all { }` that is not a slice", "M4");
+                        return "0".into();
+                    };
+                    let mut alternatives: Vec<&Expr> = Vec::new();
+                    flatten_choice(tail, &mut alternatives);
+                    let slice = self.c_type(&self.expr_ty(expr));
+                    let ety = self.c_type(&elem);
+                    self.temp += 1;
+                    let level = self.temp;
+                    let out_slice = format!("_s{level}");
+                    let capacity = alternatives.len().max(1);
+                    self.body.push_str(&format!(
+                        "  {slice} {out_slice}; {out_slice}.ptr = ({ety} *)malloc({capacity} * sizeof({ety})); {out_slice}.len = 0;\n"
+                    ));
+                    for alt in &alternatives {
+                        match self.failable_call(alt) {
+                            Some((base, args)) => {
+                                let callee = self.expr(base);
+                                let arguments: Vec<String> = args
+                                    .iter()
+                                    .map(|arg| {
+                                        let value = self.expr(&arg.value);
+                                        match arg.convention {
+                                            Some(rill_ast::Convention::Inout) => {
+                                                format!("&({value})")
+                                            }
+                                            _ => value,
+                                        }
+                                    })
+                                    .collect();
+                                self.temp += 1;
+                                let hand = format!("_a{}", self.temp);
+                                self.body.push_str(&format!(
+                                    "  {{ {ety} {hand} = {{0}}; if ({callee}({}, &{hand})) {{ {out_slice}.ptr[{out_slice}.len] = {hand}; {out_slice}.len += 1; }} }}\n",
+                                    arguments.join(", ")
+                                ));
+                            }
+                            None => {
+                                self.temp += 1;
+                                let arm = self.temp;
+                                let ok = format!("_ok{arm}");
+                                self.body.push_str(&format!("  bool {ok} = true;\n"));
+                                self.fail_targets
+                                    .push((format!("{ok} = false;"), format!("({ety}){{0}}")));
+                                let value = self.expr(alt);
+                                self.fail_targets.pop();
+                                self.body.push_str(&format!(
+                                    "  {{ {ety} {hand} = ({value}); if ({ok}) {{ {out_slice}.ptr[{out_slice}.len] = {hand}; {out_slice}.len += 1; }} }}\n",
+                                    hand = format!("_b{arm}")
+                                ));
+                            }
+                        }
+                    }
+                    return format!("({{ {out_slice}; }})");
+                }
                 if matches!(kind, rill_ast::HandlerKind::One) {
                     let is_choice = matches!(
                         body.tail.as_ref().map(|tail| &tail.kind),

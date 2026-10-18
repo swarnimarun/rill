@@ -683,3 +683,33 @@ fn builds_and_runs_let_try() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_all_handler() {
+    let dir = workdir("all");
+    let out = dir.join("all");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/all.rill")
+        .canonicalize()
+        .expect("examples/all.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Two of three arms succeed, so the slice has two elements; when none
+    // succeeds it is empty rather than absent.
+    assert!(
+        stdout.contains("found 2 none 0"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}
