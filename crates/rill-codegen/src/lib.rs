@@ -43,6 +43,7 @@ pub fn emit_c(
 }
 
 const RUNTIME: &str = r#"// ---- rill runtime (libc-backed bootstrap) ---------------------------------
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -239,6 +240,36 @@ static rill_fn rill_io_wrap(rill_fn inner) {
   out.code = (void *)&rill_io_trampoline;
   out.env = w;
   return out;
+}
+/* Threads. A task runs on its own pthread; `join_threads` waits for all of them.
+   Nothing here makes sharing safe, which is why `spawn_thread` accepts only a task
+   whose state it can prove is owned: a named function (no captures) or a lambda
+   whose captures are all scalars. A closure value stored in a variable is refused,
+   because its environment cannot be checked at the spawn site. */
+#define RILL_THREADS 64
+static pthread_t rill_threads[RILL_THREADS];
+static int rill_thread_count;
+static void *rill_thread_main(void *env) {
+  ((void (*)(void *))env)(NULL);
+  return NULL;
+}
+static int rill_spawn_thread(rill_fn task) {
+  if (rill_thread_count >= RILL_THREADS) return 0;
+  if (pthread_create(&rill_threads[rill_thread_count], NULL, rill_thread_main,
+                     (void *)task.code) != 0) {
+    return 0;
+  }
+  rill_thread_count += 1;
+  return 1;
+}
+static int rill_join_threads(void) {
+  int joined = 0;
+  while (rill_thread_count > 0) {
+    rill_thread_count -= 1;
+    pthread_join(rill_threads[rill_thread_count], NULL);
+    joined += 1;
+  }
+  return joined;
 }
 static void rill_io_bind(void) { rill_io_layers += 1; }
 static void rill_io_unbind(void) { if (rill_io_layers > 0) rill_io_layers -= 1; }
@@ -1900,6 +1931,8 @@ impl<'a> Generator<'a> {
                         "io_bind" => "rill_io_bind".into(),
                         "io_unbind" => "rill_io_unbind".into(),
                         "io_spawn" => "rill_io_spawn".into(),
+                        "spawn_thread" => "rill_spawn_thread".into(),
+                        "join_threads" => "rill_join_threads".into(),
                         "f64x4" => "r_f64x4".into(),
                         "io_run" => "rill_io_run".into(),
                         "arena_unbind" => "rill_arena_unbind".into(),
@@ -3378,6 +3411,28 @@ impl<'a> Generator<'a> {
         // `io_spawn` needs a task that reports completion: a coroutine's step does
         // that itself, anything else is wrapped. The decision is made here, where
         // the argument is still an expression.
+        // A thread task must own its state. A named function has no captures, so
+        // it is accepted; a closure value is refused, because its environment -
+        // whatever it captured - cannot be checked here. That is the whole point of
+        // refusing: threads without a checked ownership rule are a race waiting to
+        // be written.
+        if is_named_builtin(callee, self, "spawn_thread") {
+            match args.first().and_then(|arg| arg.value.path_res()) {
+                Some((_, Res::Item(id)))
+                    if self
+                        .checked
+                        .item_ty(*id)
+                        .map(|ty| matches!(ty, ItemTy::Fn { .. }))
+                        .unwrap_or(false) => {}
+                _ => {
+                    self.unsupported(
+                        whole.span,
+                        "a `spawn_thread` task whose state cannot be checked",
+                        "M5 (a checked thread task)",
+                    );
+                }
+            }
+        }
         let spawns_coroutine = is_spawn_builtin(callee, self)
             && matches!(
                 args.first().and_then(|arg| arg.value.path_res()),
@@ -3637,6 +3692,18 @@ fn collect_local_refs_block(block: &Block, out: &mut Vec<LocalId>) {
 }
 
 /// The base expression of an index, for type queries.
+/// Whether a callee is a named builtin.
+fn is_named_builtin(callee: &Expr, generator: &Generator<'_>, wanted: &str) -> bool {
+    matches!(
+        callee.path_res(),
+        Some((segments, _))
+            if segments
+                .last()
+                .map(|sym| generator.text(*sym) == wanted)
+                .unwrap_or(false)
+    )
+}
+
 /// Whether a callee is the `io_spawn` builtin.
 fn is_spawn_builtin(callee: &Expr, generator: &Generator<'_>) -> bool {
     matches!(

@@ -1942,6 +1942,18 @@ impl Checker<'_> {
                 vec![Effect::Suspends],
             ),
             "io_run" => (Vec::new(), Ty::usize_(), vec![Effect::Suspends]),
+            // Threads: the task must own its state, which the codegen checks at the
+            // spawn site.
+            "spawn_thread" => (
+                vec![Ty::Fn {
+                    params: Vec::new(),
+                    ret: Box::new(Ty::Unit),
+                    effects: vec![Effect::Io],
+                }],
+                Ty::Bool,
+                vec![Effect::Suspends],
+            ),
+            "join_threads" => (Vec::new(), Ty::usize_(), vec![Effect::Suspends]),
             "arena_unbind" => (Vec::new(), Ty::Unit, vec![Effect::Writes]),
             "buf_new" => (Vec::new(), buf, vec![Effect::Alloc]),
             "buf_push" => (

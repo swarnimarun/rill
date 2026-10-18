@@ -1,0 +1,21 @@
+use std::io;
+
+# Threads: each task runs on its own pthread and `join_threads` waits for all of
+# them. A task must own its state - `spawn_thread` accepts a named task and refuses
+# a closure value, whose environment cannot be checked at the spawn site - so this
+# program has each thread print only its own text and share nothing.
+
+let alpha () -> () <io> = io::println ("thread alpha");
+
+let beta () -> () <io> = io::println ("thread beta");
+
+let gamma () -> () <io> = io::println ("thread gamma");
+
+let main () -> i32 <io | suspends> = {
+    spawn_thread (alpha);
+    spawn_thread (beta);
+    spawn_thread (gamma);
+    var joined = join_threads ();
+    io::println ("joined " ++ (joined as String));
+    0
+};
