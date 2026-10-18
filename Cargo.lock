@@ -74,6 +74,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "rill-lsp"
+version = "0.1.0"
+dependencies = [
+ "rill-ast",
+ "rill-diagnostics",
+ "rill-fmt",
+ "rill-hir",
+ "rill-parser",
+ "rill-span",
+ "rill-ty",
+]
+
+[[package]]
 name = "rill-parser"
 version = "0.1.0"
 dependencies = [

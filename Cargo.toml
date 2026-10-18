@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rill-lsp",
     "crates/rill-fmt",
     "crates/rill-span",
     "crates/rill-diagnostics",

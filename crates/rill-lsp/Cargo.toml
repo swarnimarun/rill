@@ -1,0 +1,20 @@
+[package]
+name = "rill-lsp"
+version = "0.1.0"
+edition = "2024"
+
+[[bin]]
+name = "rill-lsp"
+path = "src/main.rs"
+
+[dependencies]
+rill-span = { path = "../rill-span" }
+rill-parser = { path = "../rill-parser" }
+rill-ast = { path = "../rill-ast" }
+rill-hir = { path = "../rill-hir" }
+rill-ty = { path = "../rill-ty" }
+rill-diagnostics = { path = "../rill-diagnostics" }
+rill-fmt = { path = "../rill-fmt" }
+
+[dev-dependencies]
+rill-ast = { path = "../rill-ast" }
