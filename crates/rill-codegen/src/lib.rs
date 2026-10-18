@@ -187,6 +187,9 @@ static void rill_println(r_text s) { printf("%s\n", s); }
    helpers and `extern` declarations do not. */
 typedef struct { void *code; void *env; } rill_fn;
 
+/* A `dyn Trait` value: the concrete value and its vtable. */
+typedef struct { void *data; void *vtable; } rill_dyn;
+
 typedef struct rill_arena {
   unsigned char *data;
   size_t cap;
@@ -712,6 +715,10 @@ impl<'a> Generator<'a> {
             Ty::Unit => "r_unit".into(),
             Ty::Text => "r_text".into(),
             Ty::RawPtr { pointee, .. } => format!("{} *", self.c_type(pointee)),
+            // `dyn` is an opaque nominal with a fixed C shape.
+            Ty::Record(id) | Ty::Nominal(id) if *id == self.checked.dyn_id => {
+                "rill_dyn".to_string()
+            }
             Ty::Record(id) | Ty::Nominal(id) if *id == self.checked.arena_id() => {
                 "rill_arena *".to_string()
             }

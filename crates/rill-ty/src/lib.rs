@@ -196,6 +196,10 @@ pub struct Checked {
     pub arena_id: NominalId,
     /// The builtin `Option` nominal (`option { … }` results).
     pub option_id: NominalId,
+    /// The builtin `dyn` nominal: a `{ data, vtable }` pair, the same shape as a
+    /// function value's `{ code, env }`. Which trait it carries is recorded per
+    /// expression, as `Option`'s element type is.
+    pub dyn_id: NominalId,
     /// The element type each `option { … }` expression carries. `Ty` has no
     /// parameterised variant, so the payload is recorded here and read by
     /// `?` and by code generation.
@@ -273,6 +277,7 @@ struct Checker<'a> {
     type_params: Vec<Symbol>,
     /// The nominal standing in for `Option` results.
     option_id: NominalId,
+    dyn_id: NominalId,
     /// The nominal standing in for growable byte buffers (`<alloc>`).
     buf_id: NominalId,
     /// The nominal standing in for bump arenas (`<alloc>`).
@@ -305,6 +310,7 @@ impl<'a> Checker<'a> {
             option_id: NominalId(0),
             buf_id: NominalId(1),
             arena_id: NominalId(2),
+            dyn_id: NominalId(3),
             int_literals: Vec::new(),
             float_literals: Vec::new(),
         }
@@ -332,6 +338,7 @@ impl<'a> Checker<'a> {
             buf_id: self.buf_id,
             arena_id: self.arena_id,
             option_id: self.option_id,
+            dyn_id: self.dyn_id,
             option_elems: self.option_elems,
             local_types: self.local_types,
             item_types: self.item_types,
@@ -690,6 +697,9 @@ impl<'a> Checker<'a> {
         if id == self.option_id {
             return "Option".to_string();
         }
+        if id == self.dyn_id {
+            return "dyn".to_string();
+        }
         match self.nominals.get(id.0 as usize) {
             Some(def) => self.text(def.name).to_string(),
             None => format!("<nominal {}>", id.0),
@@ -722,6 +732,15 @@ impl<'a> Checker<'a> {
         debug_assert_eq!(self.arena_id, NominalId(2));
         self.nominals.push(NominalDef {
             id: NominalId(2),
+            name: Symbol::EMPTY,
+            kind: NominalKind::Opaque,
+            span: Span::DUMMY,
+        });
+        // `dyn` is a `{ data, vtable }` pair: an opaque nominal whose C shape is
+        // written by the backend, like a function value's pair.
+        debug_assert_eq!(self.dyn_id, NominalId(3));
+        self.nominals.push(NominalDef {
+            id: NominalId(3),
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
@@ -928,7 +947,9 @@ impl<'a> Checker<'a> {
                 mutable: *mutable,
                 pointee: Box::new(self.ast_ty(pointee)),
             },
-            AstType::Dyn { .. } => Ty::Text,
+            // `dyn Trait` is a `{ data, vtable }` pair; the trait itself is
+            // recorded where the value is coerced.
+            AstType::Dyn { .. } => Ty::Nominal(self.dyn_id),
             AstType::Error(_) => Ty::Error,
         }
     }
