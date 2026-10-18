@@ -20,6 +20,8 @@ pub fn format_text(text: &str) -> String {
             depth: &mut depth,
             prev: None,
             nested: 0,
+            // Computed before the tree walk: the walk itself is single-pass.
+            inline: inline_braces(text),
         };
         writer.node(&parse.cst.root);
     }
@@ -42,6 +44,8 @@ struct Writer<'a> {
     /// Parens and brackets suspend statement layout: a `;` inside them belongs to
     /// one expression, not to the end of a statement.
     nested: usize,
+    /// Opening braces whose block stays on one line.
+    inline: std::collections::HashSet<usize>,
 }
 
 impl Writer<'_> {
@@ -104,6 +108,21 @@ impl Writer<'_> {
             return;
         }
         if kind == SyntaxKind::RBrace {
+            let inline_close = self
+                .inline
+                .iter()
+                .filter(|open| **open < start)
+                .max()
+                .map(|open| !self.src[*open + 1..start].contains('}'))
+                .unwrap_or(false);
+            if inline_close {
+                while self.out.ends_with(' ') {
+                    self.out.pop();
+                }
+                self.out.push_str(" }");
+                self.prev = Some((kind, end, false));
+                return;
+            }
             *self.depth = self.depth.saturating_sub(1);
             // Drop the trailing indent; the closing brace carries its own.
             while self.out.ends_with(' ') || self.out.ends_with('\n') {
@@ -115,6 +134,11 @@ impl Writer<'_> {
         }
         self.out.push_str(text);
         if kind == SyntaxKind::LBrace {
+            if self.inline.contains(&start) {
+                self.out.push(' ');
+                self.prev = Some((kind, end, false));
+                return;
+            }
             *self.depth += 1;
             self.out.push('\n');
             let indent = "\t".repeat(*self.depth);
@@ -166,6 +190,30 @@ fn needs_space(prev: SyntaxKind, next: SyntaxKind) -> bool {
 }
 
 /// Whether two offsets are adjacent in the source, which is semantic in Rill.
+fn inline_braces(src: &str) -> std::collections::HashSet<usize> {
+    let mut stack: Vec<usize> = Vec::new();
+    let mut inline = std::collections::HashSet::new();
+    for (at, byte) in src.bytes().enumerate() {
+        match byte {
+            b'{' => stack.push(at),
+            b'}' => {
+                let Some(open) = stack.pop() else { continue };
+                let body = &src[open + 1..at];
+                if !body.contains(';')
+                    && !body.contains('{')
+                    && !body.contains('}')
+                    && !body.contains('\n')
+                    && body.trim().len() <= 48
+                {
+                    inline.insert(open);
+                }
+            }
+            _ => {}
+        }
+    }
+    inline
+}
+
 fn adjacent(src: &str, prev_end: usize, start: usize) -> bool {
     src.get(prev_end..start)
         .map(|between| between.is_empty())
