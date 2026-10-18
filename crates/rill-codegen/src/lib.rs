@@ -1215,7 +1215,7 @@ impl<'a> Generator<'a> {
                         }
                         let arguments: Vec<String> =
                             args.iter().map(|arg| self.expr(&arg.value)).collect();
-                        return format!("{base}({})", arguments.join(", "));
+                        format!("{base}({})", arguments.join(", "))
                     }
                     Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
                     Ty::Array { len: None, .. } => format!("({base}).ptr[{index}]"),

@@ -1383,7 +1383,7 @@ impl Checker<'_> {
                             let arg_ty = self.expr(&arg.value);
                             self.unify(param, &arg_ty, args[index].span, "checking `f[x]`");
                         }
-                        return (*ret).clone();
+                        (*ret).clone()
                     }
                     Ty::Text => {
                         if args.len() != 1 {
