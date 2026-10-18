@@ -230,6 +230,76 @@ impl Checked {
         self.resolved.get(&id)
     }
 
+    /// A readable rendering of a type, for tools - hover, symbols, the editor's
+    /// status line - so they do not each invent one.
+    pub fn display_ty(&self, frontend: &rill_ast::Frontend, ty: &Ty) -> String {
+        match ty {
+            Ty::Var(_) => "_".into(),
+            Ty::Error => "<error>".into(),
+            Ty::Unit => "()".into(),
+            Ty::Bool => "Bool".into(),
+            Ty::Text => "Text".into(),
+            Ty::Int { bits, signed } => format!("{}{bits}", if *signed { 'i' } else { 'u' }),
+            Ty::Float { bits } => format!("f{bits}"),
+            Ty::RawPtr { mutable, pointee } => {
+                format!(
+                    "&raw {}{}",
+                    if *mutable { "mut " } else { "" },
+                    self.display_ty(frontend, pointee)
+                )
+            }
+            Ty::Tuple(elems) => {
+                let parts: Vec<String> =
+                    elems.iter().map(|e| self.display_ty(frontend, e)).collect();
+                format!("({})", parts.join(", "))
+            }
+            Ty::Array { elem, len } => match len {
+                Some(len) => format!("[{}; {len}]", self.display_ty(frontend, elem)),
+                None => format!("[{}]", self.display_ty(frontend, elem)),
+            },
+            Ty::Range(elem) => format!("Range {}", self.display_ty(frontend, elem)),
+            Ty::Fn { params, ret, .. } => {
+                let parts: Vec<String> = params
+                    .iter()
+                    .map(|p| self.display_ty(frontend, p))
+                    .collect();
+                format!(
+                    "({}) -> {}",
+                    parts.join(", "),
+                    self.display_ty(frontend, ret)
+                )
+            }
+            Ty::Choice(inner) => self.display_ty(frontend, inner),
+            Ty::Record(id) | Ty::Nominal(id) => {
+                if *id == self.dyn_id {
+                    return "dyn".into();
+                }
+                if *id == self.vec_id {
+                    return "f64x4".into();
+                }
+                if *id == self.option_id {
+                    return "Option".into();
+                }
+                if *id == self.buf_id {
+                    return "Buf".into();
+                }
+                if *id == self.arena_id {
+                    return "Arena".into();
+                }
+                let name = self
+                    .nominals
+                    .get(id.0 as usize)
+                    .map(|def| frontend.interner.get(def.name).to_string())
+                    .unwrap_or_default();
+                if name.is_empty() {
+                    "record".into()
+                } else {
+                    name
+                }
+            }
+        }
+    }
+
     pub fn local_ty(&self, id: LocalId) -> Option<&Ty> {
         self.local_types.get(id.0 as usize).and_then(|t| t.as_ref())
     }

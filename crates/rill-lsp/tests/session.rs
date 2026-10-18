@@ -44,6 +44,24 @@ fn a_session_initialises_reports_diagnostics_and_shuts_down() {
             r#"{{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{{"textDocument":{{"uri":"file:///t.rill","languageId":"rill","version":1,"text":{}}}}}}}"#,
             rill_lsp_json_string(bad_source)
         ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[
+                ("URI", "file:///h.rill"),
+                (
+                    "TEXT",
+                    &json_string(
+                        "let one () -> i32 <computes> = 1;\nlet main () -> i32 <computes> = one ();\n",
+                    ),
+                ),
+            ],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            // Character 36 is inside `one ()` - the call - not the type
+            // annotation, which is where an off-by-a-few first pointed.
+            &[("URI", "file:///h.rill"), ("LINE", "1"), ("CHAR", "36")],
+        ),
         r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
         r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
     ];
@@ -80,6 +98,31 @@ fn a_session_initialises_reports_diagnostics_and_shuts_down() {
 
 /// Renders a Rust string as a JSON string literal, so the test does not hand-escape.
 fn rill_lsp_json_string(text: &str) -> String {
+    let mut out = String::from("\"");
+    for ch in text.chars() {
+        match ch {
+            '"' => out.push_str("\\\""),
+            '\\' => out.push_str("\\\\"),
+            '\n' => out.push_str("\\n"),
+            c => out.push(c),
+        }
+    }
+    out.push('"');
+    out
+}
+
+/// Substitutes placeholders in a raw JSON string, so its braces stay literal -
+/// hand-escaping them produced two unparseable messages before this test worked.
+fn raw_message(template: &str, values: &[(&str, &str)]) -> String {
+    let mut text = template.to_string();
+    for (key, value) in values {
+        text = text.replace(key, value);
+    }
+    text
+}
+
+/// A Rust string as a JSON string literal.
+fn json_string(text: &str) -> String {
     let mut out = String::from("\"");
     for ch in text.chars() {
         match ch {

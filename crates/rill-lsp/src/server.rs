@@ -10,6 +10,9 @@ pub struct Document {
     pub text: String,
     pub version: i64,
     pub source: rill_span::SourceMap,
+    pub frontend: rill_ast::Frontend,
+    pub hir: rill_hir::Hir,
+    pub checked: rill_ty::Checked,
     pub diagnostics: rill_diagnostics::Diagnostics,
 }
 
@@ -111,6 +114,28 @@ impl Server {
                     .to_string();
                 self.open(uri, text, version)?;
             }
+            "textDocument/hover" => {
+                let line = params
+                    .get("position")
+                    .and_then(|p| p.get("line"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let character = params
+                    .get("position")
+                    .and_then(|p| p.get("character"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let uri = params
+                    .get("textDocument")
+                    .and_then(|doc| doc.get("uri"))
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if debug() {
+                    eprintln!("lsp: hover {uri} at {line}:{character}");
+                }
+                self.hover(id, &uri, line, character)?;
+            }
             "textDocument/formatting" => {
                 let uri = params
                     .get("textDocument")
@@ -137,10 +162,16 @@ impl Server {
         let mut diagnostics = rill_diagnostics::Diagnostics::default();
         diagnostics.extend(frontend.diagnostics.clone());
         diagnostics.extend(checked.diagnostics.clone());
+        if debug() {
+            eprintln!("lsp: analysed {uri} ({} diagnostics)", diagnostics.len());
+        }
         let document = Document {
             text,
             version,
             source,
+            frontend,
+            hir,
+            checked,
             diagnostics,
         };
         self.documents.insert(uri.clone(), document);
@@ -160,6 +191,78 @@ impl Server {
             ("newText", Json::Str(formatted)),
         ]);
         self.respond(id, Json::Arr(vec![edit]))
+    }
+
+    /// Hover: the type of the smallest expression containing the cursor.
+    fn hover(
+        &mut self,
+        id: Option<Json>,
+        uri: &str,
+        line: u32,
+        character: u32,
+    ) -> std::io::Result<()> {
+        let Some(document) = self.documents.get(uri) else {
+            if debug() {
+                eprintln!("lsp: hover for an unknown document");
+            }
+            return self.respond(id, Json::Null);
+        };
+        let offset = position_to_offset(&document.source, line, character);
+        if debug() {
+            let items = document.hir.items().len();
+            let bodies = document
+                .hir
+                .items()
+                .iter()
+                .filter(|item| item_body(item).is_some())
+                .count();
+            eprintln!(
+                "lsp: hover offset={} items={items} with-body={bodies} files={}",
+                offset.to_usize(),
+                document.source.files().len()
+            );
+        }
+        let mut best: Option<(u32, String)> = None;
+        let mut considered = 0usize;
+        for item in document.hir.items() {
+            let mut exprs = Vec::new();
+            if let Some(body) = item_body(item) {
+                collect_expr(body, &mut exprs);
+            }
+            for expr in exprs {
+                let span = expr.span;
+                if span.is_dummy() || span.is_empty() {
+                    continue;
+                }
+                if span.start <= offset && offset <= span.end {
+                    considered += 1;
+                    let Some(ty) = document.checked.expr_ty(expr.id) else {
+                        continue;
+                    };
+                    let text = document.checked.display_ty(&document.frontend, ty);
+                    let width = span.end.to_usize().saturating_sub(span.start.to_usize()) as u32;
+                    if best.as_ref().map(|(best, _)| width < *best).unwrap_or(true) {
+                        best = Some((width, text));
+                    }
+                }
+            }
+        }
+        if debug() {
+            eprintln!("lsp: hover considered {considered} expressions, answer: {best:?}");
+        }
+        match best {
+            Some((_, text)) => self.respond(
+                id,
+                Json::obj(&[(
+                    "contents",
+                    Json::obj(&[
+                        ("kind", Json::Str("plaintext".into())),
+                        ("value", Json::Str(text)),
+                    ]),
+                )]),
+            ),
+            None => self.respond(id, Json::Null),
+        }
     }
 
     fn publish(&mut self, uri: &str) -> std::io::Result<()> {
@@ -284,4 +387,108 @@ fn write_message(body: &str) -> std::io::Result<()> {
     let mut out = stdout.lock();
     write!(out, "Content-Length: {}\r\n\r\n{body}", body.len())?;
     out.flush()
+}
+
+/// Whether the server prints what it is doing, which is how a request that answers
+/// nothing gets diagnosed instead of guessed at.
+fn debug() -> bool {
+    std::env::var_os("RILL_DBG_LSP").is_some()
+}
+
+/// An item's body expression, for tools that walk program text.
+fn item_body(item: &rill_hir::Item) -> Option<&rill_hir::Expr> {
+    match &item.kind {
+        rill_hir::ItemKind::Fn(def) => def.body.as_ref(),
+        rill_hir::ItemKind::Project(def) => Some(&def.body),
+        _ => None,
+    }
+}
+
+/// Every expression under `expr`, outermost first. The walk covers the shapes that
+/// carry types in practice; a shape it does not reach yields no answer rather than a
+/// wrong one.
+fn collect_expr(expr: &rill_hir::Expr, out: &mut Vec<rill_hir::Expr>) {
+    out.push(expr.clone());
+    match &expr.kind {
+        rill_hir::ExprKind::Block(block) => {
+            for stmt in &block.stmts {
+                match stmt {
+                    rill_hir::Stmt::Expr(expr) => collect_expr(expr, out),
+                    rill_hir::Stmt::Set { place, value, .. } => {
+                        collect_expr(place, out);
+                        collect_expr(value, out);
+                    }
+                    rill_hir::Stmt::Var { init, .. } => collect_expr(init, out),
+                    rill_hir::Stmt::Yield { value, .. } => collect_expr(value, out),
+                    rill_hir::Stmt::TryBind { value, .. } => collect_expr(value, out),
+                    _ => {}
+                }
+            }
+            if let Some(tail) = &block.tail {
+                collect_expr(tail, out);
+            }
+        }
+        rill_hir::ExprKind::Call { callee, args } => {
+            collect_expr(callee, out);
+            for arg in args {
+                collect_expr(&arg.value, out);
+            }
+        }
+        rill_hir::ExprKind::Index { base, args } => {
+            collect_expr(base, out);
+            for arg in args {
+                collect_expr(&arg.value, out);
+            }
+        }
+        rill_hir::ExprKind::Binary { lhs, rhs, .. } => {
+            collect_expr(lhs, out);
+            collect_expr(rhs, out);
+        }
+        rill_hir::ExprKind::Unary { operand, .. } => collect_expr(operand, out),
+        rill_hir::ExprKind::Try { base } => collect_expr(base, out),
+        rill_hir::ExprKind::If {
+            then_branch,
+            else_branch,
+            ..
+        } => {
+            collect_expr_block(then_branch, out);
+            if let Some(rill_hir::ElseBranch::Block(block)) = else_branch {
+                collect_expr_block(block, out);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn collect_expr_block(block: &rill_hir::Block, out: &mut Vec<rill_hir::Expr>) {
+    for stmt in &block.stmts {
+        if let rill_hir::Stmt::Expr(expr) = stmt {
+            collect_expr(expr, out);
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_expr(tail, out);
+    }
+}
+
+/// `(line, character)` as an absolute offset. LSP counts lines from zero; these
+/// sources are ASCII in practice, so a byte column is the same number, and the
+/// difference is documented rather than assumed away.
+fn position_to_offset(
+    source: &rill_span::SourceMap,
+    line: u32,
+    character: u32,
+) -> rill_span::BytePos {
+    let Some(file) = source.files().first() else {
+        return rill_span::BytePos(0);
+    };
+    let mut offset = file.start.to_usize();
+    for (index, text) in file.text.split_inclusive('\n').enumerate() {
+        if index as u32 == line {
+            let at = (offset + character as usize).min(file.text.len());
+            return rill_span::BytePos(at as u32);
+        }
+        offset += text.len();
+    }
+    rill_span::BytePos(file.text.len() as u32)
 }
