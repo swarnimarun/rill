@@ -34,17 +34,6 @@ impl Json {
         }
     }
 
-    /// Inserts, replacing an existing key, so a message can be built incrementally.
-    pub fn set(&mut self, key: &str, value: Json) {
-        if let Json::Obj(entries) = self {
-            if let Some(entry) = entries.iter_mut().find(|(k, _)| k == key) {
-                entry.1 = value;
-                return;
-            }
-            entries.push((key.to_string(), value));
-        }
-    }
-
     pub fn obj(entries: &[(&str, Json)]) -> Json {
         Json::Obj(
             entries

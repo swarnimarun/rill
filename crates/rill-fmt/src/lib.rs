@@ -10,17 +10,18 @@ use rill_syntax::{Element, SyntaxKind, SyntaxNode};
 /// Formats `text`, returning the canonical form. Idempotent: formatting twice is
 /// formatting once.
 pub fn format_text(text: &str) -> String {
-    let (parse, sm) = rill_parser::parse_text("<fmt>", text);
+    let (parse, _sm) = rill_parser::parse_text("<fmt>", text);
     let mut out = String::new();
     let mut depth = 0usize;
-    let mut writer = Writer {
-        src: text,
-        out: &mut out,
-        depth: &mut depth,
-        prev: None,
-    };
-    writer.node(&parse.cst.root);
-    let mut out = out;
+    {
+        let mut writer = Writer {
+            src: text,
+            out: &mut out,
+            depth: &mut depth,
+            prev: None,
+        };
+        writer.node(&parse.cst.root);
+    }
     while out.ends_with('\n') {
         out.pop();
     }

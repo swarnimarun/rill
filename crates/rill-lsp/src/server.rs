@@ -202,6 +202,9 @@ impl Server {
             "textDocument/publishDiagnostics",
             Json::obj(&[
                 ("uri", Json::Str(uri.to_string())),
+                // The version is what lets a client discard diagnostics for a
+                // stale edit, which is why the protocol asks for it.
+                ("version", Json::Num(document.version as f64)),
                 ("diagnostics", Json::Arr(items)),
             ]),
         )
