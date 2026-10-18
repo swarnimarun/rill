@@ -192,6 +192,8 @@ pub enum ItemTy {
 pub struct Checked {
     /// The builtin `Buf` nominal (growable byte buffers, `<alloc>`).
     pub buf_id: NominalId,
+    /// The builtin `Arena` nominal (bump allocation with marks).
+    pub arena_id: NominalId,
     /// The builtin `Option` nominal (`option { … }` results).
     pub option_id: NominalId,
     local_types: Vec<Option<Ty>>,
@@ -206,6 +208,11 @@ impl Checked {
     /// The builtin growable-buffer nominal (`Buf`).
     pub fn buf_id(&self) -> NominalId {
         self.buf_id
+    }
+
+    /// The builtin bump-arena nominal (`Arena`).
+    pub fn arena_id(&self) -> NominalId {
+        self.arena_id
     }
 
     pub fn expr_ty(&self, id: ExprId) -> Option<&Ty> {
@@ -263,6 +270,8 @@ struct Checker<'a> {
     option_id: NominalId,
     /// The nominal standing in for growable byte buffers (`<alloc>`).
     buf_id: NominalId,
+    /// The nominal standing in for bump arenas (`<alloc>`).
+    arena_id: NominalId,
     /// Unsuffixed numeric literals: they take the type their context requires
     /// and fall back to `i32`/`f64`, like Rust's `{integer}`/`{float}`.
     int_literals: Vec<u32>,
@@ -289,6 +298,7 @@ impl<'a> Checker<'a> {
             type_params: Vec::new(),
             option_id: NominalId(0),
             buf_id: NominalId(1),
+            arena_id: NominalId(2),
             int_literals: Vec::new(),
             float_literals: Vec::new(),
         }
@@ -314,6 +324,7 @@ impl<'a> Checker<'a> {
         }
         Checked {
             buf_id: self.buf_id,
+            arena_id: self.arena_id,
             option_id: self.option_id,
             local_types: self.local_types,
             item_types: self.item_types,
@@ -666,6 +677,9 @@ impl<'a> Checker<'a> {
         if id == self.buf_id {
             return "Buf".to_string();
         }
+        if id == self.arena_id {
+            return "Arena".to_string();
+        }
         if id == self.option_id {
             return "Option".to_string();
         }
@@ -692,6 +706,15 @@ impl<'a> Checker<'a> {
         debug_assert_eq!(self.buf_id, NominalId(1));
         self.nominals.push(NominalDef {
             id: NominalId(1),
+            name: Symbol::EMPTY,
+            kind: NominalKind::Opaque,
+            span: Span::DUMMY,
+        });
+        // `Arena` is the scoped bump allocator: `arena_new`, `arena_mark`,
+        // `arena_reset`, `arena_used`, `arena_alloc`.
+        debug_assert_eq!(self.arena_id, NominalId(2));
+        self.nominals.push(NominalDef {
+            id: NominalId(2),
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
@@ -945,6 +968,7 @@ impl<'a> Checker<'a> {
             "Bool" => Ty::Bool,
             "String" | "Text" => Ty::Text,
             "Buf" => Ty::Nominal(self.buf_id),
+            "Arena" => Ty::Nominal(self.arena_id),
             _ if self.type_params.iter().any(|p| self.text(*p) == name) => {
                 // A type parameter of the enclosing declaration (`a` in
                 // `trait Show a`): a fresh variable for inference to fill in.
@@ -1636,6 +1660,7 @@ impl Checker<'_> {
     /// Signatures of the compiler-provided builtins.
     fn builtin_sig(&mut self, name: &str) -> Option<(Vec<Ty>, Ty, Vec<Effect>)> {
         let buf = Ty::Nominal(self.buf_id);
+        let arena = Ty::Nominal(self.arena_id);
         Some(match name {
             "buf_new" => (Vec::new(), buf, vec![Effect::Alloc]),
             "buf_push" => (
@@ -1659,6 +1684,21 @@ impl Checker<'_> {
                 Vec::new(),
             ),
             "buf_text" => (vec![buf.clone()], Ty::Text, vec![Effect::Alloc]),
+            "arena_new" => (vec![Ty::usize_()], arena.clone(), vec![Effect::Alloc]),
+            "arena_mark" => (vec![arena.clone()], Ty::usize_(), Vec::new()),
+            "arena_reset" => (vec![arena.clone(), Ty::usize_()], Ty::Unit, Vec::new()),
+            "arena_used" => (vec![arena.clone()], Ty::usize_(), Vec::new()),
+            "arena_alloc" => (
+                vec![arena.clone(), Ty::usize_()],
+                Ty::RawPtr {
+                    mutable: true,
+                    pointee: Box::new(Ty::Int {
+                        bits: 8,
+                        signed: false,
+                    }),
+                },
+                vec![Effect::Alloc],
+            ),
             _ => return None,
         })
     }

@@ -1336,8 +1336,14 @@ reference's span alongside `type_ids` in that arm to find which occurrence fails
    `rillc build --link <lib>` passes `-l<lib>` to the toolchain.
    `examples/ffi.rill` calls libc `puts`, `strlen`, `malloc` and `free` (the
    latter two through `&raw mut u8`) and is verified by a driver test.
-2. **Arenas** — `StackArena::run`-style scoped `<alloc>` handlers; a bind-at-top-
-   scope arena that the whole lexical context can allocate from, in layers.
+2. **Arenas — done (first cut).** `arena_new`, `arena_mark`, `arena_reset`,
+   `arena_used`, `arena_alloc` on a builtin `Arena` nominal: a bump allocator
+   allocated once at the top scope, with marks as the layers (mark -> allocate
+   -> reset frees the layer; 16-byte aligned blocks; NULL when full). Every call
+   carries `<alloc>`, so `<computes>` code cannot allocate.
+   `examples/arena.rill` runs two layers and is verified by a driver test.
+   Still to come for the full directive: a `StackArena::run`-style *scope*
+   handler that binds the arena for the lexical context implicitly.
 3. **Projections** — `project`/`yield inout` inlined as prologue/body/epilog, and
    `.`-method calls routed through them.
 4. **`<decides>` / `<transacts>`** — success/fail edges, `|` with undo-trail

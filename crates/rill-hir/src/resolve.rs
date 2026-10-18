@@ -979,6 +979,16 @@ fn pattern_bindings(pattern: &AstPattern) -> Vec<(Symbol, Span)> {
 pub fn is_builtin(name: &str) -> bool {
     matches!(
         name,
-        "zeroed" | "buf_new" | "buf_push" | "buf_len" | "buf_get" | "buf_text"
+        "zeroed"
+            | "buf_new"
+            | "buf_push"
+            | "buf_len"
+            | "buf_get"
+            | "buf_text"
+            | "arena_new"
+            | "arena_mark"
+            | "arena_reset"
+            | "arena_used"
+            | "arena_alloc"
     )
 }

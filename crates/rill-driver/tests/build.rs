@@ -222,3 +222,33 @@ fn builds_and_calls_libc_through_ffi() {
     );
     assert_eq!(output.status.code(), Some(15));
 }
+
+#[test]
+fn builds_and_runs_layered_arenas() {
+    let dir = workdir("arena");
+    let out = dir.join("arena");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/arena.rill")
+        .canonicalize()
+        .expect("examples/arena.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // A mark records the watermark; resetting to it frees the layer, so the
+    // arena ends empty and each layer's cost is reported.
+    assert!(
+        stdout.contains("first 100 second 64 used 0"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(36));
+}

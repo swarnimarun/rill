@@ -105,6 +105,38 @@ static r_text rill_f64_to_text(r_f64 v) {
 
 static void rill_println(r_text s) { printf("%s\n", s); }
 
+// ---- arenas: bump allocation with marks (the "layers" of §4/§12) ----------
+typedef struct rill_arena {
+  unsigned char *data;
+  size_t cap;
+  size_t used;
+} rill_arena;
+
+static rill_arena *rill_arena_new(r_u64 bytes) {
+  rill_arena *a = (rill_arena *)malloc(sizeof(rill_arena));
+  a->cap = (size_t)bytes;
+  a->data = (unsigned char *)malloc(a->cap);
+  a->used = 0;
+  return a;
+}
+
+static r_u64 rill_arena_mark(rill_arena *a) { return (r_u64)a->used; }
+
+static void rill_arena_reset(rill_arena *a, r_u64 mark) { a->used = (size_t)mark; }
+
+static r_u64 rill_arena_used(rill_arena *a) { return (r_u64)a->used; }
+
+// Allocates `bytes` from the arena and returns the pointer, NULL when full.
+static r_u8 *rill_arena_alloc(rill_arena *a, r_u64 bytes) {
+  size_t aligned = (a->used + 15u) & ~(size_t)15u;
+  if (aligned + (size_t)bytes > a->cap) {
+    return NULL;
+  }
+  unsigned char *p = a->data + aligned;
+  a->used = aligned + (size_t)bytes;
+  return (r_u8 *)p;
+}
+
 // ---- growable buffers (`<alloc>`) ----------------------------------------
 typedef struct rill_buf {
   unsigned char *data;
@@ -503,6 +535,9 @@ impl<'a> Generator<'a> {
             Ty::Unit => "r_unit".into(),
             Ty::Text => "r_text".into(),
             Ty::RawPtr { pointee, .. } => format!("{} *", self.c_type(pointee)),
+            Ty::Record(id) | Ty::Nominal(id) if *id == self.checked.arena_id() => {
+                "rill_arena *".to_string()
+            }
             Ty::Tuple(elems) => {
                 let name = self.mangled_tuple(elems);
                 if self.emitted_types.insert(name.clone()) {
@@ -1045,6 +1080,11 @@ impl<'a> Generator<'a> {
                         "buf_len" => "rill_buf_len".into(),
                         "buf_get" => "rill_buf_get".into(),
                         "buf_text" => "rill_buf_text".into(),
+                        "arena_new" => "rill_arena_new".into(),
+                        "arena_mark" => "rill_arena_mark".into(),
+                        "arena_reset" => "rill_arena_reset".into(),
+                        "arena_used" => "rill_arena_used".into(),
+                        "arena_alloc" => "rill_arena_alloc".into(),
                         _ => {
                             self.unsupported(
                                 expr.span,
