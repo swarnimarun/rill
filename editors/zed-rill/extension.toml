@@ -1,0 +1,16 @@
+id = "rill"
+name = "Rill"
+version = "0.1.0"
+schema_version = 1
+authors = ["Swarnim Arun"]
+description = "Rill language support: grammar, highlights, and the rill-lsp server."
+repository = "https://github.com/swarnimarun/rill"
+
+[grammars.rill]
+# The grammar lives beside this extension in the rill repository. Zed resolves this
+# for a *dev* extension; a published extension would need a repository URL and rev.
+path = "../tree-sitter-rill"
+
+[language_servers.rill-lsp]
+name = "Rill LSP"
+languages = ["Rill"]

@@ -1,0 +1,19 @@
+{
+  "grammars": [
+    {
+      "name": "rill",
+      "camelcase": "Rill",
+      "scope": "source.rill",
+      "path": ".",
+      "file-types": ["rill"]
+    }
+  ],
+  "metadata": {
+    "version": "0.1.0",
+    "license": "MIT",
+    "description": "Rill grammar for editors",
+    "authors": [
+      { "name": "Swarnim Arun" }
+    ]
+  }
+}
