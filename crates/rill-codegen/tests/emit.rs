@@ -84,24 +84,20 @@ fn unsupported_constructs_are_reported_not_miscompiled() {
 }
 
 #[test]
-fn option_body_with_statements_is_reported_not_miscompiled() {
+fn option_body_with_statements_lower() {
     // The payload is lowered under a failure continuation; a statement before it
     // would need its own guard, so this shape must be *reported* rather than
     // emitted with a statement that runs after the body has already failed.
-    let (frontend, sm) = parse_and_lower_text(
+    // Body statements and a value are accepted now that a block lowered under a
+    // continuation gets a jump label.
+    let (frontend, _sm) = parse_and_lower_text(
         "o.rill",
         "let main () -> i32 <decides> = {\n    option {\n        1;\n        2\n    };\n    0\n};\n",
     );
     let hir = lower(&frontend);
     let checked = check(&frontend, &hir);
-    let (source, diagnostics) = emit_c(&frontend, &hir, &checked);
-    assert!(diagnostics.has_errors(), "the handler must be reported");
-    let rendered = rill_diagnostics::render_all(&sm, &diagnostics);
-    assert!(
-        rendered.contains("not lowered by the C backend"),
-        "{rendered}"
-    );
-    assert!(source.contains("int main(void)"));
+    let (_source, diagnostics) = emit_c(&frontend, &hir, &checked);
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
 }
 
 #[test]

@@ -605,6 +605,17 @@ fn builds_and_runs_option_handler() {
         .output()
         .expect("run the produced binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // A body with statements runs under the handler's continuation: the print
+    // after the failed binding must not run, so it appears exactly once.
+    assert_eq!(
+        stdout.matches("after the binding").count(),
+        1,
+        "the statement after a failed binding ran: {stdout}"
+    );
+    assert!(
+        stdout.contains("noisy[5] = 5 noisy[0] = 0"),
+        "unexpected stdout: {stdout}"
+    );
     // `option { first_positive[x, y] }? | 0`: a present value, then an absent one
     // that the fallback catches.
     assert!(

@@ -1597,19 +1597,7 @@ impl<'a> Generator<'a> {
                     // The payload must be a single expression: a body with
                     // statements would need each statement guarded by the
                     // failure flag, which is not lowered yet.
-                    let block = body;
-                    if !block.stmts.is_empty() {
-                        self.unsupported(
-                            expr.span,
-                            "an `option { … }` body with statements before its value",
-                            "M4 (handlers)",
-                        );
-                        return "0".into();
-                    }
-                    let Some(tail) = block.tail.as_ref() else {
-                        self.unsupported(expr.span, "`option { }` without a value", "M4");
-                        return "0".into();
-                    };
+                    let block = body.clone();
                     let repr = self.option_repr(&elem);
                     let cty = self.c_type(&elem);
                     self.temp += 1;
@@ -1620,7 +1608,10 @@ impl<'a> Generator<'a> {
                         .push_str(&format!("  bool {ok} = true; {cty} {held} = {{0}};\n"));
                     self.fail_targets
                         .push((format!("{ok} = false;"), format!("({cty}){{0}}")));
-                    let value = self.expr(tail);
+                    // The whole body is lowered under that continuation: a
+                    // failed binding or guard skips the statements after it, so
+                    // the payload is the body's value or the zero placeholder.
+                    let value = self.block(&block);
                     self.fail_targets.pop();
                     self.body.push_str(&format!("  {held} = ({value});\n"));
                     return format!("(({repr}){{ .some = {ok}, .value = {held} }})");

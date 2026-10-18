@@ -12,6 +12,16 @@ let first_positive (x: i32, y: i32) -> i32 <decides> =
 let maybe (x: i32, y: i32) -> i32 <computes> =
     (option { first_positive[x, y] })? | 0;
 
+# A body with statements runs under the handler's continuation: the statement
+# after a failed binding must not run.
+let noisy (x: i32) -> i32 <io> =
+    (option {
+        let? v = first_positive[x, 0];
+        io::println ("after the binding");
+        v
+    })? | 0;
+
 let main () -> () <io | decides> = {
+    io::println ("noisy[5] = " ++ (noisy[5] as String) ++ " noisy[0] = " ++ (noisy[0] as String));
     io::println ("maybe[5, 0] = " ++ (maybe[5, 0] as String) ++ " maybe[0, 0] = " ++ (maybe[0, 0] as String))
 };
