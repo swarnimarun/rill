@@ -19,6 +19,7 @@ pub fn format_text(text: &str) -> String {
             out: &mut out,
             depth: &mut depth,
             prev: None,
+            nested: 0,
         };
         writer.node(&parse.cst.root);
     }
@@ -38,6 +39,9 @@ struct Writer<'a> {
         usize, /* end offset */
         bool,  /* was a comment */
     )>,
+    /// Parens and brackets suspend statement layout: a `;` inside them belongs to
+    /// one expression, not to the end of a statement.
+    nested: usize,
 }
 
 impl Writer<'_> {
@@ -80,11 +84,29 @@ impl Writer<'_> {
         if space && !self.out.ends_with(' ') && !self.out.ends_with('\n') {
             self.out.push(' ');
         }
+        match kind {
+            SyntaxKind::LParen | SyntaxKind::LBracket => self.nested += 1,
+            SyntaxKind::RParen | SyntaxKind::RBracket => {
+                self.nested = self.nested.saturating_sub(1)
+            }
+            _ => {}
+        }
+        if kind == SyntaxKind::KwElse {
+            // `} else {` reads as one construct, not two.
+            while self.out.ends_with(' ') || self.out.ends_with('\n') {
+                self.out.pop();
+            }
+            self.out.push_str(" else ");
+            self.prev = Some((kind, end, false));
+            return;
+        }
         if kind == SyntaxKind::RBrace {
             *self.depth = self.depth.saturating_sub(1);
-            if !self.out.ends_with('\n') {
-                self.out.push('\n');
+            // Drop the trailing indent; the closing brace carries its own.
+            while self.out.ends_with(' ') || self.out.ends_with('\n') {
+                self.out.pop();
             }
+            self.out.push('\n');
             let indent = "  ".repeat(*self.depth);
             self.out.push_str(&indent);
         }
@@ -92,6 +114,16 @@ impl Writer<'_> {
         if kind == SyntaxKind::LBrace {
             *self.depth += 1;
             self.out.push('\n');
+            let indent = "  ".repeat(*self.depth);
+            self.out.push_str(&indent);
+        }
+        if kind == SyntaxKind::Semi && self.nested == 0 {
+            // One statement per line, which is the layout a reader expects - and a
+            // blank line after a top-level item, which separates declarations.
+            self.out.push('\n');
+            if *self.depth == 0 {
+                self.out.push('\n');
+            }
             let indent = "  ".repeat(*self.depth);
             self.out.push_str(&indent);
         }
@@ -111,7 +143,7 @@ impl Writer<'_> {
 fn needs_space(prev: SyntaxKind, next: SyntaxKind) -> bool {
     use SyntaxKind::*;
     // Nothing binds to what follows without one of these.
-    if matches!(next, Arrow | Semi) {
+    if next == Semi {
         return false;
     }
     if matches!(prev, LParen | LBracket | Dot | ColonColon) {

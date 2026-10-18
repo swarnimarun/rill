@@ -12,7 +12,7 @@ extern "c" let free (p: &raw mut u8) -> () <io | alloc>;
 let main () -> i32 <io | alloc> = {
     var greeting = "hello from libc";
     puts greeting;
-    var len = strlen greeting;
+    var len = strlen(greeting);
     var bytes = malloc len;
     free bytes;
     io::println ("strlen = " ++ (len as String));

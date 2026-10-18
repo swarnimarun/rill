@@ -562,6 +562,11 @@ fn capabilities() -> Json {
     Json::obj(&[
         ("textDocumentSync", Json::Num(1.0)),
         ("documentFormattingProvider", Json::Bool(true)),
+        // Advertised because an editor only asks for what the server claims: the
+        // handlers existed and were tested while no client could reach them, since
+        // hover and references were never declared here.
+        ("hoverProvider", Json::Bool(true)),
+        ("referencesProvider", Json::Bool(true)),
         (
             "semanticTokensProvider",
             Json::obj(&[
