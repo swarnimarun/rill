@@ -1357,6 +1357,34 @@ impl Checker<'_> {
                         let _ = len;
                         (*elem).clone()
                     }
+                    Ty::Fn {
+                        params,
+                        ret,
+                        effects,
+                    } => {
+                        // `f[x]` — an adjacent call (PLAN §2.5). The arguments
+                        // are the bracket list, exactly as for `f(x)`.
+                        if args.len() != params.len() {
+                            self.diagnostics.push(
+                                Diagnostic::error(
+                                    expr.span,
+                                    format!(
+                                        "this takes {} argument(s) but {} were given",
+                                        params.len(),
+                                        args.len()
+                                    ),
+                                )
+                                .note("`f[x]` passes the bracket list as arguments".to_string()),
+                            );
+                            return Ty::Error;
+                        }
+                        self.add_effects(&effects);
+                        for (index, (param, arg)) in params.iter().zip(args.iter()).enumerate() {
+                            let arg_ty = self.expr(&arg.value);
+                            self.unify(param, &arg_ty, args[index].span, "checking `f[x]`");
+                        }
+                        return (*ret).clone();
+                    }
                     Ty::Text => {
                         if args.len() != 1 {
                             self.err(expr.span, "indexing text takes exactly one index");

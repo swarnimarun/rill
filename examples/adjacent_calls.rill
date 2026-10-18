@@ -1,0 +1,15 @@
+use std::io;
+
+# `f[x]` — the adjacent (fail-fast) call form of PLAN §2.5. For a callable that
+# cannot fail it is the same ABI as `f(x)`; failable callees need the status
+# ABI recorded in PLAN.md §12.
+
+let add (x: i32, y: i32) -> i32 <computes> = x + y;
+let twice (n: i32) -> i32 <computes> = n * 2;
+
+let main () -> i32 <io> = {
+    var a = add[20, 1];
+    var b = twice[10];
+    io::println ("add[20, 1] = " ++ (a as String) ++ " twice[10] = " ++ (b as String));
+    a + b - 21
+};

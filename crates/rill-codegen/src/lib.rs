@@ -1201,6 +1201,22 @@ impl<'a> Generator<'a> {
                     .unwrap_or_else(|| "0".into());
                 let base_ty = self.expr_ty(base_expr(expr));
                 match base_ty {
+                    // `f[x]` — an adjacent call, same ABI as `f(x)` for a
+                    // non-failable callee; the failable case needs the status
+                    // ABI (PLAN.md §12, `<decides>`).
+                    Ty::Fn { effects, .. } => {
+                        if effects.contains(&rill_ty::Effect::Decides) {
+                            self.unsupported(
+                                expr.span,
+                                "an adjacent call to a `<decides>` function",
+                                "M3/M4 (the status-pair ABI)",
+                            );
+                            return "0".into();
+                        }
+                        let arguments: Vec<String> =
+                            args.iter().map(|arg| self.expr(&arg.value)).collect();
+                        return format!("{base}({})", arguments.join(", "));
+                    }
                     Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
                     Ty::Array { len: None, .. } => format!("({base}).ptr[{index}]"),
                     Ty::Text => {
