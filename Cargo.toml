@@ -1,6 +1,7 @@
 [workspace]
 resolver = "2"
 members = [
+    "crates/rill-fmt",
     "crates/rill-span",
     "crates/rill-diagnostics",
     "crates/rill-syntax",

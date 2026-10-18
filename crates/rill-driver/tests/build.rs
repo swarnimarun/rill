@@ -1100,3 +1100,59 @@ fn builds_and_runs_threads() {
     assert!(stdout.contains("workers 2"), "{stdout}");
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn formatting_every_example_preserves_its_program() {
+    // The formatter may not change what a program *means*. The strongest check is
+    // the one that runs both: format an example, build the formatted file, and
+    // require the same output and the same exit status - plus idempotence, since a
+    // formatter that keeps changing its mind is unusable in an editor.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut checked = 0;
+    for entry in std::fs::read_dir(&dir).expect("examples directory") {
+        let path = entry.expect("example entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rill") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        let source = std::fs::read_to_string(&path).expect("read example");
+        let formatted = rill_fmt::format_text(&source);
+        assert_eq!(
+            formatted,
+            rill_fmt::format_text(&formatted),
+            "formatting {name} twice changed it"
+        );
+        let formatted_path = workdir(&format!("fmt_{name}")).join(format!("{name}.rill"));
+        std::fs::write(&formatted_path, &formatted).expect("write formatted");
+
+        let mut outputs = Vec::new();
+        for (label, input) in [("original", &path), ("formatted", &formatted_path)] {
+            let out = workdir(&format!("fmt_{name}_{label}")).join(&name);
+            let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+                .arg("build")
+                .arg(input)
+                .arg("-o")
+                .arg(&out)
+                .output()
+                .expect("run rillc build");
+            assert!(
+                status.status.success(),
+                "examples/{name}.rill ({label}) did not build:\n{}",
+                String::from_utf8_lossy(&status.stderr)
+            );
+            let run = Command::new(&out)
+                .output()
+                .expect("run the produced binary");
+            outputs.push((run.stdout.clone(), run.status.code()));
+        }
+        assert_eq!(
+            outputs[0], outputs[1],
+            "formatting {name} changed its program"
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 25,
+        "expected the corpus, found {checked} examples"
+    );
+}

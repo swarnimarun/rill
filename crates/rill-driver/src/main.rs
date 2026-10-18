@@ -52,6 +52,33 @@ fn main() -> ExitCode {
         args.remove(0);
         return build(&args);
     }
+    // `rillc fmt FILE` prints the canonical form of a file. `--write` edits it in
+    // place, which is what an editor integration wants.
+    if args.first().map(|a| a.as_str()) == Some("fmt") {
+        args.remove(0);
+        let write = args.iter().any(|a| a == "--write");
+        let Some(path) = args.iter().find(|a| !a.starts_with("--")) else {
+            eprintln!("rillc fmt FILE [--write]");
+            return ExitCode::FAILURE;
+        };
+        let text = match std::fs::read_to_string(path) {
+            Ok(text) => text,
+            Err(err) => {
+                eprintln!("rillc: {path}: {err}");
+                return ExitCode::FAILURE;
+            }
+        };
+        let formatted = rill_fmt::format_text(&text);
+        if write {
+            if let Err(err) = std::fs::write(path, &formatted) {
+                eprintln!("rillc: {path}: {err}");
+                return ExitCode::FAILURE;
+            }
+        } else {
+            print!("{formatted}");
+        }
+        return ExitCode::SUCCESS;
+    }
     if args.iter().any(|a| a == "-h" || a == "--help") {
         print_out(USAGE);
         return ExitCode::SUCCESS;

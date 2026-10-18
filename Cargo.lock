@@ -37,11 +37,21 @@ dependencies = [
  "rill-ast",
  "rill-codegen",
  "rill-diagnostics",
+ "rill-fmt",
  "rill-hir",
  "rill-parser",
  "rill-span",
  "rill-syntax",
  "rill-ty",
+]
+
+[[package]]
+name = "rill-fmt"
+version = "0.1.0"
+dependencies = [
+ "rill-parser",
+ "rill-span",
+ "rill-syntax",
 ]
 
 [[package]]

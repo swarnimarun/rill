@@ -1,0 +1,9 @@
+[package]
+name = "rill-fmt"
+version = "0.1.0"
+edition = "2024"
+
+[dependencies]
+rill-syntax = { path = "../rill-syntax" }
+rill-span = { path = "../rill-span" }
+rill-parser = { path = "../rill-parser" }
