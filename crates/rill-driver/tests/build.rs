@@ -876,3 +876,32 @@ fn every_example_builds_and_exits() {
         failures.join("\n")
     );
 }
+
+#[test]
+fn builds_and_runs_captures() {
+    let dir = workdir("captures");
+    let out = dir.join("captures");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/captures.rill")
+        .canonicalize()
+        .expect("examples/captures.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The closure captures `n := 7` and is passed to another function.
+    assert!(
+        stdout.contains("captured 42"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(42));
+}

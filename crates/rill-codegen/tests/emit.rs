@@ -157,20 +157,19 @@ fn non_capturing_closures_become_function_pointers() {
 }
 
 #[test]
-fn capturing_closures_are_reported() {
-    let (frontend, sm) = parse_and_lower_text(
-        "c.rill",
-        "let f (n: i32) -> i32 <computes> = {\n\
-             g := { x -> x + n };\n\
-             g 1\n\
-         };\n\
-         let main () -> i32 <computes> = f 1;\n",
+fn capturing_closures_get_an_environment() {
+    // A closure that captures a local used to be reported; it now gets an
+    // environment struct, and the body is bound to it rather than rewritten.
+    let (source, diagnostics) = emit(
+        "let main () -> i32 <computes> = {\n\
+             n := 7;\n\
+             add_n := { x -> x + n };\n\
+             add_n 35\n\
+         };\n",
     );
-    let hir = lower(&frontend);
-    let checked = check(&frontend, &hir);
-    let (_, diagnostics) = emit_c(&frontend, &hir, &checked);
-    let rendered = rill_diagnostics::render_all(&sm, &diagnostics);
-    assert!(rendered.contains("captures locals"), "{rendered}");
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    assert!(source.contains("lam_env"), "{source}");
+    assert!(source.contains("((lam_env"), "{source}");
 }
 
 #[test]

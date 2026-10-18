@@ -1,0 +1,10 @@
+use std::io;
+
+let apply (f: (i32) -> i32, value: i32) -> i32 <computes> = f value;
+
+let main () -> i32 <io> = {
+    n := 7;
+    add_n := { x -> x + n };
+    io::println ("captured " ++ (apply (add_n, 35) as String));
+    apply (add_n, 35)
+};

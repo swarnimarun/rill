@@ -1008,13 +1008,37 @@ impl<'a> Generator<'a> {
                 !inside
             })
             .collect();
+        // A closure that captures locals gets an environment: a struct holding the
+        // captured values, allocated where storage comes from (the ambient arena
+        // when one is bound, the heap otherwise) and filled from the enclosing
+        // scope. Inside the lambda each capture is *bound* to its field, so the
+        // body itself needs no rewriting.
+        let mut env_ty = String::new();
+        let mut env_slot = String::new();
         if !captured.is_empty() {
-            self.unsupported(
-                whole.span,
-                "a closure that captures locals",
-                "M3 (closure environments)",
-            );
-            return "0".into();
+            self.temp += 1;
+            let level = self.temp;
+            env_ty = format!("lam_env{level}");
+            env_slot = format!("_e{level}");
+            let mut fields = String::new();
+            let mut fill = String::new();
+            for local in &captured {
+                let info = self.hir.local(*local);
+                let name = self.text(info.name).to_string();
+                let c_name = self
+                    .c_name(*local)
+                    .map(|n| n.to_string())
+                    .unwrap_or_else(|| name.clone());
+                let ty = self.checked.local_ty(*local).cloned().unwrap_or(Ty::Error);
+                let cty = self.c_type(&ty);
+                fields.push_str(&format!("  {cty} {name};\n"));
+                fill.push_str(&format!("  {env_slot}->{name} = {c_name};\n"));
+            }
+            self.types
+                .push_str(&format!("typedef struct {{\n{fields}}} {env_ty};\n"));
+            self.body.push_str(&format!(
+                "  {env_ty} *{env_slot} = ({env_ty} *)(rill_arena_current() ? (void *)rill_arena_alloc(rill_arena_current(), sizeof({env_ty})) : (void *)malloc(sizeof({env_ty})));\n{fill}"
+            ));
         }
 
         let name = format!("lambda{}", self.lambdas);
@@ -1043,6 +1067,10 @@ impl<'a> Generator<'a> {
         for (index, pattern) in params.iter().enumerate() {
             self.bind_pattern(pattern, &format!("a{index}"));
         }
+        for local in &captured {
+            let name = self.text(self.hir.local(*local).name).to_string();
+            self.bind(*local, format!("(({env_ty} *)env)->{name}"));
+        }
         let value = self.block(body);
         let mut lambda_body = std::mem::take(&mut self.body);
         if matches!(ret_ty, Ty::Unit) {
@@ -1065,7 +1093,12 @@ impl<'a> Generator<'a> {
                 params_c.join(", ")
             }
         ));
-        format!("((rill_fn){{ .code = (void *)&{name}, .env = NULL }})")
+        let env = if env_slot.is_empty() {
+            "NULL".to_string()
+        } else {
+            env_slot
+        };
+        format!("((rill_fn){{ .code = (void *)&{name}, .env = {env} }})")
     }
 
     /// One place that renders a call. It currently reproduces the text every site
