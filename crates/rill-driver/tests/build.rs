@@ -822,6 +822,11 @@ fn builds_and_runs_showcase() {
     assert!(stdout.contains("guarded 8"), "{stdout}");
     assert!(stdout.contains("pairs 2 arena 12"), "{stdout}");
     assert!(stdout.contains("sync 42 tuple 42,43"), "{stdout}");
+    // `dyn` with two impls, and the Io layer's loop picking up a task spawned
+    // during the run.
+    assert!(stdout.contains("shapes point box"), "{stdout}");
+    assert!(stdout.contains("tick three"), "{stdout}");
+    assert!(stdout.contains("tasks 3"), "{stdout}");
     // `main` returns alice's balance, truncated to the process exit status.
     assert_eq!(output.status.code(), Some(44));
 }

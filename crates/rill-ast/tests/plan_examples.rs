@@ -619,8 +619,9 @@ fn all_plan_examples_parse_losslessly() {
 fn showcase_ast_shape() {
     let frontend = check(&FIXTURES[14]);
     let module = &frontend.module;
-    // use, type, project, transfer, first_positive, main
-    assert_eq!(module.items.len(), 6, "showcase item count");
+    // use, two types, a trait, two impls, three task functions, project,
+    // transfer, first_positive, main
+    assert_eq!(module.items.len(), 14, "showcase item count");
 
     let account = module
         .items

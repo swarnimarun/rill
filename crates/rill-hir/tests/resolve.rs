@@ -403,14 +403,24 @@ fn hir_keeps_item_and_local_tables_consistent() {
             "Account",
             "balance_mut",
             "transfer",
+            // The showcase grew two types, a trait, two impls and three tasks.
+            // Read this list off the artifact, never from memory.
+            "Point",
+            "Box",
+            "Shape",
+            "Shape",
+            "Shape",
             "first_positive",
+            "tick_one",
+            "tick_two",
+            "tick_three",
             "main"
         ],
         "named module items in declaration order (the two `use`s are anonymous)"
     );
     assert_eq!(
         hir.module_item_ids().len(),
-        6,
+        14,
         "one `use` plus five named items"
     );
 
