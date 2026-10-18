@@ -149,6 +149,19 @@ fn raw_message(template: &str, values: &[(&str, &str)]) -> String {
     text
 }
 
+/// A completion request at a position, as an editor sends one.
+fn completion_request(id: u32, uri: &str, line: usize, character: usize) -> String {
+    raw_message(
+        r#"{"jsonrpc":"2.0","id":ID,"method":"textDocument/completion","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+        &[
+            ("ID", &id.to_string()),
+            ("URI", uri),
+            ("LINE", &line.to_string()),
+            ("CHAR", &character.to_string()),
+        ],
+    )
+}
+
 /// A Rust string as a JSON string literal.
 fn json_string(text: &str) -> String {
     let mut out = String::from("\"");
@@ -214,7 +227,7 @@ fn hover_on_a_var_name_gives_its_type_not_unit() {
 /// Runs a scripted session against the freshly built server, which is fast enough to
 /// use in tests (no install step).
 fn run_session(messages: &[String]) -> Vec<String> {
-    use std::io::{Read, Write};
+    use std::io::Write;
     let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rill-lsp"))
         .stdin(std::process::Stdio::piped())
         .stdout(std::process::Stdio::piped())
@@ -241,11 +254,11 @@ fn inlay_hints_sit_after_an_identifier() {
     // after a brace. The placement rule is therefore checked structurally: every hint
     // must directly follow an identifier character, which is what "after the name"
     // means.
-    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/all.rill");
+    let path = std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples/all.rill");
     let source = std::fs::read_to_string(&path).expect("examples/all.rill");
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", "file:///a.rill"), ("TEXT", &json_string(&source))],
@@ -311,7 +324,8 @@ fn hovering_fail_reports_the_bottom_type() {
     let source = "let f (x: i32) -> i32 <decides> = { if (x > 0) { x } else { fail } };\n";
     let at = source.find("fail").expect("fail in the source");
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", "file:///c.rill"), ("TEXT", &json_string(source))],
@@ -344,13 +358,13 @@ fn hover_and_hints_carry_effects() {
     // call answers with what it performs, and a binding's hint with what its
     // initializer costs. Neither is written in the source, so the server is the
     // only place they can come from.
-    let source =
-        "let f () -> i32 <computes> = { var b = buf_new (); buf_len (b) as i32 };\nlet main () -> i32 <io> = f ();\n";
+    let source = "let f () -> i32 <computes> = { var b = buf_new (); buf_len (b) as i32 };\nlet main () -> i32 <io> = f ();\n";
     // The `(` inside `buf_new ()`: the call, not the callee path, which ends just
     // before it.
     let call = source.find("buf_new (").expect("the call") + "buf_new (".len() - 1;
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", "file:///e.rill"), ("TEXT", &json_string(source))],
@@ -429,11 +443,11 @@ fn undeclared_effects_mark_the_expression_that_performs_them() {
     // "performs alloc" without a place is a riddle in a body with several calls:
     // the diagnostic has to underline the call that performed the effect, not the
     // declaration it was written on.
-    let source =
-        "let f () -> i32 <computes> = { var b = buf_new (); buf_len (b) as i32 };\nlet main () -> i32 <io> = f ();\n";
+    let source = "let f () -> i32 <computes> = { var b = buf_new (); buf_len (b) as i32 };\nlet main () -> i32 <io> = f ();\n";
     let at = source.find("buf_new ()").expect("the offending call");
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", "file:///x.rill"), ("TEXT", &json_string(source))],
@@ -464,14 +478,19 @@ fn discharged_decides_do_not_blame_the_handled_arm() {
     // discharged with the effect, not just recorded as they are performed.
     let source = "let pick (x: i32) -> i32 <decides> = if (x > 0) { x } else { fail };\nlet f (x: i32) -> i32 <computes> = {\n    var a = { let? v = pick[x]; v } | 0;\n    pick[x]\n};\n";
     let first = source.find("pick[x]").expect("the arm's call");
-    let handled = first + 1 + source[first + 1..].find("pick[x]").expect("the tail's call");
+    let handled = first
+        + 1
+        + source[first + 1..]
+            .find("pick[x]")
+            .expect("the tail's call");
     let line_start = source[..handled].rfind('\n').map(|at| at + 1).unwrap_or(0);
     let (line, character) = (
         source[..handled].matches('\n').count(),
         handled - line_start,
     );
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", "file:///m.rill"), ("TEXT", &json_string(source))],
@@ -521,10 +540,13 @@ let main () -> i32 <computes> = {
 };
 ";
     let (line, character) = at(source, source.find("    \n").expect("the blank line") + 4);
-    let (prefix_line, prefix_character) =
-        at(source, source.find("    tot\n").expect("the partial name") + 7);
+    let (prefix_line, prefix_character) = at(
+        source,
+        source.find("    tot\n").expect("the partial name") + 7,
+    );
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", "file:///n.rill"), ("TEXT", &json_string(source))],
@@ -615,54 +637,96 @@ let main () -> i32 <computes> = {
 fn completion_after_a_dot_offers_fields_and_methods() {
     // The fields come from the receiver's type; the methods from the callables in
     // scope that take it as a first argument, since `p.sum ()` is `sum (p)`. The
-    // record's constructor is not a method - its first parameter is an `i32`.
+    // record's constructor is not a method - its first parameter is an `i32` - and
+    // a chained access answers for the whole receiver text, not for its head.
     let source = "\
 type Point = record { var x: i32; var y: i32; };
+type Key = record { var scancode: i32; };
+type Event = record { var key: Key; };
 let sum (p: Point) -> i32 <computes> = p.x + p.y;
 let main () -> i32 <computes> = {
     var p = Point (1, 2);
+    var ev = Event (Key (5));
+    var out = buf_new ();
     p.;
-    0
+    ev.key.;
+    out.;
+    p.x
 };
 ";
     let (line, character) = at(source, source.find("    p.;\n").expect("the access") + 6);
+    let (key_line, key_character) = at(
+        source,
+        source.find("    ev.key.;\n").expect("the chain") + 11,
+    );
+    let (buf_line, buf_character) = at(source, source.find("    out.;\n").expect("the buffer") + 8);
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", "file:///d.rill"), ("TEXT", &json_string(source))],
         ),
-        raw_message(
-            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/completion","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
-            &[
-                ("URI", "file:///d.rill"),
-                ("LINE", &line.to_string()),
-                ("CHAR", &character.to_string()),
-            ],
-        ),
+        completion_request(9, "file:///d.rill", line, character),
+        completion_request(10, "file:///d.rill", key_line, key_character),
+        completion_request(11, "file:///d.rill", buf_line, buf_character),
         r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
         r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
     ];
     let output = run_session(&messages);
-    let answer = output
-        .iter()
-        .find(|body| body.contains(r#""id":9"#))
-        .unwrap_or_else(|| panic!("no completion answer: {output:?}"));
+    let answer = |id: u32| -> String {
+        output
+            .iter()
+            .find(|body| body.contains(&format!(r#""id":{id}"#)))
+            .unwrap_or_else(|| panic!("no answer for {id}: {output:?}"))
+            .to_string()
+    };
+
+    let fields = answer(9);
     assert!(
-        answer.contains(r#""label":"x","kind":5,"detail":"i32""#),
-        "the record's fields are offered with their types: {answer}"
+        fields.contains(r#""label":"x","kind":5,"detail":"i32""#),
+        "the record's fields are offered with their types: {fields}"
     );
     assert!(
-        answer.contains(r#""label":"y","kind":5"#),
-        "every field, in declaration order: {answer}"
+        fields.contains(r#""label":"y","kind":5"#),
+        "every field, in declaration order: {fields}"
     );
     assert!(
-        answer.contains(r#""label":"sum","kind":2,"detail":"(Point) -> i32 <computes>""#),
-        "`sum` takes a `Point` first, so it is a method of one: {answer}"
+        fields.contains(r#""label":"sum","kind":2,"detail":"(Point) -> i32 <computes>""#),
+        "`sum` takes a `Point` first, so it is a method of one: {fields}"
     );
     assert!(
-        !answer.contains(r#""label":"Point""#),
-        "a constructor whose first parameter is not the receiver is not a method: {answer}"
+        !fields.contains(r#""label":"Point""#),
+        "a constructor whose first parameter is not the receiver is not a method: {fields}"
+    );
+
+    // `scancode` is a field of the `Key` that `ev.key` holds; `key` is the field
+    // of `Event` that was already written, so it must not be offered.
+    let chained = answer(10);
+    assert!(
+        chained.contains(r#""label":"scancode","kind":5,"detail":"i32""#),
+        "the innermost access is the receiver: {chained}"
+    );
+    assert!(
+        !chained.contains(r#""label":"key""#),
+        "the head of the chain is not: {chained}"
+    );
+
+    // The builtins are called the same way - `out.buf_push (b)` is
+    // `buf_push (out, b)` - so they are offered after a `.` too, and a builtin
+    // that takes no receiver (`buf_new`) is not.
+    let methods = answer(11);
+    assert!(
+        methods.contains(r#""label":"buf_push","kind":2,"detail":"(Buf, u8) -> () <alloc>""#),
+        "a builtin whose first parameter is the receiver is a method: {methods}"
+    );
+    assert!(
+        methods.contains(r#""label":"buf_len","kind":2"#),
+        "every builtin that takes one: {methods}"
+    );
+    assert!(
+        !methods.contains(r#""label":"buf_new""#),
+        "a builtin that takes no receiver is not: {methods}"
     );
 }
 
@@ -674,13 +738,17 @@ fn completion_after_a_module_path_lists_the_header_declarations() {
     let dir = std::env::temp_dir().join("rill-lsp-completion-module");
     let _ = std::fs::remove_dir_all(&dir);
     std::fs::create_dir_all(&dir).expect("create workdir");
-    std::fs::write(dir.join("m.h"), "extern int triple(int n);\n#define TRIPLE 3\n")
-        .expect("write the header");
+    std::fs::write(
+        dir.join("m.h"),
+        "extern int triple(int n);\n#define TRIPLE 3\n",
+    )
+    .expect("write the header");
     let source = "type M = @include(\"m.h\");\nlet main () -> i32 <computes> = M::;\n";
     let (line, character) = at(source, source.find("M::").expect("the module path") + 3);
     let uri = format!("file://{}", dir.join("m.rill").display());
     let messages = [
-        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
         raw_message(
             r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
             &[("URI", &uri), ("TEXT", &json_string(source))],
