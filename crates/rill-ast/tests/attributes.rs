@@ -1,9 +1,7 @@
 //! Lowering tests for the three frozen syntax features: module attributes,
 //! `@include` type bodies, glob uses, and keyword field paths.
 
-use rill_ast::{
-    parse_and_lower_text, BinaryOp, Expr, Frontend, Item, TypeBody, UsePath,
-};
+use rill_ast::{parse_and_lower_text, BinaryOp, Expr, Frontend, Item, TypeBody, UsePath};
 
 fn frontend(src: &str) -> Frontend {
     let (frontend, sm) = parse_and_lower_text("attributes.rill", src);

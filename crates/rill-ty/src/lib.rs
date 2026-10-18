@@ -295,7 +295,11 @@ impl Checked {
                 None => format!("[{}]", self.display_ty(frontend, elem)),
             },
             Ty::Range(elem) => format!("Range {}", self.display_ty(frontend, elem)),
-            Ty::Fn { params, ret, effects } => {
+            Ty::Fn {
+                params,
+                ret,
+                effects,
+            } => {
                 let parts: Vec<String> = params
                     .iter()
                     .map(|p| self.display_ty(frontend, p))
@@ -849,7 +853,11 @@ impl<'a> Checker<'a> {
                 )
             }
             Ty::Record(id) | Ty::Nominal(id) => self.nominal_name(id),
-            Ty::Fn { params, ret, effects } => {
+            Ty::Fn {
+                params,
+                ret,
+                effects,
+            } => {
                 let parts: Vec<String> = params.iter().map(|p| self.display(p)).collect();
                 let row = if effects.is_empty() {
                     "computes".to_string()
@@ -1445,8 +1453,7 @@ impl Checker<'_> {
             );
             // Point at the declaration too, but only when the primary label is a
             // different place - a fallback to the item span needs no duplicate.
-            if let Some(declared_at) = declared_at.filter(|span| !span.is_dummy() && *span != at)
-            {
+            if let Some(declared_at) = declared_at.filter(|span| !span.is_dummy() && *span != at) {
                 diagnostic =
                     diagnostic.secondary_label(declared_at, format!("declared <{declared_text}>"));
             }
@@ -1473,7 +1480,11 @@ impl Checker<'_> {
             if !frame.effects.contains(effect) {
                 frame.effects.push(*effect);
             }
-            if !span.is_dummy() && !frame.origins.iter().any(|(at, seen)| *at == span && seen == effect)
+            if !span.is_dummy()
+                && !frame
+                    .origins
+                    .iter()
+                    .any(|(at, seen)| *at == span && seen == effect)
             {
                 frame.origins.push((span, *effect));
             }
@@ -2034,7 +2045,8 @@ impl Checker<'_> {
             let left_effects = self.effects_of.get(&lhs.id).cloned().unwrap_or_default();
             let right = self.expr(rhs);
             let right_effects = self.effects_of.get(&rhs.id).cloned().unwrap_or_default();
-            if left_effects.contains(&Effect::Decides) && !right_effects.contains(&Effect::Decides) {
+            if left_effects.contains(&Effect::Decides) && !right_effects.contains(&Effect::Decides)
+            {
                 // A fallback that cannot fail catches every failure inside the
                 // arm it governs, so the left arm's `decides` is discharged. The
                 // parent only receives this frame when it pops, so removing the
@@ -2043,7 +2055,9 @@ impl Checker<'_> {
                 // blamed on an arm that was already handled.
                 if let Some(frame) = self.effect_frames.last_mut() {
                     frame.effects.retain(|effect| *effect != Effect::Decides);
-                    frame.origins.retain(|(_, effect)| *effect != Effect::Decides);
+                    frame
+                        .origins
+                        .retain(|(_, effect)| *effect != Effect::Decides);
                 }
             }
             self.unify(&left, &right, span, "checking `|` alternatives");

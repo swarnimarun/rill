@@ -554,7 +554,9 @@ impl Hir {
 
     /// Every resolved header the `@include`s read, in declaration order.
     pub fn imported_headers(&self) -> impl Iterator<Item = &std::path::PathBuf> {
-        self.includes.iter().flat_map(|include| include.headers.iter())
+        self.includes
+            .iter()
+            .flat_map(|include| include.headers.iter())
     }
 
     /// The item a module member names: `SDL3::SDL_Init`.

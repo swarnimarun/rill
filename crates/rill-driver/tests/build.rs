@@ -68,13 +68,23 @@ fn exec_compiles_runs_and_reuses_the_cached_artefacts() {
             .expect("run rillc exec")
     };
     let first = run(&script);
-    assert_eq!(first.status.code(), Some(3), "exec must forward the exit code");
+    assert_eq!(
+        first.status.code(),
+        Some(3),
+        "exec must forward the exit code"
+    );
     let stdout = String::from_utf8_lossy(&first.stdout);
     assert!(stdout.contains("exec ran"), "unexpected stdout: {stdout}");
     let entries = |dir: &std::path::Path| {
         let mut names: Vec<String> = std::fs::read_dir(dir)
             .expect("cache dir")
-            .map(|entry| entry.expect("entry").file_name().to_string_lossy().to_string())
+            .map(|entry| {
+                entry
+                    .expect("entry")
+                    .file_name()
+                    .to_string_lossy()
+                    .to_string()
+            })
             .collect();
         names.sort();
         names
@@ -115,7 +125,10 @@ fn exec_compiles_runs_and_reuses_the_cached_artefacts() {
     let third = run(&script);
     assert_eq!(third.status.code(), Some(4), "the new script's exit code");
     let stdout = String::from_utf8_lossy(&third.stdout);
-    assert!(stdout.contains("exec ran twice"), "unexpected stdout: {stdout}");
+    assert!(
+        stdout.contains("exec ran twice"),
+        "unexpected stdout: {stdout}"
+    );
     assert_eq!(
         entries(&cache).len(),
         4,

@@ -6,10 +6,8 @@
 /// instead: completion offers them, and shows them without a signature.
 #[test]
 fn every_builtin_name_has_a_signature() {
-    let (mut frontend, _sm) = rill_ast::parse_and_lower_text(
-        "builtins.rill",
-        "let main () -> i32 <computes> = 0;\n",
-    );
+    let (mut frontend, _sm) =
+        rill_ast::parse_and_lower_text("builtins.rill", "let main () -> i32 <computes> = 0;\n");
     let hir = rill_hir::lower(&mut frontend);
     let checked = rill_ty::check(&frontend, &hir);
     for name in rill_hir::BUILTIN_NAMES {

@@ -149,7 +149,10 @@ pub enum TypeBody {
     Variants(Vec<Variant>),
     Alias(Type),
     /// `type M = @include("SDL3/SDL.h");`
-    Include { path: String, span: Span },
+    Include {
+        path: String,
+        span: Span,
+    },
     Error(Span),
 }
 

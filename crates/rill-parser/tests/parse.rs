@@ -322,13 +322,17 @@ fn use_plain_glob_and_group_paths() {
     assert_eq!(uses.len(), 3, "one UsePath per non-text use");
     assert_eq!(uses[0].count_tokens(K::Star), 0);
     assert_eq!(uses[1].count_tokens(K::Star), 1);
-    assert!(uses[1].has_token(K::ColonColon), "`::*` keeps its separator");
+    assert!(
+        uses[1].has_token(K::ColonColon),
+        "`::*` keeps its separator"
+    );
     assert_eq!(root.count(K::UseGroup), 1);
 }
 
 #[test]
 fn keyword_after_dot_is_a_field_path() {
-    let (parse, sm) = parse_ok("let f (ev: Event) = ev.type;\nlet g (x: X) = x.view;\nlet h (p: P) = p.match;\n");
+    let (parse, sm) =
+        parse_ok("let f (ev: Event) = ev.type;\nlet g (x: X) = x.view;\nlet h (p: P) = p.match;\n");
     let root = root(&parse);
     let flows = root.descendants(K::BinaryExpr);
     assert_eq!(flows.len(), 3);

@@ -626,12 +626,7 @@ impl Scanner {
 /// `extern SDL_DECLSPEC …` and raylib writes `RLAPI …`. A declaration carrying
 /// none of these is not imported - a variable declaration has the same shape as
 /// one, so the marker is what tells them apart.
-const PROTOTYPE_DECORATIONS: &[&str] = &[
-    "extern",
-    "SDL_DECLSPEC",
-    "SDLMAIN_DECLSPEC",
-    "RLAPI",
-];
+const PROTOTYPE_DECORATIONS: &[&str] = &["extern", "SDL_DECLSPEC", "SDLMAIN_DECLSPEC", "RLAPI"];
 
 /// Macro-ish words that may decorate a declaration or a type; they are dropped
 /// before the text is split into a return type, a name and parameters.
@@ -739,9 +734,12 @@ fn parse_type(text: &str) -> CType {
     // `const`/`volatile` before the first `*` belongs to the pointee, which is
     // what decides whether the pointer is mutable
     let first_star = spelled.find('*').unwrap_or(spelled.len());
-    let pointee_const = spelled[..first_star]
-        .split_whitespace()
-        .any(|word| matches!(word, "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" | "SDL_RESTRICT"));
+    let pointee_const = spelled[..first_star].split_whitespace().any(|word| {
+        matches!(
+            word,
+            "const" | "volatile" | "restrict" | "__restrict" | "__restrict__" | "SDL_RESTRICT"
+        )
+    });
     let stars = spelled.matches('*').count();
 
     let cleaned = strip_words(&spelled, TYPE_NOISE);
@@ -763,7 +761,16 @@ fn parse_type(text: &str) -> CType {
     };
     let mut ty = base.unwrap_or_else(|| CType::Unmapped(spelled.clone()));
 
-    if stars == 1 && pointee_const && matches!(ty, CType::Int { bits: 8, signed: true }) {
+    if stars == 1
+        && pointee_const
+        && matches!(
+            ty,
+            CType::Int {
+                bits: 8,
+                signed: true
+            }
+        )
+    {
         return CType::Text;
     }
     for _ in 0..stars {
@@ -791,7 +798,9 @@ fn primitive(words: &[&str]) -> Option<CType> {
         "unsigned" | "unsigned int" => int(32, false),
         "long" | "long int" | "signed long" | "signed long int" => int(64, true),
         "unsigned long" | "unsigned long int" => int(64, false),
-        "long long" | "long long int" | "signed long long" | "signed long long int" => int(64, true),
+        "long long" | "long long int" | "signed long long" | "signed long long int" => {
+            int(64, true)
+        }
         "unsigned long long" | "unsigned long long int" => int(64, false),
         "size_t" => int(64, false),
         "ssize_t" | "ptrdiff_t" | "intptr_t" => int(64, true),
@@ -970,7 +979,10 @@ fn literal_type(body: &str) -> Option<CType> {
     // integer literal, with the usual u/l/ull suffixes
     let digits = digits_text.trim_end_matches(['u', 'U', 'l', 'L']);
     let suffix = &digits_text[digits.len()..];
-    let (radix, body) = if let Some(rest) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+    let (radix, body) = if let Some(rest) = digits
+        .strip_prefix("0x")
+        .or_else(|| digits.strip_prefix("0X"))
+    {
         (16, rest)
     } else {
         (10, digits)
@@ -1005,9 +1017,9 @@ fn literal_type(body: &str) -> Option<CType> {
     };
     let is_float = mantissa.contains('.')
         && !mantissa.is_empty()
-        && mantissa
-            .chars()
-            .all(|c| c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-');
+        && mantissa.chars().all(|c| {
+            c.is_ascii_digit() || c == '.' || c == 'e' || c == 'E' || c == '+' || c == '-'
+        });
     if is_float {
         return Some(CType::Float {
             bits: if single { 32 } else { 64 },
@@ -1020,15 +1032,18 @@ fn literal_type(body: &str) -> Option<CType> {
 /// enumerators already seen. Anything else is left unresolved.
 fn eval_int(expr: &str, known: &HashMap<String, i64>) -> Option<i64> {
     let text = normalize(expr);
-    let numeric = text.starts_with(|c: char| c.is_ascii_digit())
-        || (text.starts_with('-') && text.len() > 1);
+    let numeric =
+        text.starts_with(|c: char| c.is_ascii_digit()) || (text.starts_with('-') && text.len() > 1);
     if numeric {
         let digits = text.trim_end_matches(['u', 'U', 'l', 'L']);
         let (negative, digits) = match digits.strip_prefix('-') {
             Some(rest) => (true, rest),
             None => (false, digits),
         };
-        let value = if let Some(rest) = digits.strip_prefix("0x").or_else(|| digits.strip_prefix("0X")) {
+        let value = if let Some(rest) = digits
+            .strip_prefix("0x")
+            .or_else(|| digits.strip_prefix("0X"))
+        {
             i64::from_str_radix(rest, 16).ok()
         } else {
             digits.parse::<i64>().ok()
@@ -1288,11 +1303,41 @@ mod tests {
 
     #[test]
     fn literal_types() {
-        assert_eq!(literal_type("0x00000020u"), Some(CType::Int { bits: 32, signed: false }));
-        assert_eq!(literal_type("0x1FFFFFFFF"), Some(CType::Int { bits: 64, signed: true }));
-        assert_eq!(literal_type("0xFFFFFFFFFFFFFFFFull"), Some(CType::Int { bits: 64, signed: false }));
-        assert_eq!(literal_type("42"), Some(CType::Int { bits: 32, signed: true }));
-        assert_eq!(literal_type("-1"), Some(CType::Int { bits: 32, signed: true }));
+        assert_eq!(
+            literal_type("0x00000020u"),
+            Some(CType::Int {
+                bits: 32,
+                signed: false
+            })
+        );
+        assert_eq!(
+            literal_type("0x1FFFFFFFF"),
+            Some(CType::Int {
+                bits: 64,
+                signed: true
+            })
+        );
+        assert_eq!(
+            literal_type("0xFFFFFFFFFFFFFFFFull"),
+            Some(CType::Int {
+                bits: 64,
+                signed: false
+            })
+        );
+        assert_eq!(
+            literal_type("42"),
+            Some(CType::Int {
+                bits: 32,
+                signed: true
+            })
+        );
+        assert_eq!(
+            literal_type("-1"),
+            Some(CType::Int {
+                bits: 32,
+                signed: true
+            })
+        );
         assert_eq!(literal_type("1.5f"), Some(CType::Float { bits: 32 }));
         assert_eq!(literal_type("1.5"), Some(CType::Float { bits: 64 }));
         assert_eq!(literal_type("true"), Some(CType::Bool));
@@ -1305,18 +1350,45 @@ mod tests {
     fn type_spellings() {
         assert_eq!(parse_type("const char *"), CType::Text);
         assert_eq!(parse_type("void"), CType::Void);
-        assert_eq!(parse_type("unsigned int"), CType::Int { bits: 32, signed: false });
-        assert_eq!(parse_type("Uint64"), CType::Int { bits: 64, signed: false });
-        assert_eq!(parse_type("int"), CType::Int { bits: 32, signed: true });
+        assert_eq!(
+            parse_type("unsigned int"),
+            CType::Int {
+                bits: 32,
+                signed: false
+            }
+        );
+        assert_eq!(
+            parse_type("Uint64"),
+            CType::Int {
+                bits: 64,
+                signed: false
+            }
+        );
+        assert_eq!(
+            parse_type("int"),
+            CType::Int {
+                bits: 32,
+                signed: true
+            }
+        );
         assert_eq!(
             parse_type("const SDL_FRect *"),
-            CType::Ptr { mutable: false, inner: Box::new(CType::Named("SDL_FRect".to_string())) }
+            CType::Ptr {
+                mutable: false,
+                inner: Box::new(CType::Named("SDL_FRect".to_string()))
+            }
         );
-        assert_eq!(parse_type("struct SDL_Window *"), CType::Ptr {
-            mutable: true,
-            inner: Box::new(CType::Named("SDL_Window".to_string())),
-        });
-        assert_eq!(parse_type("long double"), CType::Unmapped("long double".to_string()));
+        assert_eq!(
+            parse_type("struct SDL_Window *"),
+            CType::Ptr {
+                mutable: true,
+                inner: Box::new(CType::Named("SDL_Window".to_string())),
+            }
+        );
+        assert_eq!(
+            parse_type("long double"),
+            CType::Unmapped("long double".to_string())
+        );
     }
 
     #[test]
@@ -1325,8 +1397,14 @@ mod tests {
             split_top_level("a, f(x, y), c", ','),
             vec!["a".to_string(), " f(x, y)".to_string(), " c".to_string()]
         );
-        assert_eq!(last_ident("Uint32 flags : 4").map(|(_, name)| name), Some("flags"));
-        assert_eq!(last_ident("Uint32 : 4").map(|(_, name)| name), Some("Uint32"));
+        assert_eq!(
+            last_ident("Uint32 flags : 4").map(|(_, name)| name),
+            Some("flags")
+        );
+        assert_eq!(
+            last_ident("Uint32 : 4").map(|(_, name)| name),
+            Some("Uint32")
+        );
     }
 
     #[test]

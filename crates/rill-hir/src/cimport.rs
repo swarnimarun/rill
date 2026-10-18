@@ -55,7 +55,11 @@ pub fn default_include_dirs() -> Vec<PathBuf> {
             }
         }
     }
-    for prefix in ["/opt/homebrew/include", "/usr/local/include", "/usr/include"] {
+    for prefix in [
+        "/opt/homebrew/include",
+        "/usr/local/include",
+        "/usr/include",
+    ] {
         dirs.push(PathBuf::from(prefix));
     }
     dirs
@@ -211,10 +215,9 @@ impl Mapper<'_> {
             CType::Ptr { inner, .. } => {
                 let pointee_is_place = match self.resolve_named(inner) {
                     Some(CTypeKind::Record(_)) | Some(CTypeKind::Enum) => true,
-                    Some(CTypeKind::Alias(inner)) => matches!(
-                        inner,
-                        CType::Int { .. } | CType::Float { .. } | CType::Bool
-                    ),
+                    Some(CTypeKind::Alias(inner)) => {
+                        matches!(inner, CType::Int { .. } | CType::Float { .. } | CType::Bool)
+                    }
                     Some(CTypeKind::Opaque) => false,
                     None => matches!(
                         &**inner,
@@ -222,10 +225,7 @@ impl Mapper<'_> {
                     ),
                 };
                 if pointee_is_place {
-                    (
-                        Some(rill_ast::Convention::Inout),
-                        self.c_type(inner)?,
-                    )
+                    (Some(rill_ast::Convention::Inout), self.c_type(inner)?)
                 } else {
                     (None, self.c_type(&param.ty)?)
                 }
@@ -273,9 +273,7 @@ impl Mapper<'_> {
                     // A field the mapper cannot type keeps a hole rather than
                     // dropping the field: designs by position (`SDL_FRect`)
                     // would shift everything after it.
-                    let ty = self
-                        .c_type(&field.ty)
-                        .unwrap_or(Type::Error(self.span));
+                    let ty = self.c_type(&field.ty).unwrap_or(Type::Error(self.span));
                     let name = self.symbol(&field.name);
                     mapped.push(FieldDef {
                         mutable: false,
@@ -309,7 +307,9 @@ impl Mapper<'_> {
             CType::Void => Type::unit(self.span),
             CType::Bool => self.path("Bool"),
             CType::Text => self.path("Text"),
-            CType::Int { bits, signed } => self.path(&format!("{}{bits}", if *signed { 'i' } else { 'u' })),
+            CType::Int { bits, signed } => {
+                self.path(&format!("{}{bits}", if *signed { 'i' } else { 'u' }))
+            }
             CType::Float { bits } => self.path(&format!("f{bits}")),
             CType::Ptr { mutable, inner } => Type::Ptr {
                 mutable: *mutable,

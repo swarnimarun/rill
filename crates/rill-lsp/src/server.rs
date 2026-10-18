@@ -21,6 +21,12 @@ pub struct Server {
     shutdown: bool,
 }
 
+impl Default for Server {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl Server {
     pub fn new() -> Self {
         Self {
@@ -350,12 +356,7 @@ impl Server {
             .find(|local| {
                 local.owner.is_some() && local.span.start <= offset && offset <= local.span.end
             })
-            .and_then(|local| {
-                document
-                    .checked
-                    .local_ty(local.id)
-                    .map(|ty| (local.id, ty))
-            })
+            .and_then(|local| document.checked.local_ty(local.id).map(|ty| (local.id, ty)))
         {
             let text = type_with_effects(
                 &document.checked,
@@ -409,12 +410,8 @@ impl Server {
                         continue;
                     };
                     let performed = document.checked.expr_effects(expr.id);
-                    let text = type_with_effects(
-                        &document.checked,
-                        &document.frontend,
-                        ty,
-                        performed,
-                    );
+                    let text =
+                        type_with_effects(&document.checked, &document.frontend, ty, performed);
                     let width = span.end.to_usize().saturating_sub(span.start.to_usize()) as u32;
                     if best.as_ref().map(|(best, _)| width < *best).unwrap_or(true) {
                         best = Some((width, text));
@@ -586,7 +583,9 @@ impl Server {
                 // neighbouring name (which could pick a different identifier).
                 if debug() {
                     let snippet = document.source.snippet(local.span);
-                    let name = document.frontend.text(rill_ast::Ident::new(local.name, local.span));
+                    let name = document
+                        .frontend
+                        .text(rill_ast::Ident::new(local.name, local.span));
                     eprintln!(
                         "lsp: local `{name}` kind {:?} span {}..{} covers {snippet:?}",
                         local.kind,
@@ -598,13 +597,13 @@ impl Server {
                 // Some locals (parameters among them) resolve to the span of a *use*
                 // rather than their declaration, and a hint at that position is worse
                 // than no hint: it lands mid-expression and describes another binding.
-                let name = document.frontend.text(rill_ast::Ident::new(local.name, local.span));
+                let name = document
+                    .frontend
+                    .text(rill_ast::Ident::new(local.name, local.span));
                 let covered = document.source.snippet(local.span);
                 if covered != name {
                     if debug() {
-                        eprintln!(
-                            "lsp: skipping hint for `{name}`: span covers {covered:?}"
-                        );
+                        eprintln!("lsp: skipping hint for `{name}`: span covers {covered:?}");
                     }
                     continue;
                 }
@@ -612,7 +611,9 @@ impl Server {
                 if debug() {
                     eprintln!(
                         "lsp: hint for local `{}` at {}:{} (span {}..{})",
-                        document.frontend.text(rill_ast::Ident::new(local.name, local.span)),
+                        document
+                            .frontend
+                            .text(rill_ast::Ident::new(local.name, local.span)),
                         at.line,
                         at.col,
                         local.span.start.to_usize(),
@@ -621,7 +622,6 @@ impl Server {
                 }
                 // `at` is 1-based, the request's range is not.
                 if at.line.saturating_sub(1) < from_line || at.line.saturating_sub(1) > to_line {
-
                     continue;
                 }
                 let Some(ty) = document.checked.local_ty(local.id) else {
@@ -973,7 +973,9 @@ fn collect_expr(expr: &rill_hir::Expr, out: &mut Vec<rill_hir::Expr>) {
                 collect_expr(arm, out);
             }
         }
-        rill_hir::ExprKind::Literal { .. } | rill_hir::ExprKind::Path { .. } | rill_hir::ExprKind::Error => {}
+        rill_hir::ExprKind::Literal { .. }
+        | rill_hir::ExprKind::Path { .. }
+        | rill_hir::ExprKind::Error => {}
     }
 }
 
@@ -1244,8 +1246,8 @@ fn member_candidates(
 
 /// The expression a `.` at `dot` selects from: the widest one whose text ends
 /// where the receiver's does - `ev.type` starts from `ev`, `f (a).b` from the
-/// access. An access still being typed (`a.`) is a flow whose right side is an
-/// error: it is what is being completed, not a receiver.
+/// access. An access still being typed is skipped by [`incomplete_access`]: it
+/// is what is being completed, not a receiver.
 fn receiver_before(document: &Document, dot: usize) -> Option<rill_hir::Expr> {
     let bytes = document.text.as_bytes();
     let mut end = dot.min(bytes.len());
@@ -1263,15 +1265,8 @@ fn receiver_before(document: &Document, dot: usize) -> Option<rill_hir::Expr> {
             if expr.span.is_dummy() || expr.span.end.to_usize() != end {
                 continue;
             }
-            if let rill_hir::ExprKind::Binary {
-                op: rill_ast::BinaryOp::Flow,
-                rhs,
-                ..
-            } = &expr.kind
-            {
-                if matches!(rhs.kind, rill_hir::ExprKind::Error) {
-                    continue;
-                }
+            if incomplete_access(&expr) {
+                continue;
             }
             let width = end.saturating_sub(expr.span.start.to_usize());
             if best.as_ref().map(|(best, _)| *best < width).unwrap_or(true) {
@@ -1280,6 +1275,20 @@ fn receiver_before(document: &Document, dot: usize) -> Option<rill_hir::Expr> {
         }
     }
     best.map(|(_, expr)| expr)
+}
+
+/// Whether an expression is an access still being typed: a flow whose right side
+/// is an error (`a.` with nothing after the dot). Completion after `.` is what
+/// finishes one, so it must not be mistaken for the receiver.
+fn incomplete_access(expr: &rill_hir::Expr) -> bool {
+    match &expr.kind {
+        rill_hir::ExprKind::Binary {
+            op: rill_ast::BinaryOp::Flow,
+            rhs,
+            ..
+        } => matches!(rhs.kind, rill_hir::ExprKind::Error),
+        _ => false,
+    }
 }
 
 /// The fields a `.` on `ty` can name, in declaration order. A type without
@@ -1458,10 +1467,10 @@ fn scope_at(hir: &rill_hir::Hir, offset: rill_span::BytePos) -> Scope {
                                 cond_bindings(cond, &mut scope.locals)
                             }
                             // A loop variable is in scope for its body only.
-                            rill_hir::Stmt::For { pattern, body, .. } => {
-                                if contains(&body.span, offset) {
-                                    pattern_bindings(pattern, &mut scope.locals)
-                                }
+                            rill_hir::Stmt::For { pattern, body, .. }
+                                if contains(&body.span, offset) =>
+                            {
+                                pattern_bindings(pattern, &mut scope.locals)
                             }
                             _ => {}
                         }
@@ -1474,9 +1483,7 @@ fn scope_at(hir: &rill_hir::Hir, offset: rill_span::BytePos) -> Scope {
                 }
                 // `if (x := e) { … }` binds for the then-branch.
                 rill_hir::ExprKind::If {
-                    cond,
-                    then_branch,
-                    ..
+                    cond, then_branch, ..
                 } => {
                     if contains(&then_branch.span, offset) {
                         cond_bindings(cond, &mut scope.locals)
@@ -1598,11 +1605,7 @@ fn builtin_detail(document: &Document, name: &str) -> Option<String> {
 fn dedup(candidates: Vec<Candidate>) -> Vec<Candidate> {
     let mut found: Vec<Candidate> = Vec::new();
     for candidate in candidates {
-        if candidate.name.is_empty()
-            || found
-                .iter()
-                .any(|seen| seen.name == candidate.name)
-        {
+        if candidate.name.is_empty() || found.iter().any(|seen| seen.name == candidate.name) {
             continue;
         }
         found.push(candidate);

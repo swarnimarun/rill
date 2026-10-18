@@ -190,9 +190,7 @@ impl<'a> Lower<'a> {
         };
         let mut value = None;
         if cur.eat(K::LParen).is_some() {
-            let tok = cur
-                .eat_token(K::Text)
-                .or_else(|| cur.eat_token(K::RawText));
+            let tok = cur.eat_token(K::Text).or_else(|| cur.eat_token(K::RawText));
             match tok {
                 Some(tok) => value = Some(self.text_value(tok)),
                 None => self.err(node.span, "expected a text literal"),
@@ -210,10 +208,7 @@ impl<'a> Lower<'a> {
     /// exactly as written.
     fn text_value(&self, tok: SyntaxToken) -> String {
         let raw = self.text(tok);
-        if let Some(inner) = raw
-            .strip_prefix("r#\"")
-            .and_then(|s| s.strip_suffix("\"#"))
-        {
+        if let Some(inner) = raw.strip_prefix("r#\"").and_then(|s| s.strip_suffix("\"#")) {
             return inner.to_string();
         }
         raw.strip_prefix('"')

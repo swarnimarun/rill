@@ -417,7 +417,9 @@ impl<'a> Resolver<'a> {
                 match attribute.as_str() {
                     "link" => match &decl.value {
                         Some(library) => self.out.add_link(library.clone()),
-                        None => self.err(decl.span, "`@link` needs a library name: `@link(\"SDL3\")`"),
+                        None => {
+                            self.err(decl.span, "`@link` needs a library name: `@link(\"SDL3\")`")
+                        }
                     },
                     _ => self.diagnostics.push(
                         Diagnostic::warning(
@@ -430,7 +432,12 @@ impl<'a> Resolver<'a> {
                 let def = AttributeDef {
                     value: decl.value.clone(),
                 };
-                self.fill_or_push(slot, Some(decl.name.sym), ItemKind::Attribute(def), decl.span)
+                self.fill_or_push(
+                    slot,
+                    Some(decl.name.sym),
+                    ItemKind::Attribute(def),
+                    decl.span,
+                )
             }
             AstItem::Error(span) => {
                 self.err(*span, "malformed item");
