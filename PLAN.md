@@ -1422,6 +1422,33 @@ Verification target: `examples/` gains a failable-transfer program (the §11
 falls back and leaves `a.balance = 300`, `b.balance = 300`, printed and asserted
 by a driver test.
 
+### Closure environments: the `{code, env}` decision (reconnaissance done)
+
+A capturing lambda is reported today (`rill-codegen`, `fn lambda`: it collects the
+locals a body references and reports "a closure that captures locals"). The
+question that blocks it is how a *call site* learns that a function value carries
+an environment — and the answer is that it must not have to: making **every**
+function value a `{ code, env }` pair keeps one representation, so no call site
+needs a distinction and `dyn`'s `{ data, vtable }` is the same shape later.
+
+It is feasible in one focused change because the sites are centralised, not
+scattered:
+
+1. the C type of `Ty::Fn` (one mapping) becomes a per-signature pair typedef,
+   mangled like tuples already are;
+2. parameter lists are built in one place (`param_list`) plus the lambda's own
+   builder, so `void *env` is added twice, not forty times;
+3. argument lists are rendered in about four places (the plain call, the
+   adjacent/failable call, the choice's arms, and `all`'s collector);
+4. a *named* function used as a value produces a static pair whose `env` is null;
+5. a capturing lambda allocates its environment (from the ambient arena when one
+   is bound, the heap otherwise) and fills it with the captured locals, which the
+   lambda body reads through `env`;
+6. `Lambda` callers of a pair call `f.code(f.env, args…)`.
+
+The check is the existing corpus: all twenty-one examples must still build and
+print what they print now, since every signature in the emitted C changes.
+
 ### Directives for the remaining work (in priority order)
 
 1. **FFI — done.** `extern "c"` declarations keep their declared C names (no
