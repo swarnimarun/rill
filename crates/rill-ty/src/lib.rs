@@ -1575,6 +1575,47 @@ impl Checker<'_> {
     }
 
     fn binary(&mut self, span: Span, op: BinaryOp, lhs: &Expr, rhs: &Expr) -> Ty {
+        if op == BinaryOp::Choice {
+            // Handled before the shared preamble so the operands are typed
+            // exactly once and the discharge can be *attributed* to this arm's
+            // own contribution: `add_effects` dedups, so looking at the row
+            // afterwards cannot tell whether the left arm decided.
+            let before = self.body_effects.len();
+            let left = self.expr(lhs);
+            let left_added: Vec<Effect> = self.body_effects[before..].to_vec();
+            let after_left = self.body_effects.len();
+            let right = self.expr(rhs);
+            let right_added: Vec<Effect> = self.body_effects[after_left..].to_vec();
+            if left_added.contains(&Effect::Decides) && !right_added.contains(&Effect::Decides) {
+                // A fallback that cannot fail discharges exactly the `decides`
+                // the left arm contributed.
+                let discharged = self.body_effects[before..]
+                    .iter()
+                    .rposition(|effect| *effect == Effect::Decides)
+                    .map(|index| index + before);
+                if let Some(index) = discharged {
+                    self.body_effects.remove(index);
+                }
+            } else if left_added.contains(&Effect::Decides)
+                && !matches!(&lhs.kind, ExprKind::Index { .. } | ExprKind::Call { .. })
+            {
+                // A deciding left arm that is not a call keeps its function-level
+                // `fail`, which would escape the choice instead of selecting the
+                // fallback. Refuse rather than mis-compile.
+                self.diagnostics.push(
+                    Diagnostic::error(
+                        lhs.span,
+                        "a deciding expression here is not lowered by the C backend yet",
+                    )
+                    .note(
+                        "a `|` left arm can fail only when it is a call; extract the expression into a function"
+                            .to_string(),
+                    ),
+                );
+            }
+            self.unify(&left, &right, span, "checking `|` alternatives");
+            return left;
+        }
         let left = self.expr(lhs);
         // A `.`-selected name is a field or a method of the left operand.
         if op == BinaryOp::Flow {
@@ -1700,30 +1741,8 @@ impl Checker<'_> {
                 self.unify(&left, &right, span, "checking a range");
                 Ty::Range(Box::new(left))
             }
-            BinaryOp::Choice => {
-                // A deciding left operand records `decides` itself; a fallback
-                // that cannot fail discharges it (PLAN §3), which is what makes
-                // `f[x] | 0` usable inside a `<computes>` body.
-                let after_left = self.body_effects.clone();
-                let right = self.expr(rhs);
-                let right_added: Vec<Effect> = self
-                    .body_effects
-                    .iter()
-                    .skip(after_left.len())
-                    .cloned()
-                    .collect();
-                if !right_added.contains(&Effect::Decides) {
-                    if let Some(pos) = self
-                        .body_effects
-                        .iter()
-                        .rposition(|e| *e == Effect::Decides)
-                    {
-                        self.body_effects.remove(pos);
-                    }
-                }
-                self.unify(&left, &right, span, "checking `|` alternatives");
-                left
-            }
+            // `Choice` returns early, before the shared preamble.
+            BinaryOp::Choice => left,
             BinaryOp::Flow => {
                 let display = self.display(&left);
                 self.err(

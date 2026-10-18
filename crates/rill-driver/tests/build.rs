@@ -369,6 +369,11 @@ fn builds_and_runs_decides() {
         stdout.contains("pick[5, 0] = 5 pick[0, 7] = 7 pick[0, 0] = 0"),
         "unexpected stdout: {stdout}"
     );
+    // A left-associative chain tries every alternative, including the tail.
+    assert!(
+        stdout.contains("pick3[0, 0, 9] = 9 pick3[0, 0, 0] = 0"),
+        "unexpected stdout: {stdout}"
+    );
     assert_eq!(output.status.code(), Some(57));
 }
 

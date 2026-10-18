@@ -1157,7 +1157,7 @@ impl<'a> Generator<'a> {
             rhs,
         } = &expr.kind
         {
-            return self.choice(lhs, rhs);
+            return self.choice(expr, lhs, rhs);
         }
         match &expr.kind {
             ExprKind::Literal { kind, text } => self.literal(*kind, text),
@@ -1919,45 +1919,76 @@ impl<'a> Generator<'a> {
     }
 
     /// An assignable C lvalue.
-    /// `lhs | rhs`: when the left operand is an adjacent call to a `<decides>`
-    /// function, its status selects between the value and the fallback.
-    fn choice(&mut self, lhs: &Expr, rhs: &Expr) -> String {
-        let (base, args) = match &lhs.kind {
-            ExprKind::Index { base, args } => (base.as_ref(), args),
-            ExprKind::Call { callee, args } => (callee.as_ref(), args),
-            _ => return format!("({})", self.expr(lhs)),
-        };
-        let failable = match self.expr_ty(base) {
-            Ty::Fn { ret, effects, .. } => {
-                effects.contains(&rill_ty::Effect::Decides).then_some(*ret)
-            }
-            _ => None,
-        };
-        let Some(ret) = failable else {
-            return format!("({})", self.expr(lhs));
-        };
-        let cty = self.c_type(&ret);
-        let callee = self.expr(base);
-        let arguments: Vec<String> = args
+    /// `a | b | …`: every alternative is tried in order, and a call that
+    /// cannot fail selects its value. The chain is flattened first, because `|`
+    /// is left-associative and a nested choice would otherwise drop its tail.
+    fn choice(&mut self, whole: &Expr, lhs: &Expr, rhs: &Expr) -> String {
+        let mut alternatives: Vec<&Expr> = Vec::new();
+        flatten_choice(lhs, &mut alternatives);
+        alternatives.push(rhs);
+
+        let failable: Vec<Option<(&Expr, &[rill_hir::Arg])>> = alternatives
             .iter()
-            .map(|arg| {
-                let value = self.expr(&arg.value);
-                match arg.convention {
-                    Some(rill_ast::Convention::Inout) => format!("&({value})"),
-                    _ => value,
-                }
-            })
+            .map(|alt| self.failable_call(alt))
             .collect();
-        let fallback = self.expr(rhs);
-        // The slot starts at zero so a failed call never hands back an
-        // uninitialised value, and the fallback may itself be a failable call
-        // (so slots are unique per nesting level).
+        if failable.iter().all(|call| call.is_none()) {
+            // No arm can fail: the first alternative's value is the result.
+            return format!("({})", self.expr(alternatives[0]));
+        }
+
+        let cty = self.c_type(&self.expr_ty(whole));
         self.temp += 1;
-        let slot = format!("_t{}", self.temp);
-        format!(
-            "({{ {cty} {slot} = {{0}}; if (!{callee}({}, &{slot})) {{ {slot} = ({fallback}); }} {slot}; }})",
-            arguments.join(", ")
-        )
+        let level = self.temp;
+        let slot = format!("_t{level}");
+        let done = format!("_ok{level}");
+        let mut out = format!("({{ {cty} {slot} = {{0}}; bool {done} = false;");
+        for (alt, call) in alternatives.iter().zip(failable.iter()) {
+            match call {
+                Some((base, args)) => {
+                    let callee = self.expr(base);
+                    let arguments: Vec<String> = args
+                        .iter()
+                        .map(|arg| {
+                            let value = self.expr(&arg.value);
+                            match arg.convention {
+                                Some(rill_ast::Convention::Inout) => format!("&({value})"),
+                                _ => value,
+                            }
+                        })
+                        .collect();
+                    self.temp += 1;
+                    let hand = format!("_a{}", self.temp);
+                    out.push_str(&format!(
+                        " if (!{done}) {{ {cty} {hand} = {{0}}; if ({callee}({}, &{hand})) {{ {slot} = {hand}; {done} = true; }} }}",
+                        arguments.join(", ")
+                    ));
+                }
+                None => {
+                    let value = self.expr(alt);
+                    out.push_str(&format!(
+                        " if (!{done}) {{ {slot} = ({value}); {done} = true; }}"
+                    ));
+                }
+            }
+        }
+        out.push_str(&format!(" {slot}; }})"));
+        out
+    }
+
+    /// The adjacent or parenthesised call an alternative is, when it calls a
+    /// `<decides>` function directly.
+    fn failable_call<'e>(&self, alt: &'e Expr) -> Option<(&'e Expr, &'e [rill_hir::Arg])> {
+        let (base, args) = match &alt.kind {
+            ExprKind::Index { base, args } => (base.as_ref(), args.as_slice()),
+            ExprKind::Call { callee, args } => (callee.as_ref(), args.as_slice()),
+            _ => return None,
+        };
+        match self.expr_ty(base) {
+            Ty::Fn { effects, .. } => effects
+                .contains(&rill_ty::Effect::Decides)
+                .then_some((base, args)),
+            _ => None,
+        }
     }
 
     fn place(&mut self, expr: &Expr) -> String {
@@ -2481,6 +2512,21 @@ fn collect_local_refs_block(block: &Block, out: &mut Vec<LocalId>) {
 }
 
 /// The base expression of an index, for type queries.
+/// The alternatives of a left-associative `|` chain, in source order.
+fn flatten_choice<'e>(expr: &'e Expr, out: &mut Vec<&'e Expr>) {
+    match &expr.kind {
+        ExprKind::Binary {
+            op: BinaryOp::Choice,
+            lhs,
+            rhs,
+        } => {
+            flatten_choice(lhs, out);
+            out.push(rhs);
+        }
+        _ => out.push(expr),
+    }
+}
+
 fn base_expr(expr: &Expr) -> &Expr {
     match &expr.kind {
         ExprKind::Index { base, .. } => base,

@@ -9,10 +9,18 @@ let first_positive (x: i32, y: i32) -> i32 <decides> =
 
 let pick (x: i32, y: i32) -> i32 <computes> = first_positive[x, y] | 0;
 
+# A chain must try every alternative: the tail used to be dropped silently
+# because `|` is left-associative.
+let pick3 (x: i32, y: i32, z: i32) -> i32 <computes> =
+    first_positive[x, y] | first_positive[y, z] | 0;
+
 let main () -> i32 <io> = {
     var a = pick[5, 0];
     var b = pick[0, 7];
     var c = pick[0, 0];
+    var d = pick3[0, 0, 9];
+    var e = pick3[0, 0, 0];
     io::println ("pick[5, 0] = " ++ (a as String) ++ " pick[0, 7] = " ++ (b as String) ++ " pick[0, 0] = " ++ (c as String));
+    io::println ("pick3[0, 0, 9] = " ++ (d as String) ++ " pick3[0, 0, 0] = " ++ (e as String));
     a * 10 + b
 };
