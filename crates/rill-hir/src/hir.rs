@@ -9,6 +9,8 @@
 //! [`EffectRow`], [`Constraint`]): resolving type names is `rill-ty`'s job,
 //! which is also where shape/`comptime` evaluation lives.
 
+use std::collections::HashMap;
+
 use rill_ast::{
     BinaryOp, ConcurrentKind, Convention, EffectRow, HandlerKind, LiteralKind, Type, TypeBody,
     UnaryOp, UsePath,
@@ -110,6 +112,11 @@ pub enum ItemKind {
     Builder(BuilderDef),
     Signature(SignatureDef),
     Use(UseDef),
+    /// `@link("SDL3");` — a module-level directive, kept as an item so tools
+    /// and the driver see it in declaration order.
+    Attribute(AttributeDef),
+    /// A constant imported from a C header (`#define SDL_INIT_VIDEO 0x20u`).
+    Constant(ConstantDef),
     /// A module-level statement (`var`, `set`, an expression …).
     Stmt(Stmt),
     /// Slot created while registering module-level names, filled by the body
@@ -125,6 +132,20 @@ impl ItemKind {
             _ => Namespace::Value,
         }
     }
+}
+
+#[derive(Clone, Debug)]
+pub struct AttributeDef {
+    /// The parenthesised text of `@name("value")`, quotes removed.
+    pub value: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct ConstantDef {
+    /// The C literal exactly as the header wrote it (`0x00000020u`), which is
+    /// what a use site emits.
+    pub value: String,
+    pub ty: Type,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -166,6 +187,10 @@ pub struct SignatureDef {
 pub struct TypeDef {
     pub params: Vec<Symbol>,
     pub body: TypeBody,
+    /// `Some(SDL_FRect)` when the type came from an `@include`d C header: the
+    /// C side already defines it, so code generation emits `typedef SDL_FRect`
+    /// instead of a struct of its own.
+    pub c_name: Option<Symbol>,
 }
 
 #[derive(Clone, Debug)]
@@ -477,7 +502,31 @@ pub struct Hir {
     module_items: Vec<ItemId>,
     locals: Vec<LocalInfo>,
     refs: Vec<RefInfo>,
+    /// `@link("SDL3")` values, in declaration order.
+    links: Vec<String>,
+    /// `type M = @include("path");` declarations, in declaration order.
+    includes: Vec<IncludeDef>,
+    /// Each imported module's declarations by C name: `SDL3::SDL_Init`.
+    modules: HashMap<Symbol, HashMap<Symbol, ItemId>>,
+    /// Every declaration that came from a C header, so an unqualified name can
+    /// stay invisible until `use M::*;` asks for it.
+    imported: std::collections::HashSet<ItemId>,
+    /// Modules whose declarations were preluded with `use M::*;`.
+    globbed: std::collections::HashSet<Symbol>,
     pub diagnostics: rill_diagnostics::Diagnostics,
+}
+
+/// A `type M = @include("path");` declaration.
+#[derive(Clone, Debug)]
+pub struct IncludeDef {
+    /// The module name (`SDL3`).
+    pub module: Symbol,
+    /// The path as written in the source.
+    pub path: String,
+    pub span: Span,
+    /// The resolved headers the scan read, the named one first: the driver
+    /// turns the first into `-I` and fingerprints them all for the exec cache.
+    pub headers: Vec<std::path::PathBuf>,
 }
 
 impl Hir {
@@ -491,6 +540,36 @@ impl Hir {
 
     pub fn try_item(&self, id: ItemId) -> Option<&Item> {
         self.items.get(id.0 as usize)
+    }
+
+    /// Library names from `@link("…")`, in declaration order.
+    pub fn links(&self) -> &[String] {
+        &self.links
+    }
+
+    /// `@include` declarations, in declaration order.
+    pub fn includes(&self) -> &[IncludeDef] {
+        &self.includes
+    }
+
+    /// Every resolved header the `@include`s read, in declaration order.
+    pub fn imported_headers(&self) -> impl Iterator<Item = &std::path::PathBuf> {
+        self.includes.iter().flat_map(|include| include.headers.iter())
+    }
+
+    /// The item a module member names: `SDL3::SDL_Init`.
+    pub fn module_item(&self, module: Symbol, name: Symbol) -> Option<ItemId> {
+        self.modules.get(&module)?.get(&name).copied()
+    }
+
+    /// Whether `module` was preluded with `use M::*;`.
+    pub fn is_globbed(&self, module: Symbol) -> bool {
+        self.globbed.contains(&module)
+    }
+
+    /// Whether the item came from a C header.
+    pub fn is_imported(&self, id: ItemId) -> bool {
+        self.imported.contains(&id)
     }
 
     /// Module-level items, in declaration order.
@@ -520,6 +599,16 @@ impl Hir {
             .iter()
             .copied()
             .filter(|id| self.item(*id).name == Some(name))
+            // A C header's declarations stay inside their module: they become
+            // nameable by the qualified `M::name`, or by `use M::*;`.
+            .filter(|id| {
+                if !self.imported.contains(id) {
+                    return true;
+                }
+                self.modules.iter().any(|(module, members)| {
+                    self.globbed.contains(module) && members.values().any(|member| member == id)
+                })
+            })
             .collect()
     }
 
@@ -568,6 +657,28 @@ impl HirBuilder {
 
     pub(crate) fn next_item_id(&self) -> ItemId {
         ItemId(self.hir.items.len() as u32)
+    }
+
+    /// Records `@link("…")`.
+    pub(crate) fn add_link(&mut self, library: String) {
+        self.hir.links.push(library);
+    }
+
+    /// Registers one imported C module and the headers it read.
+    pub(crate) fn add_module(&mut self, def: IncludeDef, members: HashMap<Symbol, ItemId>) {
+        self.hir.imported.extend(members.values().copied());
+        self.hir.modules.insert(def.module, members);
+        self.hir.includes.push(def);
+    }
+
+    /// The item a module member names, while the module is being resolved.
+    pub(crate) fn module_item(&self, module: Symbol, name: Symbol) -> Option<ItemId> {
+        self.hir.module_item(module, name)
+    }
+
+    /// Preludes a module's declarations (`use M::*;`).
+    pub(crate) fn glob_module(&mut self, module: Symbol) {
+        self.hir.globbed.insert(module);
     }
 
     /// Fills a slot created by the declaration pass.

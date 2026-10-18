@@ -8,3 +8,4 @@ rill-span.workspace = true
 rill-syntax.workspace = true
 rill-ast.workspace = true
 rill-diagnostics.workspace = true
+rill-cimport.workspace = true

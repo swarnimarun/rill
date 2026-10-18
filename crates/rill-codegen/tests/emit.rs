@@ -4,13 +4,13 @@ use rill_hir::lower;
 use rill_ty::check;
 
 fn emit(src: &str) -> (String, rill_diagnostics::Diagnostics) {
-    let (frontend, sm) = parse_and_lower_text("t.rill", src);
+    let (mut frontend, sm) = parse_and_lower_text("t.rill", src);
     assert!(
         !frontend.diagnostics.has_errors(),
         "{}",
         rill_diagnostics::render_all(&sm, &frontend.diagnostics)
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let checked = check(&frontend, &hir);
     assert!(
         !checked.diagnostics.has_errors(),
@@ -64,13 +64,13 @@ fn loops_and_arrays_lower() {
 
 #[test]
 fn unsupported_constructs_are_reported_not_miscompiled() {
-    let (frontend, sm) = parse_and_lower_text(
+    let (mut frontend, sm) = parse_and_lower_text(
         "u.rill",
         // `race { … }` needs cancellation; it must be *reported*, never silently
         // mis-compiled.
         "let main () -> i32 <suspends> = {\n    race { 1 };\n    0\n};\n",
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let checked = check(&frontend, &hir);
     let (source, diagnostics) = emit_c(&frontend, &hir, &checked);
     assert!(diagnostics.has_errors(), "the handler must be reported");
@@ -90,11 +90,11 @@ fn option_body_with_statements_lower() {
     // emitted with a statement that runs after the body has already failed.
     // Body statements and a value are accepted now that a block lowered under a
     // continuation gets a jump label.
-    let (frontend, _sm) = parse_and_lower_text(
+    let (mut frontend, _sm) = parse_and_lower_text(
         "o.rill",
         "let main () -> i32 <decides> = {\n    option {\n        1;\n        2\n    };\n    0\n};\n",
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let checked = check(&frontend, &hir);
     let (_source, diagnostics) = emit_c(&frontend, &hir, &checked);
     assert!(!diagnostics.has_errors(), "{diagnostics:?}");
@@ -105,11 +105,11 @@ fn a_two_valued_sync_is_a_tuple_not_its_last_arm() {
     // This is what tells `sync { … }` apart from a plain block with the same
     // statements: a block's value is its tail (`2 + 2`), while `sync`'s is the
     // tuple of its arms, which cannot be turned into text.
-    let (frontend, sm) = parse_and_lower_text(
+    let (mut frontend, sm) = parse_and_lower_text(
         "s.rill",
         "let main () -> () <io | suspends> = {\n    var t = sync { 1 + 1; 2 + 2 };\n    io::println ((t as String))\n};\n",
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let checked = check(&frontend, &hir);
     let (_source, diagnostics) = emit_c(&frontend, &hir, &checked);
     assert!(
@@ -125,11 +125,11 @@ fn a_nested_yield_is_reported_not_miscompiled() {
     // Statement-level yields become states; a yield inside a conditional would need
     // a control-flow pass, and emitting it in the wrong state would resume a
     // coroutine at the wrong place - so it must be *reported*.
-    let (frontend, sm) = parse_and_lower_text(
+    let (mut frontend, sm) = parse_and_lower_text(
         "c.rill",
         "let tick () -> () <suspends> = {\n    if (true) {\n        yield ();\n    } else { () }\n};\n",
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let checked = check(&frontend, &hir);
     let (_source, diagnostics) = emit_c(&frontend, &hir, &checked);
     assert!(

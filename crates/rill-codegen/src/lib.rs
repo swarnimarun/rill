@@ -665,6 +665,9 @@ impl<'a> Generator<'a> {
                 ItemKind::Impl(def) => self.emit_impl(item, def),
                 ItemKind::Builder(_) | ItemKind::Trait(_) | ItemKind::Use(_) => {}
                 ItemKind::Stmt(stmt) => self.module_static(stmt),
+                // An attribute is a directive the driver reads; a constant is
+                // its literal wherever it is used.
+                ItemKind::Attribute(_) | ItemKind::Constant(_) => {}
                 ItemKind::Type(_) | ItemKind::Placeholder => {}
             }
         }

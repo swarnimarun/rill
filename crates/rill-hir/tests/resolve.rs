@@ -10,24 +10,24 @@ use rill_span::{SourceMap, Symbol};
 /// Lowers without asserting that resolution was complete: the plan's examples
 /// reference `core`/`std` helpers the module does not declare.
 fn resolve_leniently(src: &str) -> (Frontend, Hir, SourceMap) {
-    let (frontend, sm) = parse_and_lower_text("resolve.rill", src);
+    let (mut frontend, sm) = parse_and_lower_text("resolve.rill", src);
     assert!(
         !frontend.diagnostics.has_errors(),
         "parse failed:\n{}",
         rill_diagnostics::render_all(&sm, &frontend.diagnostics)
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     (frontend, hir, sm)
 }
 
 fn resolve(src: &str) -> (Frontend, Hir, SourceMap) {
-    let (frontend, sm) = parse_and_lower_text("resolve.rill", src);
+    let (mut frontend, sm) = parse_and_lower_text("resolve.rill", src);
     assert!(
         !frontend.diagnostics.has_errors(),
         "parse failed:\n{}",
         rill_diagnostics::render_all(&sm, &frontend.diagnostics)
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     assert!(
         !hir.diagnostics.has_errors(),
         "resolution failed:\n{}",
@@ -264,11 +264,11 @@ let f (x: i32) -> i32 <computes> = {
 
 #[test]
 fn a_local_of_a_nested_block_is_invisible_outside() {
-    let (frontend, sm) = parse_and_lower_text(
+    let (mut frontend, sm) = parse_and_lower_text(
         "scope.rill",
         "let f () = {\n    { inner := 1; inner };\n    inner\n};\n",
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let rendered = rill_diagnostics::render_all(&sm, &hir.diagnostics);
     assert!(rendered.contains("unknown name `inner`"), "{rendered}");
     // The in-block use still resolves; only the outer one is unknown.
@@ -280,11 +280,11 @@ fn a_local_of_a_nested_block_is_invisible_outside() {
 
 #[test]
 fn unknown_and_duplicate_names_are_reported() {
-    let (frontend, sm) = parse_and_lower_text(
+    let (mut frontend, sm) = parse_and_lower_text(
         "dup.rill",
         "let f (a: i32, a: i32) -> i32 <computes> = a;\nlet g () = missing;\n",
     );
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let rendered = rill_diagnostics::render_all(&sm, &hir.diagnostics);
     assert!(rendered.contains("`a` is already bound"), "{rendered}");
     assert!(rendered.contains("unknown name `missing`"), "{rendered}");
@@ -447,9 +447,9 @@ fn hir_keeps_item_and_local_tables_consistent() {
 
 #[test]
 fn malformed_input_still_resolves() {
-    let (frontend, sm) =
+    let (mut frontend, sm) =
         parse_and_lower_text("broken.rill", "let f () = { x := ; };\nlet g () = y;\n");
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     let parse_rendered = rill_diagnostics::render_all(&sm, &frontend.diagnostics);
     assert!(!parse_rendered.is_empty(), "the parse error is reported");
     let hir_rendered = rill_diagnostics::render_all(&sm, &hir.diagnostics);

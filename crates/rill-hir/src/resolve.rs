@@ -22,6 +22,7 @@
 //!   disambiguated by arity in `rill-ty`); the earliest declaration wins.
 
 use std::collections::HashMap;
+use std::path::PathBuf;
 
 use rill_ast::{
     Block as AstBlock, Cond as AstCond, ElseBranch as AstElse, Expr as AstExpr, FnDecl, Frontend,
@@ -31,13 +32,35 @@ use rill_ast::{
 use rill_diagnostics::{Diagnostic, Diagnostics};
 use rill_span::{Interner, Span, Symbol};
 
+use crate::cimport;
 use crate::hir::*;
 
+/// What lowering needs beyond the frontend: where `@include` searches.
+#[derive(Clone, Debug, Default)]
+pub struct Options {
+    /// Directories searched for `@include` headers, in order, before the
+    /// defaults (`$CPATH`, the system prefixes). The driver puts the source
+    /// file's own directory here.
+    pub include_dirs: Vec<PathBuf>,
+}
+
 /// Lowers a desugared AST into HIR with resolved names.
-pub fn lower(frontend: &Frontend) -> Hir {
-    let mut resolver = Resolver::new(frontend);
-    resolver.module(&frontend.module);
-    resolver.finish()
+///
+/// The frontend is borrowed mutably because lowering interns the names a C
+/// header contributes; `lower` is the no-options form.
+pub fn lower(frontend: &mut Frontend) -> Hir {
+    lower_with(frontend, &Options::default())
+}
+
+pub fn lower_with(frontend: &mut Frontend, options: &Options) -> Hir {
+    // The resolver interns C names, so the frontend's module is moved aside
+    // rather than borrowed alongside the interner.
+    let module = std::mem::take(&mut frontend.module);
+    let mut resolver = Resolver::new(&mut frontend.interner, options);
+    resolver.module(&module);
+    let hir = resolver.finish();
+    frontend.module = module;
+    hir
 }
 
 #[derive(Default)]
@@ -47,7 +70,7 @@ struct Scope {
 }
 
 struct Resolver<'a> {
-    interner: &'a Interner,
+    interner: &'a mut Interner,
     out: HirBuilder,
     diagnostics: Diagnostics,
     scopes: Vec<Scope>,
@@ -58,12 +81,18 @@ struct Resolver<'a> {
     module_types: HashMap<Symbol, Vec<ItemId>>,
     /// `use` imports: local name -> full path segments.
     imports: HashMap<Symbol, Vec<Symbol>>,
+    /// `type M = @include("…")` modules: module name -> member name -> item.
+    modules: HashMap<Symbol, HashMap<Symbol, ItemId>>,
+    /// Where `@include` looks for headers, in order.
+    include_dirs: Vec<PathBuf>,
 }
 
 impl<'a> Resolver<'a> {
-    fn new(frontend: &'a Frontend) -> Self {
+    fn new(interner: &'a mut Interner, options: &Options) -> Self {
+        let mut include_dirs = options.include_dirs.clone();
+        include_dirs.extend(cimport::default_include_dirs());
         Resolver {
-            interner: &frontend.interner,
+            interner,
             out: HirBuilder::default(),
             diagnostics: Diagnostics::new(),
             scopes: vec![Scope::default()],
@@ -72,6 +101,8 @@ impl<'a> Resolver<'a> {
             module_values: HashMap::new(),
             module_types: HashMap::new(),
             imports: HashMap::new(),
+            modules: HashMap::new(),
+            include_dirs,
         }
     }
 
@@ -79,7 +110,7 @@ impl<'a> Resolver<'a> {
         self.out.finish(self.diagnostics)
     }
 
-    fn text(&self, sym: Symbol) -> &'a str {
+    fn text(&self, sym: Symbol) -> &str {
         self.interner.get(sym)
     }
 
@@ -152,9 +183,18 @@ impl<'a> Resolver<'a> {
             }
             slots.push(id);
         }
+        // `type M = @include("…")` reads C headers, whose declarations must
+        // exist before any `use M::…` names them.
+        for item in &module.items {
+            if let AstItem::Type(decl) = item {
+                if let rill_ast::TypeBody::Include { path, span } = &decl.body {
+                    self.expand_include(decl.name.sym, path, *span);
+                }
+            }
+        }
         for item in &module.items {
             if let AstItem::Use(decl) = item {
-                self.declare_use(&decl.path);
+                self.declare_use(&decl.path, decl.span);
             }
         }
         // Enum variants are nameable on their own (`Circle r`, `Rect 6 7`) as
@@ -174,9 +214,106 @@ impl<'a> Resolver<'a> {
         slots
     }
 
-    fn declare_use(&mut self, path: &UsePath) {
-        for (name, full) in import_names(path) {
-            self.imports.insert(name, full);
+    /// Expands one `@include` into items: each C declaration becomes an item
+    /// named after its C name, recorded under the module so `M::name` resolves
+    /// and `use M::*;` can prelude the lot.
+    fn expand_include(&mut self, module: Symbol, path: &str, span: Span) {
+        if self.modules.contains_key(&module) {
+            return;
+        }
+        let dirs = self.include_dirs.clone();
+        match cimport::import(module, path, span, &dirs, self.interner) {
+            Ok(imported) => {
+                let mut members: HashMap<Symbol, ItemId> = HashMap::new();
+                for decl in imported.decls {
+                    let id = self.push_item_owned(Some(decl.name), decl.kind, span, true);
+                    members.insert(decl.name, id);
+                }
+                let headers = imported.headers;
+                if members.is_empty() {
+                    self.diagnostics.push(
+                        Diagnostic::warning(
+                            span,
+                            format!("`{path}` declared nothing this front end can use"),
+                        )
+                        .note(
+                            "variadic functions, function-pointer parameters and unknown types are left out"
+                                .to_string(),
+                        ),
+                    );
+                }
+                self.out.add_module(
+                    IncludeDef {
+                        module,
+                        path: path.to_string(),
+                        span,
+                        headers,
+                    },
+                    members.clone(),
+                );
+                self.modules.insert(module, members);
+            }
+            Err(err) => self.err(span, err),
+        }
+    }
+
+    fn declare_use(&mut self, path: &UsePath, span: Span) {
+        match path {
+            UsePath::Glob { prefix } => {
+                let Some(module) = prefix.last().map(|ident| ident.sym) else {
+                    self.err(span, "expected a module name before `::*`");
+                    return;
+                };
+                let Some(members) = self.modules.get(&module).cloned() else {
+                    let text = self.text(module).to_string();
+                    self.err(span, format!("`{text}` is not an `@include`d module"));
+                    return;
+                };
+                for (name, id) in &members {
+                    let namespace = self
+                        .out
+                        .try_item(*id)
+                        .map(|item| item.kind.namespace())
+                        .unwrap_or(Namespace::Value);
+                    let table = match namespace {
+                        Namespace::Value => &mut self.module_values,
+                        Namespace::Type => &mut self.module_types,
+                    };
+                    table.entry(*name).or_default().push(*id);
+                }
+                self.out.glob_module(module);
+            }
+            UsePath::Plain(segments)
+                if segments.len() == 2
+                    && segments
+                        .first()
+                        .map(|head| self.modules.contains_key(&head.sym))
+                        .unwrap_or(false) =>
+            {
+                let module = segments[0].sym;
+                let name = segments[1].sym;
+                let Some(id) = self.modules[&module].get(&name).copied() else {
+                    let module_text = self.text(module).to_string();
+                    let name_text = self.text(name).to_string();
+                    self.err(span, format!("`{module_text}` declares no `{name_text}`"));
+                    return;
+                };
+                let namespace = self
+                    .out
+                    .try_item(id)
+                    .map(|item| item.kind.namespace())
+                    .unwrap_or(Namespace::Value);
+                let table = match namespace {
+                    Namespace::Value => &mut self.module_values,
+                    Namespace::Type => &mut self.module_types,
+                };
+                table.entry(name).or_default().push(id);
+            }
+            _ => {
+                for (name, full) in import_names(path) {
+                    self.imports.insert(name, full);
+                }
+            }
         }
     }
 
@@ -207,6 +344,9 @@ impl<'a> Resolver<'a> {
                 let kind = ItemKind::Type(TypeDef {
                     params: decl.params.iter().map(|p| p.name.sym).collect(),
                     body: decl.body.clone(),
+                    // Only `@include` imports carry a C name; the resolver sets
+                    // it when it creates their items.
+                    c_name: None,
                 });
                 self.fill_or_push(slot, Some(decl.name.sym), kind, decl.span)
             }
@@ -272,9 +412,25 @@ impl<'a> Resolver<'a> {
                 let name = top_level_bindings(stmt).first().map(|(name, _)| *name);
                 self.fill_or_push(slot, name, ItemKind::Stmt(lowered), stmt.span())
             }
-            // An attribute is a directive, not a declaration of its own.
-            AstItem::Attribute(_) => {
-                self.fill_or_push(slot, None, ItemKind::Placeholder, item.span())
+            AstItem::Attribute(decl) => {
+                let attribute = self.text(decl.name.sym).to_string();
+                match attribute.as_str() {
+                    "link" => match &decl.value {
+                        Some(library) => self.out.add_link(library.clone()),
+                        None => self.err(decl.span, "`@link` needs a library name: `@link(\"SDL3\")`"),
+                    },
+                    _ => self.diagnostics.push(
+                        Diagnostic::warning(
+                            decl.span,
+                            format!("`@{attribute}` is not an attribute this compiler knows"),
+                        )
+                        .note("known: `@link(\"library\")`".to_string()),
+                    ),
+                }
+                let def = AttributeDef {
+                    value: decl.value.clone(),
+                };
+                self.fill_or_push(slot, Some(decl.name.sym), ItemKind::Attribute(def), decl.span)
             }
             AstItem::Error(span) => {
                 self.err(*span, "malformed item");
@@ -429,6 +585,18 @@ impl<'a> Resolver<'a> {
 
     fn resolve_path(&mut self, segments: &[Symbol], span: Span) -> Res {
         let head = segments[0];
+        // A qualified name into an `@include`d module: `SDL3::SDL_Init`.
+        if segments.len() > 1 {
+            if let Some(id) = self.out.module_item(head, segments[1]) {
+                return Res::Item(id);
+            }
+            if self.modules.contains_key(&head) {
+                let module = self.text(head).to_string();
+                let name = self.text(segments[1]).to_string();
+                self.err(span, format!("`{module}` declares no `{name}`"));
+                return Res::Error;
+            }
+        }
         if let Some(res) = self.lookup_local(head) {
             return res;
         }
@@ -925,13 +1093,12 @@ fn item_name(item: &AstItem) -> (Option<Symbol>, Namespace) {
             AstItem::Signature(inner) => (Some(inner.name.sym), Namespace::Value),
             _ => (None, Namespace::Value),
         },
+        AstItem::Attribute(decl) => (Some(decl.name.sym), Namespace::Value),
         AstItem::Stmt(stmt) => (
             top_level_bindings(stmt).first().map(|(name, _)| *name),
             Namespace::Value,
         ),
-        AstItem::Attribute(_) | AstItem::Impl(_) | AstItem::Use(_) | AstItem::Error(_) => {
-            (None, Namespace::Value)
-        }
+        AstItem::Impl(_) | AstItem::Use(_) | AstItem::Error(_) => (None, Namespace::Value),
     }
 }
 
@@ -950,6 +1117,7 @@ fn import_names(path: &UsePath) -> Vec<(Symbol, Vec<Symbol>)> {
                 (name.sym, full)
             })
             .collect(),
+        // `use M::*;` is resolved against the module itself, not as a path.
         UsePath::Glob { .. } => Vec::new(),
         UsePath::Text { .. } => Vec::new(),
     }

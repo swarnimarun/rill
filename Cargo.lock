@@ -64,6 +64,7 @@ name = "rill-hir"
 version = "0.1.0"
 dependencies = [
  "rill-ast",
+ "rill-cimport",
  "rill-diagnostics",
  "rill-span",
  "rill-syntax",

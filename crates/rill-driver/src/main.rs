@@ -129,7 +129,7 @@ fn main() -> ExitCode {
 
     let mut source_map = SourceMap::new();
     let file = source_map.add_file(&path, text);
-    let frontend = parse_and_lower(&source_map, file);
+    let mut frontend = parse_and_lower(&source_map, file);
 
     if frontend.diagnostics.has_errors() {
         eprint_with_summary(&source_map, &frontend.diagnostics);
@@ -141,7 +141,7 @@ fn main() -> ExitCode {
         Some("cst") => print_out(&frontend.cst.root.dump(&source_map)),
         Some("ast") => print_line(&format!("{:#?}", frontend.module)),
         Some("hir") => {
-            let hir = lower(&frontend);
+            let hir = lower(&mut frontend);
             print_line(&format!("{hir:#?}"));
         }
         _ => {}
@@ -224,13 +224,13 @@ fn build(args: &[String]) -> ExitCode {
 
     let mut source_map = SourceMap::new();
     let file = source_map.add_file(&path, text);
-    let frontend = parse_and_lower(&source_map, file);
+    let mut frontend = parse_and_lower(&source_map, file);
     let mut diagnostics = frontend.diagnostics.clone();
     if diagnostics.has_errors() {
         eprint_with_summary(&source_map, &diagnostics);
         return ExitCode::FAILURE;
     }
-    let hir = lower(&frontend);
+    let hir = lower(&mut frontend);
     diagnostics.extend(hir.diagnostics.clone());
     if diagnostics.has_errors() {
         eprint_with_summary(&source_map, &diagnostics);

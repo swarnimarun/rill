@@ -205,8 +205,8 @@ impl Server {
 
     fn open(&mut self, uri: String, text: String, version: i64) -> std::io::Result<()> {
         // The same pipeline a build runs: parse and lower, resolve, check.
-        let (frontend, source) = rill_ast::parse_and_lower_text(&uri, &text);
-        let hir = rill_hir::lower(&frontend);
+        let (mut frontend, source) = rill_ast::parse_and_lower_text(&uri, &text);
+        let hir = rill_hir::lower(&mut frontend);
         let checked = rill_ty::check(&frontend, &hir);
         let mut diagnostics = rill_diagnostics::Diagnostics::default();
         diagnostics.extend(frontend.diagnostics.clone());

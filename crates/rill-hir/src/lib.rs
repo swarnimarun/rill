@@ -21,15 +21,17 @@
 //! inference engine owns type/trait resolution together with the constraint
 //! solver.
 
+pub mod cimport;
 pub mod hir;
 pub mod resolve;
 
 pub use hir::{
-    Arg, Block, BuilderDef, Cond, ElseBranch, Expr, ExprId, ExprKind, FnDef, Hir, ImplDef, Item,
-    ItemId, ItemKind, LocalId, LocalInfo, LocalKind, MatchArm, Namespace, Param, ParamSlot,
-    Pattern, ProjectDef, RefInfo, Res, SignatureDef, Stmt, TraitDef, TypeDef, UseDef,
+    Arg, AttributeDef, Block, BuilderDef, Cond, ConstantDef, ElseBranch, Expr, ExprId, ExprKind,
+    FnDef, Hir, ImplDef, IncludeDef, Item, ItemId, ItemKind, LocalId, LocalInfo, LocalKind,
+    MatchArm, Namespace, Param, ParamSlot, Pattern, ProjectDef, RefInfo, Res, SignatureDef, Stmt,
+    TraitDef, TypeDef, UseDef,
 };
-pub use resolve::lower;
+pub use resolve::{lower, lower_with, Options};
 
 // Type syntax and operator tags live in `rill-ast`; re-exported so consumers
 // of HIR do not need a second import path.
