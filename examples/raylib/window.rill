@@ -1,0 +1,57 @@
+use std::io;
+
+# A window with a bouncing rectangle, written against the installed raylib: the
+# script names the header and the library, and the compiler reads the header for
+# it - no build file, no binding generator.
+#
+#   rill exec examples/raylib/window.rill
+#
+# `RILL_RAYLIB_DEMO=1` hides the window and runs a fixed burst of frames, which
+# is how the test suite drives the same binary without a window on screen.
+
+extern "c" let getenv (name: Text) -> Text <io>;
+
+@link("raylib");
+
+type RL = @include("raylib.h");
+use RL::*;
+
+let main () -> i32 <io> = {
+    # raylib has no hint API of its own, so the environment is read through
+    # libc: `getenv` answers a null pointer for an unset variable, which is what
+    # a zeroed `Text` is.
+    var absent: Text = comptime { zeroed () };
+    var demo = (getenv ("RILL_RAYLIB_DEMO") != absent);
+    if (demo) { SetConfigFlags (FLAG_WINDOW_HIDDEN as u32) };
+
+    InitWindow (640, 360, "rill + raylib");
+    SetTargetFPS (60);
+
+    var box = Rectangle (40.0f32, 60.0f32, 80.0f32, 60.0f32);
+    var dx = 1.6f32;
+    var dy = 1.1f32;
+    var quit = false;
+    var frame = 0;
+
+    while (quit == false) {
+        if (WindowShouldClose ()) { set quit = true };
+        if (IsKeyPressed (KEY_ESCAPE)) { set quit = true };
+
+        set box.x = box.x + dx;
+        set box.y = box.y + dy;
+        if (box.x < 0.0f32 or box.x > 560.0f32) { set dx = 0.0f32 - dx };
+        if (box.y < 0.0f32 or box.y > 300.0f32) { set dy = 0.0f32 - dy };
+
+        BeginDrawing ();
+        ClearBackground (Color (18u8, 20u8, 28u8, 255u8));
+        DrawRectangleRec (box, Color (90u8, 200u8, 120u8, 255u8));
+        EndDrawing ();
+
+        set frame = frame + 1;
+        if (demo) { if (frame >= 120) { set quit = true } }
+    };
+
+    CloseWindow ();
+    if (demo) { io::println ("demo frames " ++ (frame as String)) };
+    0
+};

@@ -1,5 +1,5 @@
 //! `@link` and `@include`: a script that reads a C header and links a library,
-//! and the SDL3 demos built against a system install.
+//! and the SDL3 and raylib demos built against a system install.
 
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -155,19 +155,28 @@ fn sdl3_available() -> bool {
     dirs.iter().any(|dir| Path::new(dir).join("SDL3/SDL.h").is_file())
 }
 
-fn run_demo(name: &str) -> (std::process::Output, String) {
+/// raylib has to be installed for its demos to build, the same way.
+fn raylib_available() -> bool {
+    let dirs = ["/opt/homebrew/include", "/usr/local/include", "/usr/include"];
+    dirs.iter().any(|dir| Path::new(dir).join("raylib.h").is_file())
+}
+
+/// Runs one of the demos under `examples/` in its headless mode: the demo
+/// variable that makes it run a fixed burst, and a cache of its own.
+fn run_demo(path: &str) -> (std::process::Output, String) {
     let demo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
-        .join("../../examples/sdl3")
-        .join(name);
+        .join("../../examples")
+        .join(path);
     let cache = std::env::temp_dir().join(format!(
-        "rill-sdl3-cache-{}",
-        name.trim_end_matches(".rill")
+        "rill-demo-cache-{}",
+        path.replace(['/', '.'], "-")
     ));
     let _ = std::fs::remove_dir_all(&cache);
     let output = Command::new(env!("CARGO_BIN_EXE_rillc"))
         .arg("exec")
         .arg(&demo)
         .env("RILL_SDL3_DEMO", "1")
+        .env("RILL_RAYLIB_DEMO", "1")
         .env("SDL_VIDEODRIVER", "dummy")
         .env("RILL_CACHE_DIR", &cache)
         .output()
@@ -182,7 +191,7 @@ fn sdl3_window_demo_runs_headless() {
         eprintln!("skipping: SDL3's headers are not installed");
         return;
     }
-    let (output, stdout) = run_demo("window.rill");
+    let (output, stdout) = run_demo("sdl3/window.rill");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         output.status.success(),
@@ -201,7 +210,7 @@ fn sdl3_sidescroller_plays_itself_headless() {
         eprintln!("skipping: SDL3's headers are not installed");
         return;
     }
-    let (output, stdout) = run_demo("sidescroller.rill");
+    let (output, stdout) = run_demo("sdl3/sidescroller.rill");
     let stderr = String::from_utf8_lossy(&output.stderr);
     assert!(
         stderr.is_empty(),
@@ -213,6 +222,56 @@ fn sdl3_sidescroller_plays_itself_headless() {
         stdout.contains("score 3"),
         "the walk must collect the ground-level coins: {stdout}"
     );
+    assert!(
+        stdout.contains("demo frames 240 score 3"),
+        "the summary line pins the level: {stdout}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(3),
+        "the game's score is its exit code"
+    );
+}
+
+#[test]
+fn raylib_window_demo_runs_headless() {
+    if !raylib_available() {
+        eprintln!("skipping: raylib's header is not installed");
+        return;
+    }
+    let (output, stdout) = run_demo("raylib/window.rill");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        output.status.success(),
+        "the hidden window demo must run: {stderr}"
+    );
+    assert!(
+        !stderr.contains("error:"),
+        "the demo must build and run without diagnostics: {stderr}"
+    );
+    assert!(
+        stdout.contains("demo frames 120"),
+        "the demo must run its fixed burst: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn raylib_sidescroller_plays_itself_headless() {
+    if !raylib_available() {
+        eprintln!("skipping: raylib's header is not installed");
+        return;
+    }
+    let (output, stdout) = run_demo("raylib/sidescroller.rill");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    // raylib logs its startup on stdout; what must not appear is a diagnostic
+    // from the compiler, on stderr.
+    assert!(
+        !stderr.contains("error:"),
+        "the game must build and run without diagnostics: {stderr}"
+    );
+    // The demo mode walks right at a fixed step, so the coins it reaches - and
+    // therefore the score - are the same every run.
     assert!(
         stdout.contains("demo frames 240 score 3"),
         "the summary line pins the level: {stdout}"

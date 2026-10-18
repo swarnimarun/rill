@@ -1,0 +1,166 @@
+use std::io;
+
+# A small side-scrolling platformer written against raylib: gravity, a jump, a
+# scrolling camera and coins. The level is rectangles, and the collision test is
+# `CheckCollisionRecs`, which takes both of its `Rectangle`s by value - the shape
+# raylib's API is built from.
+#
+#   rill exec examples/raylib/sidescroller.rill
+#
+# Arrow keys walk, `SPACE`/`UP` jumps, `ESC` or the close button quits. With
+# `RILL_RAYLIB_DEMO=1` the window is hidden, the player walks itself for a fixed
+# number of frames and a summary is printed - what the test suite runs.
+
+extern "c" let getenv (name: Text) -> Text <io>;
+
+@link("raylib");
+
+type RL = @include("raylib.h");
+use RL::*;
+
+let walk_speed () -> f32 <computes> = 3.4f32;
+let jump_speed () -> f32 <computes> = 8.6f32;
+let gravity () -> f32 <computes> = 0.55f32;
+let platform_count () -> i32 <computes> = 7;
+let coin_count () -> i32 <computes> = 5;
+
+# A rectangle in world coordinates, drawn with the colour raylib wants: a
+# `Rectangle` and a `Color`, both by value.
+let fill (x: f32, y: f32, w: f32, h: f32, r: u8, g: u8, b: u8) -> () <io> = {
+    DrawRectangleRec (Rectangle (x, y, w, h), Color (r, g, b, 255u8));
+    ()
+};
+
+let main () -> i32 <io> = {
+    # The environment is read through libc: raylib has no hint API, and a
+    # zeroed `Text` is the null pointer `getenv` answers for an unset variable.
+    var absent: Text = comptime { zeroed () };
+    var demo = (getenv ("RILL_RAYLIB_DEMO") != absent);
+    if (demo) { SetConfigFlags (FLAG_WINDOW_HIDDEN as u32) };
+
+    InitWindow (800, 450, "rill sidescroller");
+    SetTargetFPS (60);
+
+    # The level, in world coordinates: a ground strip and six ledges.
+    var plats = [
+        Rectangle (0.0f32, 386.0f32, 1900.0f32, 64.0f32),
+        Rectangle (300.0f32, 312.0f32, 120.0f32, 18.0f32),
+        Rectangle (520.0f32, 264.0f32, 96.0f32, 18.0f32),
+        Rectangle (760.0f32, 220.0f32, 120.0f32, 18.0f32),
+        Rectangle (1040.0f32, 300.0f32, 140.0f32, 18.0f32),
+        Rectangle (1320.0f32, 250.0f32, 170.0f32, 18.0f32),
+        Rectangle (1600.0f32, 340.0f32, 260.0f32, 18.0f32)
+    ];
+    # Coins sit just above the ground, so the demo's walk picks them up.
+    var coins = [
+        Rectangle (170.0f32, 340.0f32, 16.0f32, 16.0f32),
+        Rectangle (260.0f32, 300.0f32, 16.0f32, 16.0f32),
+        Rectangle (380.0f32, 340.0f32, 16.0f32, 16.0f32),
+        Rectangle (560.0f32, 300.0f32, 16.0f32, 16.0f32),
+        Rectangle (800.0f32, 340.0f32, 16.0f32, 16.0f32)
+    ];
+    var taken = [false, false, false, false, false];
+
+    var player = Rectangle (60.0f32, 300.0f32, 26.0f32, 38.0f32);
+    var vy = 0.0f32;
+    var jump = false;
+    var camera = 0.0f32;
+    var score = 0;
+    var quit = false;
+    var frame = 0;
+
+    while (quit == false) {
+        if (WindowShouldClose ()) { set quit = true };
+        if (IsKeyPressed (KEY_ESCAPE)) { set quit = true };
+        if (IsKeyPressed (KEY_SPACE) or IsKeyPressed (KEY_UP)) { set jump = true };
+
+        var left = IsKeyDown (KEY_LEFT);
+        var right = IsKeyDown (KEY_RIGHT);
+        # The headless demo mode drives itself rightwards.
+        if (demo) { set right = true };
+
+        # --- update -------------------------------------------------------
+        var step = 0.0f32;
+        if (left) { set step = step - walk_speed () };
+        if (right) { set step = step + walk_speed () };
+        set player.x = player.x + step;
+        if (player.x < 0.0f32) { set player.x = 0.0f32 };
+
+        set vy = vy + gravity ();
+        if (vy > 14.0f32) { set vy = 14.0f32 };
+        var next_y = player.y + vy;
+        var grounded = false;
+        var i = 0u64;
+        while (i < (platform_count () as u64)) {
+            var p = plats[i];
+            if (player.x + player.width > p.x and player.x < p.x + p.width) {
+                # Falling onto the top of a platform: stop there.
+                if (vy >= 0.0f32 and player.y + player.height <= p.y and next_y + player.height >= p.y) {
+                    set next_y = p.y - player.height;
+                    set vy = 0.0f32;
+                    set grounded = true
+                }
+            };
+            set i = i + 1u64
+        };
+        set player.y = next_y;
+        if (jump) {
+            if (grounded) { set vy = 0.0f32 - jump_speed () };
+            set jump = false
+        };
+
+        var c = 0u64;
+        while (c < (coin_count () as u64)) {
+            if (taken[c] == false and CheckCollisionRecs (player, coins[c])) {
+                set taken[c] = true;
+                set score = score + 1;
+                io::println ("score " ++ (score as String))
+            };
+            set c = c + 1u64
+        };
+
+        set camera = player.x - 240.0f32;
+        if (camera < 0.0f32) { set camera = 0.0f32 };
+
+        # --- render -------------------------------------------------------
+        BeginDrawing ();
+        ClearBackground (Color (24u8, 26u8, 38u8, 255u8));
+
+        var f = 0u64;
+        while (f < 40u64) {
+            # A parallax stripe background, so the scrolling is visible.
+            var stripe = (f as f32) * 60.0f32 - camera * 0.4f32;
+            fill (stripe, 0.0f32, 24.0f32, 450.0f32, 40u8, 44u8, 60u8);
+            set f = f + 1u64
+        };
+
+        var pi = 0u64;
+        while (pi < (platform_count () as u64)) {
+            var p = plats[pi];
+            fill (p.x - camera, p.y, p.width, p.height, 120u8, 180u8, 110u8);
+            set pi = pi + 1u64
+        };
+
+        var ci = 0u64;
+        while (ci < (coin_count () as u64)) {
+            if (taken[ci] == false) {
+                var q = coins[ci];
+                fill (q.x - camera, q.y, q.width, q.height, 230u8, 200u8, 90u8)
+            };
+            set ci = ci + 1u64
+        };
+
+        fill (player.x - camera, player.y, player.width, player.height, 220u8, 120u8, 110u8);
+        DrawText ("score " ++ (score as String), 10, 10, 20, Color (235u8, 235u8, 235u8, 255u8));
+        EndDrawing ();
+
+        set frame = frame + 1;
+        if (demo) { if (frame >= 240) { set quit = true } }
+    };
+
+    CloseWindow ();
+    if (demo) {
+        io::println ("demo frames " ++ (frame as String) ++ " score " ++ (score as String))
+    };
+    score
+};
