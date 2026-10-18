@@ -583,10 +583,21 @@ impl<'a> Generator<'a> {
     }
 
     fn finish(self) -> String {
-        format!(
+        // The headers `@include` pulled in come first: their types are what the
+        // aliases and calls below are written against.
+        let mut out = String::new();
+        if !self.hir.includes().is_empty() {
+            out.push_str("// ---- C headers imported with `@include` --------\n");
+            for include in self.hir.includes() {
+                out.push_str(&format!("#include <{}>\n", include.path));
+            }
+            out.push('\n');
+        }
+        out.push_str(&format!(
             "{}{}{}{}\n",
             self.runtime, self.types, self.protos, self.defs
-        )
+        ));
+        out
     }
 
     fn text(&self, sym: Symbol) -> &str {
@@ -619,6 +630,13 @@ impl<'a> Generator<'a> {
                 continue;
             };
             let id = *id;
+            // An imported type already exists in C, and is aliased where it is
+            // first used: a header declares types for platforms this compile is
+            // not aimed at (`MSG` is Windows-only), and emitting one that the
+            // platform lacks would fail the C compiler.
+            if self.checked.nominal(id).c_name.is_some() {
+                continue;
+            }
             match &def.body {
                 rill_ast::TypeBody::Record(_) | rill_ast::TypeBody::View(_) => {
                     match &self.checked.nominal(id).kind {
@@ -1110,6 +1128,14 @@ impl<'a> Generator<'a> {
                     // Definitions are emitted with the module; recurse lazily if
                     // this type was not pre-registered (anonymous monomorphs).
                     if !self.emitted_types.contains(&name) {
+                        // An imported C type is the header's, to the letter: a
+                        // typedef is all this backend contributes.
+                        if let Some(c_name) = self.checked.nominal(*id).c_name {
+                            let c_name = self.text(c_name).to_string();
+                            self.emitted_types.insert(name.clone());
+                            self.types.push_str(&format!("typedef {c_name} {name};\n"));
+                            return name;
+                        }
                         if let NominalKind::Record(fields) | NominalKind::View(fields) =
                             self.checked.nominal(*id).kind.clone()
                         {
@@ -2019,6 +2045,15 @@ impl<'a> Generator<'a> {
                     format!("((rill_fn){{ .code = (void *)&{name}, .env = NULL }})")
                 }
                 Res::Item(id) => {
+                    // A constant from a C header is its literal, not a symbol:
+                    // `SDL_INIT_VIDEO` is a `#define`.
+                    if let Some(rill_hir::Item {
+                        kind: rill_hir::ItemKind::Constant(def),
+                        ..
+                    }) = self.hir.try_item(*id)
+                    {
+                        return format!("({})", def.value);
+                    }
                     // A nominal in value position: a payload-less variant is a
                     // value (`Empty`), anything else needs arguments.
                     if let Some(ItemTy::Nominal(nominal)) = self.checked.item_ty(*id) {
@@ -2126,9 +2161,12 @@ impl<'a> Generator<'a> {
                 let ty = self.expr_ty(expr);
                 let values: Vec<String> = elems.iter().map(|e| self.expr(e)).collect();
                 match &ty {
-                    Ty::Array { elem, len: Some(_) } => {
-                        let name = self.mangle(elem);
+                    Ty::Array { len: Some(_), .. } => {
+                        // The C type for a fixed array is its own struct, not
+                        // the element's name: ask for it the same way indexing
+                        // and assignment do, so all three agree.
                         let temp = self.fresh("arr_");
+                        let name = self.c_type(&ty);
                         self.body.push_str(&format!(
                             "  {name} {temp} = {{ .v = {{ {} }} }};\n",
                             values.join(", ")
@@ -2331,7 +2369,8 @@ impl<'a> Generator<'a> {
                 let ty = self.expr_ty(expr);
                 let result = self.typed_temp(&ty);
                 let condition = self.condition(cond);
-                self.body.push_str(&format!("  if ({condition}) {{\n"));
+                self.body
+                    .push_str(&format!("  if {} {{\n", parenthesise(&condition)));
                 let then_value = self.block(then_branch);
                 if matches!(ty, Ty::Unit) {
                     // A unit branch still has to run its tail expression.
@@ -2897,6 +2936,9 @@ impl<'a> Generator<'a> {
         }
     }
 
+    /// A condition for `if (…)`, with the parentheses C requires - but only
+    /// when the expression does not already carry its own: wrapping a
+    /// comparison twice is what `-Wparentheses-equality` complains about.
     fn condition(&mut self, cond: &Cond) -> String {
         match cond {
             Cond::Expr(expr) => self.expr(expr),
@@ -3794,6 +3836,34 @@ impl<'a> Generator<'a> {
             }
         }
     }
+}
+
+/// `text` wrapped in parentheses, unless it is already one parenthesised
+/// expression that spans it whole.
+fn parenthesise(text: &str) -> String {
+    if !text.starts_with('(') || !text.ends_with(')') {
+        return format!("({text})");
+    }
+    let mut depth = 0usize;
+    for (index, ch) in text.char_indices() {
+        match ch {
+            '(' => depth += 1,
+            ')' => {
+                depth = depth.saturating_sub(1);
+                if depth == 0 {
+                    // The first `(` closes at the very end: the whole text is
+                    // one parenthesised expression.
+                    return if index == text.len() - 1 {
+                        text.to_string()
+                    } else {
+                        format!("({text})")
+                    };
+                }
+            }
+            _ => {}
+        }
+    }
+    format!("({text})")
 }
 
 /// Locals referenced anywhere in `expr` (used for capture analysis).
