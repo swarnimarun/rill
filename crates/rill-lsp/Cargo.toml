@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 rill-span = { path = "../rill-span" }
+rill-syntax = { path = "../rill-syntax" }
 rill-parser = { path = "../rill-parser" }
 rill-ast = { path = "../rill-ast" }
 rill-hir = { path = "../rill-hir" }

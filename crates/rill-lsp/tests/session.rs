@@ -66,6 +66,10 @@ fn a_session_initialises_reports_diagnostics_and_shuts_down() {
             r#"{"jsonrpc":"2.0","id":10,"method":"textDocument/references","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
             &[("URI", "file:///h.rill"), ("LINE", "1"), ("CHAR", "36")],
         ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":11,"method":"textDocument/semanticTokens/full","params":{"textDocument":{"uri":"URI"}}}"#,
+            &[("URI", "file:///h.rill")],
+        ),
         r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
         r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
     ];
@@ -93,6 +97,18 @@ fn a_session_initialises_reports_diagnostics_and_shuts_down() {
     assert!(
         refs.contains("file:///h.rill") && refs.contains("range"),
         "references should point at the use of `one`: {refs}"
+    );
+    let tokens = seen
+        .iter()
+        .find(|body| body.contains(r#""id":11"#))
+        .unwrap_or_else(|| panic!("no semantic tokens answer: {all}"));
+    assert!(
+        tokens.contains("\"data\":["),
+        "semantic tokens should carry a data array: {tokens}"
+    );
+    assert!(
+        !tokens.contains("\"data\":[]"),
+        "the highlight should not be empty: {tokens}"
     );
     let diagnostics = seen
         .iter()

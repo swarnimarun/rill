@@ -136,6 +136,15 @@ impl Server {
                 }
                 self.hover(id, &uri, line, character)?;
             }
+            "textDocument/semanticTokens/full" => {
+                let uri = params
+                    .get("textDocument")
+                    .and_then(|doc| doc.get("uri"))
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                self.semantic_tokens(id, &uri);
+            }
             "textDocument/references" => {
                 let line = params
                     .get("position")
@@ -344,6 +353,63 @@ impl Server {
         let _ = self.respond(id, Json::Arr(locations));
     }
 
+    /// Semantic tokens: what the token stream itself knows - keywords, literals,
+    /// comments and operators - with the same legend the handshake declared.
+    ///
+    /// Names are deliberately *not* classified: telling a type from a function from a
+    /// local needs the resolver, and the tree the server holds here is the concrete
+    /// one. A wrong colour is worse than a plain one, and names would be wrong
+    /// whenever a local shadows an item, which is exactly when a reader wants the
+    /// colour to be right.
+    fn semantic_tokens(&mut self, id: Option<Json>, uri: &str) {
+        let mut data: Vec<i64> = Vec::new();
+        if let Some(document) = self.documents.get(uri) {
+            let (parse, _map) = rill_parser::parse_text(uri, &document.text);
+            let mut tokens = Vec::new();
+            collect_tokens(&parse.cst.root, &mut tokens);
+            let mut previous_line = 0i64;
+            let mut previous_start = 0i64;
+            let mut marked: Vec<(i64, i64, i64, i64)> = Vec::new();
+            for (span, kind) in tokens {
+                let Some(index) = token_type(kind) else {
+                    continue;
+                };
+                let start = document.source.line_col(span.start);
+                let end = document.source.line_col(span.end);
+                if start.line != end.line {
+                    continue;
+                }
+                let line = start.line as i64;
+                let character = start.col as i64;
+                let length = (end.col as i64 - character).max(0);
+                if length == 0 {
+                    continue;
+                }
+                marked.push((line, character, length, index));
+            }
+            marked.sort();
+            for (line, character, length, index) in marked {
+                let delta_line = line - previous_line;
+                let delta_start = if delta_line == 0 {
+                    character - previous_start
+                } else {
+                    character
+                };
+                data.extend([delta_line, delta_start, length, index, 0]);
+                previous_line = line;
+                previous_start = character;
+            }
+        }
+        self.respond(
+            id,
+            Json::obj(&[(
+                "data",
+                Json::Arr(data.into_iter().map(|v| Json::Num(v as f64)).collect()),
+            )]),
+        )
+        .ok();
+    }
+
     fn publish(&mut self, uri: &str) -> std::io::Result<()> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(());
@@ -430,10 +496,85 @@ fn range(start_line: i64, start_col: i64, end_line: i64, end_col: i64) -> Json {
     ])
 }
 
+/// The token types the legend declares, in the order `token_type` indexes them.
+fn token_legend() -> Vec<Json> {
+    ["keyword", "number", "string", "comment", "operator"]
+        .iter()
+        .map(|name| Json::Str(name.to_string()))
+        .collect()
+}
+
+fn token_type(kind: rill_syntax::SyntaxKind) -> Option<i64> {
+    use rill_syntax::SyntaxKind;
+    Some(match kind {
+        SyntaxKind::IntLiteral | SyntaxKind::FloatLiteral => 1,
+        SyntaxKind::Text | SyntaxKind::RawText | SyntaxKind::CharLiteral => 2,
+        SyntaxKind::LineComment | SyntaxKind::BlockComment => 3,
+        SyntaxKind::Plus
+        | SyntaxKind::Minus
+        | SyntaxKind::Star
+        | SyntaxKind::Slash
+        | SyntaxKind::Percent
+        | SyntaxKind::Assign
+        | SyntaxKind::EqEq
+        | SyntaxKind::BangEq
+        | SyntaxKind::Lt
+        | SyntaxKind::Gt
+        | SyntaxKind::LtEq
+        | SyntaxKind::GtEq
+        | SyntaxKind::Arrow
+        | SyntaxKind::PlusPlus
+        | SyntaxKind::ColonEq => 4,
+        _ => {
+            // Everything else is a keyword only if the syntax kind says so, which is
+            // what `is_keyword` answers.
+            if is_keyword(kind) {
+                0
+            } else {
+                return None;
+            }
+        }
+    })
+}
+
+fn is_keyword(kind: rill_syntax::SyntaxKind) -> bool {
+    // The syntax kind has the answer; prefixing the debug name would guess at it.
+    kind.is_keyword()
+}
+
+fn collect_tokens(
+    node: &rill_syntax::SyntaxNode,
+    out: &mut Vec<(rill_span::Span, rill_syntax::SyntaxKind)>,
+) {
+    for child in &node.children {
+        match child {
+            rill_syntax::Element::Node(node) => collect_tokens(node, out),
+            rill_syntax::Element::Token(token) => {
+                if token.kind != rill_syntax::SyntaxKind::Whitespace {
+                    out.push((token.span, token.kind));
+                }
+            }
+        }
+    }
+}
+
 fn capabilities() -> Json {
     Json::obj(&[
         ("textDocumentSync", Json::Num(1.0)),
         ("documentFormattingProvider", Json::Bool(true)),
+        (
+            "semanticTokensProvider",
+            Json::obj(&[
+                (
+                    "legend",
+                    Json::obj(&[
+                        ("tokenTypes", Json::Arr(token_legend())),
+                        ("tokenModifiers", Json::Arr(Vec::new())),
+                    ]),
+                ),
+                ("full", Json::Bool(true)),
+            ]),
+        ),
     ])
 }
 

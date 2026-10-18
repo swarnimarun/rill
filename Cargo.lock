@@ -83,6 +83,7 @@ dependencies = [
  "rill-hir",
  "rill-parser",
  "rill-span",
+ "rill-syntax",
  "rill-ty",
 ]
 
