@@ -657,6 +657,11 @@ fn builds_and_runs_sync_composition() {
         .output()
         .expect("run the produced binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // Several valued arms form a tuple, read by field access.
+    assert!(
+        stdout.contains("sync tuple 40,2"),
+        "unexpected stdout: {stdout}"
+    );
     // Arms with no suspension point run in order and join.
     assert!(
         stdout.contains("step first\nstep second\njoined"),

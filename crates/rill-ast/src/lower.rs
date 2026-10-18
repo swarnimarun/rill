@@ -1330,7 +1330,24 @@ impl<'a> Lower<'a> {
                     None => return Expr::error(node.span),
                 };
                 cur.bump();
-                let rhs = self.expr_child(&mut cur, node.span);
+                let mut rhs = self.expr_child(&mut cur, node.span);
+                // `t.0`: the resolver holds an immutable interner, so a literal
+                // selector is interned here, where it is known that this literal
+                // names a field rather than being a value.
+                if op == BinaryOp::Flow {
+                    if let Expr::Literal {
+                        kind: LiteralKind::Int | LiteralKind::Float,
+                        text,
+                        span,
+                    } = &rhs
+                    {
+                        let sym = self.interner.intern(text);
+                        rhs = Expr::Path {
+                            segments: vec![Ident::new(sym, *span)],
+                            span: *span,
+                        };
+                    }
+                }
                 Expr::Binary {
                     op,
                     lhs: Box::new(lhs),

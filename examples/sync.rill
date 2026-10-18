@@ -10,11 +10,13 @@ let step (name: String) -> () <io | suspends> = {
 };
 
 # `sync { e }` is `e`'s value: the arms' values form a tuple, so a single valued
-# arm is that value.
+# arm is that value, and several are read by tuple field access.
 let twice (n: i32) -> i32 <suspends> = n * 2;
 
 let main () -> () <io | suspends> = {
     var doubled = sync { twice (21) };
+    var both = sync { twice (20); twice (1) };
+    io::println ("sync tuple " ++ (both.0 as String) ++ "," ++ (both.1 as String));
     io::println ("sync value " ++ (doubled as String));
     sync {
         step ("first");
