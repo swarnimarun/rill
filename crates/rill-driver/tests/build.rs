@@ -788,3 +788,40 @@ fn builds_and_runs_layers() {
     assert!(used > 0, "the arena was not used: {stdout}");
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_showcase() {
+    let dir = workdir("showcase");
+    let out = dir.join("showcase");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/showcase.rill")
+        .canonicalize()
+        .expect("examples/showcase.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The §11 result: the refused 800-transfer is rolled back and the 200 lands.
+    assert!(
+        stdout.contains("alice 300 bob 300"),
+        "unexpected stdout: {stdout}"
+    );
+    // `option` with `?`, a handler guard, the arena layer, valued `sync` and
+    // tuple field access, in one program.
+    assert!(stdout.contains("picked 7 and 0"), "{stdout}");
+    assert!(stdout.contains("guard held"), "{stdout}");
+    assert!(stdout.contains("guarded 8"), "{stdout}");
+    assert!(stdout.contains("pairs 2 arena 12"), "{stdout}");
+    assert!(stdout.contains("sync 42 tuple 42,43"), "{stdout}");
+    // `main` returns alice's balance, truncated to the process exit status.
+    assert_eq!(output.status.code(), Some(44));
+}

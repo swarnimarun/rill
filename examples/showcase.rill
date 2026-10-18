@@ -1,67 +1,66 @@
-use core::slice;
-use core::alloc::StackArena;
+use std::io;
 
-# 1. Record with mutable fields and deterministic RAII deinit
+# The §11 showcase, written against the surface this compiler actually has:
+# records, a first-class place projection, `<decides>` with guards and rollback,
+# `option { … }` with `?`, a speculative `|` chain, an ambient arena layer, a
+# comprehension-style `all`, `sync` composition, and tuple field access.
+
 type Account = record {
     id: u64;
     var balance: i64;
 };
 
-# 2. First-class `inout` Projection (no `'a` lifetimes needed!)
+# A place projection: uses are inlined as the field itself, so no getter/setter
+# pair and no copy.
 project balance_mut (acc: inout Account) -> inout i64 <computes> = {
     yield inout acc.balance;
 };
 
-# 3. Transactional & Failable Systems Function (`<decides | transacts>`)
-# If `amount > from.balance` or `to.balance` overflows, `<decides>` fails
-# and `<transacts>` automatically rolls back `from.balance`!
-let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | transacts> = {
+# `<decides>` with guards: the debit happens before the failing guard, so the
+# rollback is what keeps the balances honest when the transfer is refused.
+let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | writes> = {
     amount > 0;
     set (from . balance_mut) = from.balance - amount;
-    # If `from.balance` went negative, fail!
-    # The prior mutation to `from.balance` is rolled back automatically!
     from.balance >= 0;
     set (to . balance_mut) = to.balance + amount;
 };
 
-# 4. In-place Quicksort using Hylo-style disjoint slice splitting (`<computes>`)
-let quicksort (xs: inout Slice i64) -> () <computes> = {
-    if (size xs > 1) {
-        pivot_idx := partition (inout xs);
-        if (pair := xs . split_at[pivot_idx]) {
-            # `pair.0` and `pair.1` are statically proven disjoint by `rill-borrow`!
-            quicksort (inout pair.0);
-            quicksort (inout pair.1);
-        } else { () }
-    } else { () }
-};
+let first_positive (x: i32, y: i32) -> i32 <decides> =
+    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
 
-# 5. Main entrypoint combining Arena allocation, Speculative Choice, and Structured Concurrency
-let main () -> i32 <io | suspends> = {
+let main () -> i32 <io | decides | writes | alloc | suspends> = {
     var alice = Account 1u64 500i64;
-    var bob   = Account 2u64 100i64;
+    var bob = Account 2u64 100i64;
 
-    # Try transferring 800 (fails & rolls back!), fallback via `|` to transferring 200 (succeeds!)
-    _ := option {
-        transfer[inout alice, inout bob, 800]
-        | transfer[inout alice, inout bob, 200]
-    };
+    # 800 is refused *after* debiting alice, so the trail restores her before the
+    # fallback's 200 lands: 500 - 200 = 300 and 100 + 200 = 300.
+    option { transfer[inout alice, inout bob, 800] | transfer[inout alice, inout bob, 200] };
+    io::println ("alice " ++ (alice.balance as String) ++ " bob " ++ (bob.balance as String));
 
-    # `alice.balance` is now 300, `bob.balance` is 300.
-    io::println ("Alice: " ++ (alice.balance as String));
+    # `option { … }` yields a value; `?` unwraps it and propagates absence.
+    var a = (option { first_positive[7, 0] })? | 0;
+    var b = (option { first_positive[0, 0] })? | 0;
+    io::println ("picked " ++ (a as String) ++ " and " ++ (b as String));
 
-    # Stack-allocated 16KB arena discharges `<alloc>` completely on the stack!
-    var scratch: [u8; 16384] = comptime { zeroed () };
-    StackArena::run (inout scratch) {
-        # Nondeterministic comprehension (`all`) allocated inside `scratch` arena
-        pairs := all {
-            x := 1..5;
-            y := 1..x;
-            when (x + y = 5);
-            (x, y)
-        };
-        io::println ("Valid pairs count: " ++ (size pairs as String))
-    };
+    # A guard inside a handler body: the statement after it is skipped.
+    var guarded = (option {
+        when (a > 0);
+        io::println ("guard held");
+        a + 1
+    })? | 0;
+    io::println ("guarded " ++ (guarded as String));
 
-    0i32
+    # An arena bound at the top scope: the collector's storage comes from it.
+    var scratch = arena_new 4096u64;
+    arena_bind (scratch);
+    var pairs = all { first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] };
+    io::println ("pairs " ++ (size pairs as String) ++ " arena " ++ (arena_used (scratch) as String));
+    arena_unbind ();
+
+    # `sync` composes suspending work and joins it; a valued arm is the value.
+    var doubled = sync { first_positive[21, 0] * 2 };
+    var part = sync { doubled; doubled + 1 };
+    io::println ("sync " ++ (doubled as String) ++ " tuple " ++ (part.0 as String) ++ "," ++ (part.1 as String));
+
+    alice.balance as i32
 };
