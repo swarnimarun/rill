@@ -83,8 +83,19 @@ static size_t rill_trail_count;
 static size_t rill_trail_used;
 static int rill_trail_depth;
 
-static void rill_txn_begin(void) { rill_trail_depth += 1; }
+/* A region also remembers the ambient arena's watermark, so rolling back reclaims
+   what the failed work allocated. The arena helpers are defined after this point,
+   so these are hooks; marks are held per region, pushed with `begin` and popped
+   with `end`, so a nested region cannot release an enclosing one's mark. */
+static void rill_region_mark_push(void);
+static void rill_region_mark_restore(void);
+static void rill_region_mark_pop(void);
+static void rill_txn_begin(void) {
+  rill_trail_depth += 1;
+  rill_region_mark_push();
+}
 static void rill_txn_end(void) {
+  rill_region_mark_pop();
   if (rill_trail_depth > 0) rill_trail_depth -= 1;
   /* Only the outermost region releases the trail. An inner region that
      succeeded must keep its entries, because an enclosing rollback still has to
@@ -110,6 +121,7 @@ static void rill_txn_record(void *addr, size_t size) {
   rill_trail_count += 1;
 }
 static void rill_txn_rollback(size_t mark) {
+  rill_region_mark_restore();
   while (rill_trail_count > mark) {
     rill_trail_count -= 1;
     rill_trail_entry entry = rill_trail[rill_trail_count];
@@ -177,6 +189,28 @@ static void rill_arena_unbind(void) {
 }
 static rill_arena *rill_arena_current(void) {
   return rill_arena_depth > 0 ? rill_arena_layers[rill_arena_depth - 1] : NULL;
+}
+
+static r_u64 rill_arena_used(rill_arena *a);
+static void rill_arena_reset(rill_arena *a, r_u64 mark);
+
+static size_t rill_region_marks[64];
+static int rill_region_marks_depth;
+static void rill_region_mark_push(void) {
+  if (rill_region_marks_depth < 64) {
+    rill_arena *a = rill_arena_current();
+    rill_region_marks[rill_region_marks_depth] = a ? (size_t)rill_arena_used(a) : 0;
+    rill_region_marks_depth += 1;
+  }
+}
+static void rill_region_mark_pop(void) {
+  if (rill_region_marks_depth > 0) rill_region_marks_depth -= 1;
+}
+static void rill_region_mark_restore(void) {
+  if (rill_region_marks_depth > 0) {
+    rill_arena *a = rill_arena_current();
+    if (a) rill_arena_reset(a, (r_u64)rill_region_marks[rill_region_marks_depth - 1]);
+  }
 }
 
 static rill_arena *rill_arena_new(r_u64 bytes) {

@@ -757,6 +757,24 @@ fn builds_and_runs_layers() {
         .output()
         .expect("run the produced binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // A handler body that allocates and then fails hands the arena back: the
+    // watermark after the failed region equals the one before it.
+    let after = stdout
+        .split("after a failed region ")
+        .nth(1)
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse::<i64>().ok())
+        .unwrap_or_else(|| panic!("no post-region figure in {stdout}"));
+    let before = stdout
+        .split("(before ")
+        .nth(1)
+        .and_then(|rest| rest.split(|c: char| !c.is_ascii_digit()).next())
+        .and_then(|n| n.parse::<i64>().ok())
+        .unwrap_or_else(|| panic!("no pre-region figure in {stdout}"));
+    assert_eq!(
+        before, after,
+        "the failed region kept its allocations: {stdout}"
+    );
     // The collector found two values, and its storage came from the bound arena:
     // the exact byte count carries allocator overhead, but zero would mean the
     // heap path was taken.
@@ -764,7 +782,8 @@ fn builds_and_runs_layers() {
     let used: i64 = stdout
         .split("arena used ")
         .nth(1)
-        .and_then(|rest| rest.trim().parse().ok())
+        .and_then(|rest| rest.split_whitespace().next())
+        .and_then(|n| n.parse().ok())
         .unwrap_or_else(|| panic!("no arena figure in {stdout}"));
     assert!(used > 0, "the arena was not used: {stdout}");
     assert_eq!(output.status.code(), Some(0));
