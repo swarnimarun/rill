@@ -21,7 +21,15 @@ let main () -> i32 <io | suspends> = {
     spawn_thread (alpha);
     spawn_thread (beta);
     spawn_thread (gamma);
+    var accepted = 0;
+    # More tasks than the pool has workers: they queue, and every one still runs.
+    # `spawn_thread` no longer fails once a per-thread cap is reached.
+    for (i := 0..70) {
+        if (spawn_thread ({ -> () })) {
+            set accepted = accepted + 1;
+        } else { () }
+    };
     var joined = join_threads ();
-    io::println ("joined " ++ (joined as String));
+    io::println ("accepted " ++ (accepted as String) ++ " joined " ++ (joined as String));
     0
 };

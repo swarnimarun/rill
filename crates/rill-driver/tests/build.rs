@@ -1085,6 +1085,8 @@ fn builds_and_runs_threads() {
     // A lambda task whose captures are owned (two scalars) is accepted, with its
     // environment on the heap rather than in the shared arena.
     assert!(stdout.contains("closure 42"), "{stdout}");
-    assert!(stdout.contains("joined 4"), "{stdout}");
+    // The pool queues more tasks than it has workers, and every one still runs:
+    // with a thread per spawn, `spawn_thread` would have failed at the cap.
+    assert!(stdout.contains("accepted 71 joined 75"), "{stdout}");
     assert_eq!(output.status.code(), Some(0));
 }

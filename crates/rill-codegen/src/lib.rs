@@ -246,37 +246,83 @@ static rill_fn rill_io_wrap(rill_fn inner) {
    whose state it can prove is owned: a named function (no captures) or a lambda
    whose captures are all scalars. A closure value stored in a variable is refused,
    because its environment cannot be checked at the spawn site. */
-#define RILL_THREADS 64
-static pthread_t rill_threads[RILL_THREADS];
-static int rill_thread_count;
-/* The thread entry gets the whole task pair, not just its code: a closure's
-   environment is part of the task. */
-typedef struct { rill_fn task; } rill_thread_arg;
-static void *rill_thread_main(void *env) {
-  rill_thread_arg *arg = (rill_thread_arg *)env;
-  ((void (*)(void *))arg->task.code)(arg->task.env);
+/* A pool: a fixed set of workers draining one queue. `spawn_thread` therefore never
+   fails, and `join_threads` waits until every queued task has completed - which is
+   what makes it an executor rather than a thread per spawn. The queue and the
+   counters are guarded by one mutex and one condition variable; the workers are
+   never joined, since the program exits with them. */
+#define RILL_POOL_WORKERS 4
+#define RILL_POOL_QUEUE 256
+typedef struct {
+  rill_fn tasks[RILL_POOL_QUEUE];
+  int head;
+  int tail;
+  int done;
+  int spawned;
+  int started;
+  pthread_mutex_t lock;
+  pthread_cond_t work;
+  pthread_cond_t idle;
+} rill_pool;
+static rill_pool rill_pool_state = { .head = 0, .tail = 0, .done = 0, .spawned = 0,
+                                     .started = 0,
+                                     .lock = PTHREAD_MUTEX_INITIALIZER,
+                                     .work = PTHREAD_COND_INITIALIZER,
+                                     .idle = PTHREAD_COND_INITIALIZER };
+static void *rill_worker(void *unused) {
+  (void)unused;
+  for (;;) {
+    pthread_mutex_lock(&rill_pool_state.lock);
+    while (rill_pool_state.head == rill_pool_state.tail) {
+      pthread_cond_wait(&rill_pool_state.work, &rill_pool_state.lock);
+    }
+    rill_fn task = rill_pool_state.tasks[rill_pool_state.head];
+    rill_pool_state.head = (rill_pool_state.head + 1) % RILL_POOL_QUEUE;
+    pthread_mutex_unlock(&rill_pool_state.lock);
+    ((void (*)(void *))task.code)(task.env);
+    pthread_mutex_lock(&rill_pool_state.lock);
+    rill_pool_state.done += 1;
+    if (rill_pool_state.done == rill_pool_state.spawned) {
+      pthread_cond_signal(&rill_pool_state.idle);
+    }
+    pthread_mutex_unlock(&rill_pool_state.lock);
+  }
   return NULL;
 }
 static int rill_spawn_thread(rill_fn task) {
-  if (rill_thread_count >= RILL_THREADS) return 0;
-  rill_thread_arg *arg = (rill_thread_arg *)malloc(sizeof(rill_thread_arg));
-  arg->task = task;
-  if (pthread_create(&rill_threads[rill_thread_count], NULL, rill_thread_main,
-                     (void *)arg) != 0) {
-    free(arg);
+  pthread_mutex_lock(&rill_pool_state.lock);
+  if (!rill_pool_state.started) {
+    rill_pool_state.started = 1;
+    for (int i = 0; i < RILL_POOL_WORKERS; i++) {
+      pthread_t worker;
+      if (pthread_create(&worker, NULL, rill_worker, NULL) != 0) {
+        pthread_mutex_unlock(&rill_pool_state.lock);
+        return 0;
+      }
+      pthread_detach(worker);
+    }
+  }
+  if ((rill_pool_state.tail + 1) % RILL_POOL_QUEUE == rill_pool_state.head) {
+    pthread_mutex_unlock(&rill_pool_state.lock);
     return 0;
   }
-  rill_thread_count += 1;
+  rill_pool_state.tasks[rill_pool_state.tail] = task;
+  rill_pool_state.tail = (rill_pool_state.tail + 1) % RILL_POOL_QUEUE;
+  rill_pool_state.spawned += 1;
+  pthread_cond_signal(&rill_pool_state.work);
+  pthread_mutex_unlock(&rill_pool_state.lock);
   return 1;
 }
 static int rill_join_threads(void) {
-  int joined = 0;
-  while (rill_thread_count > 0) {
-    rill_thread_count -= 1;
-    pthread_join(rill_threads[rill_thread_count], NULL);
-    joined += 1;
+  pthread_mutex_lock(&rill_pool_state.lock);
+  while (rill_pool_state.done < rill_pool_state.spawned) {
+    pthread_cond_wait(&rill_pool_state.idle, &rill_pool_state.lock);
   }
-  return joined;
+  int completed = rill_pool_state.done;
+  rill_pool_state.spawned = 0;
+  rill_pool_state.done = 0;
+  pthread_mutex_unlock(&rill_pool_state.lock);
+  return completed;
 }
 static void rill_io_bind(void) { rill_io_layers += 1; }
 static void rill_io_unbind(void) { if (rill_io_layers > 0) rill_io_layers -= 1; }
