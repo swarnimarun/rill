@@ -2,8 +2,8 @@
 ; from a local needs the resolver, and the server reports that through semantic
 ; tokens instead of the grammar guessing here.
 
-["let" "var" "set" "if" "else" "match" "while" "for" "when" "yield" "type"
- "record" "trait" "impl" "project" "use" "extern" "comptime" "unsafe"
+["let" "var" "set" "if" "else" "match" "for" "when" "yield" "type"
+ "record" "trait" "impl" "project" "use" "comptime" "unsafe"
  "inout" "sink" "dyn" "true" "false"] @keyword
 
 ["option" "one" "all" "sync" "race" "rush" "branch"] @function.special
