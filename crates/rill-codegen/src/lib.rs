@@ -328,6 +328,9 @@ struct Generator<'a> {
     /// Whether the code emitted since this was last cleared consulted a
     /// continuation, i.e. whether that region can fail at run time.
     continuation_used: bool,
+    /// Lambdas are emitted as file-scope functions, so their names must be unique
+    /// per file: the per-function temporary counter resets and would collide.
+    lambdas: usize,
     emitted_types: HashSet<String>,
     diagnostics: Diagnostics,
     scopes: Vec<Vec<(LocalId, String)>>,
@@ -358,6 +361,7 @@ impl<'a> Generator<'a> {
             fail_targets: Vec::new(),
             require_success: false,
             continuation_used: false,
+            lambdas: 0,
             emitted_types: HashSet::new(),
             diagnostics: Diagnostics::new(),
             scopes: Vec::new(),
@@ -1017,7 +1021,8 @@ impl<'a> Generator<'a> {
             return "0".into();
         }
 
-        let name = self.fresh("lambda");
+        let name = format!("lambda{}", self.lambdas);
+        self.lambdas += 1;
         let param_tys: Vec<Ty> = params
             .iter()
             .map(|pattern| self.pattern_ty(pattern))

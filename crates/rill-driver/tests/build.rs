@@ -825,3 +825,54 @@ fn builds_and_runs_showcase() {
     // `main` returns alice's balance, truncated to the process exit status.
     assert_eq!(output.status.code(), Some(44));
 }
+
+#[test]
+fn every_example_builds_and_exits() {
+    // The showcase sat broken for most of this project because nothing built the
+    // examples as a set. Individual tests pin their output; this one makes sure
+    // no example can rot into something that does not compile or does not exit
+    // cleanly, without pinning what each prints.
+    let dir = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../../examples");
+    let mut checked = 0;
+    let mut failures: Vec<String> = Vec::new();
+    for entry in std::fs::read_dir(&dir).expect("examples directory") {
+        let path = entry.expect("example entry").path();
+        if path.extension().and_then(|e| e.to_str()) != Some("rill") {
+            continue;
+        }
+        let name = path.file_stem().unwrap().to_string_lossy().to_string();
+        let out = workdir(&format!("corpus_{name}")).join(&name);
+        let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+            .arg("build")
+            .arg(&path)
+            .arg("-o")
+            .arg(&out)
+            .output()
+            .expect("run rillc build");
+        if !status.status.success() {
+            let stderr = String::from_utf8_lossy(&status.stderr);
+            let first = stderr.lines().next().unwrap_or("(no message)").to_string();
+            failures.push(format!("{name}: {first}"));
+            continue;
+        }
+
+        let run = Command::new(&out)
+            .output()
+            .expect("run the produced binary");
+        assert!(
+            run.status.code().is_some(),
+            "examples/{name}.rill died on a signal: {:?}",
+            run.status
+        );
+        checked += 1;
+    }
+    assert!(
+        checked >= 20,
+        "expected the corpus, found {checked} examples"
+    );
+    assert!(
+        failures.is_empty(),
+        "examples that do not build:\n{}",
+        failures.join("\n")
+    );
+}
