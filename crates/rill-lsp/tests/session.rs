@@ -236,9 +236,6 @@ fn run_session(messages: &[String]) -> Vec<String> {
 }
 
 #[test]
-#[ignore = "known defect: the resolver records the span of a *use* for some locals \
-            (a parameter's span pointed at `x` inside the function body), so hints \
-            cannot be placed safely; re-enable with the resolver fix"]
 fn inlay_hints_sit_after_an_identifier() {
     // The report was hints landing mid-word (`first_po : [i32]sitive`) and stacked
     // after a brace. The placement rule is therefore checked structurally: every hint

@@ -380,10 +380,10 @@ impl Server {
                             (
                                 "range",
                                 range(
-                                    start.line as i64,
-                                    start.col as i64,
-                                    end.line as i64,
-                                    end.col as i64,
+                                    start.line as i64 - 1,
+                                    start.col as i64 - 1,
+                                    end.line as i64 - 1,
+                                    end.col as i64 - 1,
                                 ),
                             ),
                         ]));
@@ -469,6 +469,16 @@ impl Server {
                 // the identifier, set by the resolver where the local is declared -
                 // so it is the position, with no scanning of the tree for a
                 // neighbouring name (which could pick a different identifier).
+                if debug() {
+                    let snippet = document.source.snippet(local.span);
+                    let name = document.frontend.text(rill_ast::Ident::new(local.name, local.span));
+                    eprintln!(
+                        "lsp: local `{name}` kind {:?} span {}..{} covers {snippet:?}",
+                        local.kind,
+                        local.span.start.to_usize(),
+                        local.span.end.to_usize()
+                    );
+                }
                 // Only trust the span when the source it covers *is* the name.
                 // Some locals (parameters among them) resolve to the span of a *use*
                 // rather than their declaration, and a hint at that position is worse
@@ -508,8 +518,8 @@ impl Server {
                     (
                         "position",
                         Json::obj(&[
-                            ("line", Json::Num(at.line as f64)),
-                            ("character", Json::Num(at.col as f64)),
+                            ("line", Json::Num(at.line as f64 - 1.0)),
+                            ("character", Json::Num(at.col as f64 - 1.0)),
                         ]),
                     ),
                     ("label", Json::Str(format!(": {text}"))),
@@ -538,9 +548,10 @@ impl Server {
                     .unwrap_or(rill_span::Span::DUMMY);
                 let start_pos = document.source.line_col(span.start);
                 let end_pos = document.source.line_col(span.end);
+                // `line_col` is 1-based; LSP counts from zero.
                 let (start, end) = (
-                    (start_pos.line as i64, start_pos.col as i64),
-                    (end_pos.line as i64, end_pos.col as i64),
+                    (start_pos.line as i64 - 1, start_pos.col as i64 - 1),
+                    (end_pos.line as i64 - 1, end_pos.col as i64 - 1),
                 );
                 Json::obj(&[
                     ("range", range(start.0, start.1, end.0, end.1)),
@@ -678,6 +689,7 @@ fn capabilities() -> Json {
         // hover and references were never declared here.
         ("hoverProvider", Json::Bool(true)),
         ("referencesProvider", Json::Bool(true)),
+        ("inlayHintProvider", Json::Bool(true)),
         (
             "semanticTokensProvider",
             Json::obj(&[
@@ -854,6 +866,7 @@ fn position_to_offset(
     };
     let mut offset = file.start.to_usize();
     for (index, text) in file.text.split_inclusive('\n').enumerate() {
+        // LSP lines are zero-based; this scan's index is too, so it matches directly.
         if index as u32 == line {
             let at = (offset + character as usize).min(file.text.len());
             return rill_span::BytePos(at as u32);
