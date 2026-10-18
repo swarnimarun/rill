@@ -1357,6 +1357,39 @@ Coupled work: the same pair representation is what `dyn` fat pointers need
 (`{ data, vtable }`), so doing currying first means `dyn` reuses the call shape
 rather than inventing a second one.
 
+### Design note: `<decides>` / `<transacts>` (the next block)
+
+This is the largest remaining block and it fixes an ABI, so the order matters:
+
+1. **Failable signature ABI.** A function whose effects contain `decides` returns
+   a status **out-of-band**: emit it as `r_bool fn(args…, T *out)` — the boolean
+   is success and the value is written through `out`. Semideterministic bodies
+   (`if (x > 0) { x } else { fail }`) become `if (!cond) return 0; *out = x;`
+   which clang turns into the same register pair a C status-plus-value call uses.
+   Non-failable functions keep today's ABI, so nothing existing changes.
+2. **`f[x]` (adjacent failable call).** The checker must accept an *index on a
+   function type* as a call (today that reports "cannot index"). Lowering is
+   `T tmp; if (f(args, &tmp)) { tmp } else { <failure path> }`, where the failure
+   path is the enclosing choice's next alternative, a handler's failure edge, or
+   a `fail` exit.
+3. **`e1 | e2`.** When `e2` is pure, the choice is a branch and the value is a
+   phi — no trail. When either side can perform `<writes>`/`<alloc>`, wrap it in
+   `transacts`: checkpoint `trail_len`/`arena_used` before, and on failure restore
+   bytes backwards from the trail and reset the arena pointers. The undo trail is
+   a thread-local bump stack; locals that never escape are promoted to SSA block
+   arguments and need no trail entry at all (`mem2reg` already does the work).
+4. **`option { e }` / `one { e }` / `all { e }`.** Handlers sit on top of 1–3:
+   `option` returns a tagged `{ ok, value }`, `one` takes the first success and
+   cancels the rest, `all` collects successes into an array (and therefore
+   requires `<alloc>`, which is already effect-checked).
+5. **`when (cond)`** in a builder/handler block becomes the guard
+   `if (cond) { () } else { fail }` already used by builder desugaring.
+
+Verification target: `examples/` gains a failable-transfer program (the §11
+`transfer` shape) whose `option { transfer[inout a, inout b, 800] | transfer[inout a, inout b, 200] }`
+falls back and leaves `a.balance = 300`, `b.balance = 300`, printed and asserted
+by a driver test.
+
 ### Directives for the remaining work (in priority order)
 
 1. **FFI — done.** `extern "c"` declarations keep their declared C names (no
