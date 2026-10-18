@@ -605,6 +605,12 @@ fn builds_and_runs_option_handler() {
         .output()
         .expect("run the produced binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // The handler is a speculative region: a body that debits and then fails
+    // must leave the balance as it was (50, not 0).
+    assert!(
+        stdout.contains("balance after a failed transfer 50"),
+        "the failed body's write was not rolled back: {stdout}"
+    );
     // `when (cond)` guards the rest of its block: the print happens only for the
     // call where the condition holds.
     assert_eq!(

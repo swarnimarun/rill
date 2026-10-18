@@ -1625,6 +1625,12 @@ impl<'a> Generator<'a> {
                     let held = format!("_v{level}");
                     self.body
                         .push_str(&format!("  bool {ok} = true; {cty} {held} = {{0}};\n"));
+                    // The handler is a speculative region: when the body fails,
+                    // the writes it made are undone, so the handler concludes with
+                    // the store it started from (PLAN §4/§5.2).
+                    self.body.push_str(&format!(
+                        "  rill_txn_begin(); size_t _cp{level} = rill_txn_checkpoint();\n"
+                    ));
                     self.fail_targets
                         .push((format!("{ok} = false;"), format!("({cty}){{0}}")));
                     // The whole body is lowered under that continuation: a
@@ -1633,6 +1639,10 @@ impl<'a> Generator<'a> {
                     let value = self.block(&block);
                     self.fail_targets.pop();
                     self.body.push_str(&format!("  {held} = ({value});\n"));
+                    self.body.push_str(&format!(
+                        "  if (!{ok}) {{ rill_txn_rollback(_cp{level}); }}\n"
+                    ));
+                    self.body.push_str("  rill_txn_end();\n");
                     return format!("(({repr}){{ .some = {ok}, .value = {held} }})");
                 }
                 if matches!(kind, rill_ast::HandlerKind::All) {
