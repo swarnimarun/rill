@@ -222,6 +222,9 @@ pub struct Checked {
     nominals: Vec<NominalDef>,
     /// Resolved types after unification, by expression id.
     resolved: HashMap<ExprId, Ty>,
+    /// Effects performed by each expression: everything the expression and the
+    /// expressions it evaluates do. Read by hover and inlay hints.
+    effects_of: HashMap<ExprId, Vec<Effect>>,
     pub diagnostics: Diagnostics,
 }
 
@@ -238,6 +241,29 @@ impl Checked {
 
     pub fn expr_ty(&self, id: ExprId) -> Option<&Ty> {
         self.resolved.get(&id)
+    }
+
+    /// The effects evaluating `id` performs. Empty for expressions whose effects
+    /// were never recorded (a field selection, say), which is also the right
+    /// answer for one that does nothing.
+    pub fn expr_effects(&self, id: ExprId) -> &[Effect] {
+        self.effects_of
+            .get(&id)
+            .map(Vec::as_slice)
+            .unwrap_or_default()
+    }
+
+    /// The effect row as the language writes it: `io | decides`, with custom
+    /// effect names read back from the interner.
+    pub fn display_effects(&self, frontend: &rill_ast::Frontend, effects: &[Effect]) -> String {
+        effects
+            .iter()
+            .map(|effect| match effect {
+                Effect::Custom(sym) => frontend.interner.get(*sym).to_string(),
+                other => other.name(),
+            })
+            .collect::<Vec<_>>()
+            .join(" | ")
     }
 
     /// A readable rendering of a type, for tools - hover, symbols, the editor's
@@ -269,13 +295,18 @@ impl Checked {
                 None => format!("[{}]", self.display_ty(frontend, elem)),
             },
             Ty::Range(elem) => format!("Range {}", self.display_ty(frontend, elem)),
-            Ty::Fn { params, ret, .. } => {
+            Ty::Fn { params, ret, effects } => {
                 let parts: Vec<String> = params
                     .iter()
                     .map(|p| self.display_ty(frontend, p))
                     .collect();
+                let row = if effects.is_empty() {
+                    "computes".to_string()
+                } else {
+                    self.display_effects(frontend, effects)
+                };
                 format!(
-                    "({}) -> {}",
+                    "({}) -> {} <{row}>",
                     parts.join(", "),
                     self.display_ty(frontend, ret)
                 )
@@ -335,6 +366,17 @@ pub fn check(frontend: &rill_ast::Frontend, hir: &Hir) -> Checked {
     checker.finish()
 }
 
+/// One expression's effect collection while the expression is being checked.
+struct EffectFrame {
+    /// The expression's span, which is where a diagnostic points.
+    span: Span,
+    effects: Vec<Effect>,
+    /// Where each effect in `effects` was performed, so an undeclared effect
+    /// can be pointed at the call responsible for it. Merged and discharged
+    /// exactly like `effects`, which is what keeps the two in lockstep.
+    origins: Vec<(Span, Effect)>,
+}
+
 struct Checker<'a> {
     frontend: &'a rill_ast::Frontend,
     hir: &'a Hir,
@@ -353,10 +395,14 @@ struct Checker<'a> {
     local_types: Vec<Option<Ty>>,
     expr_types: HashMap<ExprId, Ty>,
     diagnostics: Diagnostics,
-    /// Effects performed by the function currently being checked.
-    body_effects: Vec<Effect>,
-    /// Effects per function body, filled in as bodies are checked.
+    /// Effects per expression, filled in as each expression finishes.
     effects_of: HashMap<ExprId, Vec<Effect>>,
+    /// Where the effects of each expression were performed, kept in step with
+    /// `effects_of` so an undeclared effect names the expression responsible.
+    origins_of: HashMap<ExprId, Vec<(Span, Effect)>>,
+    /// One frame per expression being checked; effects merge into the parent
+    /// frame when a frame pops, which makes `effects_of` the subtree's row.
+    effect_frames: Vec<EffectFrame>,
     /// Set while checking the body of a lenient handler (`option`/`one`/`all`),
     /// where `x := e` iterates over `e` instead of binding it whole.
     handler: Option<rill_ast::HandlerKind>,
@@ -395,8 +441,9 @@ impl<'a> Checker<'a> {
             local_types: vec![None; hir.locals().len()],
             expr_types: HashMap::new(),
             diagnostics: Diagnostics::new(),
-            body_effects: Vec::new(),
             effects_of: HashMap::new(),
+            origins_of: HashMap::new(),
+            effect_frames: Vec::new(),
             handler: None,
             loop_depth: 0,
             type_params: Vec::new(),
@@ -439,6 +486,7 @@ impl<'a> Checker<'a> {
             item_types: self.item_types,
             nominals: self.nominals,
             resolved,
+            effects_of: self.effects_of,
             diagnostics: self.diagnostics,
         }
     }
@@ -669,18 +717,29 @@ impl<'a> Checker<'a> {
                     self.unify(&x, &y, span, context);
                 }
                 // Effect rows must be *covered* by the expected row.
-                let missing: Vec<String> = be
+                let missing: Vec<Effect> = be
                     .iter()
-                    .filter(|e| !ae.contains(e))
-                    .map(|e| e.name())
+                    .copied()
+                    .filter(|effect| !ae.contains(effect))
                     .collect();
                 if !missing.is_empty() {
+                    let performed = missing
+                        .iter()
+                        .map(|effect| self.effect_name(*effect))
+                        .collect::<Vec<_>>()
+                        .join(" | ");
+                    let allowed = if ae.is_empty() {
+                        "computes".to_string()
+                    } else {
+                        ae.iter()
+                            .map(|effect| self.effect_name(*effect))
+                            .collect::<Vec<_>>()
+                            .join(" | ")
+                    };
                     self.err(
                         span,
                         format!(
-                            "effect mismatch: `{}` is not allowed here (missing {})",
-                            describe_effects(&missing),
-                            describe_effects(&missing)
+                            "effect mismatch: this performs <{performed}> but <{allowed}> is expected here ({context})"
                         ),
                     );
                 }
@@ -783,9 +842,18 @@ impl<'a> Checker<'a> {
                 )
             }
             Ty::Record(id) | Ty::Nominal(id) => self.nominal_name(id),
-            Ty::Fn { params, ret, .. } => {
+            Ty::Fn { params, ret, effects } => {
                 let parts: Vec<String> = params.iter().map(|p| self.display(p)).collect();
-                format!("({}) -> {}", parts.join(", "), self.display(&ret))
+                let row = if effects.is_empty() {
+                    "computes".to_string()
+                } else {
+                    effects
+                        .iter()
+                        .map(|effect| self.effect_name(*effect))
+                        .collect::<Vec<_>>()
+                        .join(" | ")
+                };
+                format!("({}) -> {} <{row}>", parts.join(", "), self.display(&ret))
             }
             Ty::Choice(inner) => self.display(&inner),
             Ty::Error => "<error>".into(),
@@ -1005,6 +1073,8 @@ impl<'a> Checker<'a> {
                     .collect(),
             ),
             TypeBody::Alias(ty) => NominalKind::Alias(self.ast_ty(ty)),
+            // `type M = @include("…")` is a module marker, not a type of its
+            // own: its declarations live beside it in the item table.
             TypeBody::Include { .. } => NominalKind::Opaque,
             TypeBody::Error(_) => NominalKind::Opaque,
         };
@@ -1232,21 +1302,26 @@ impl Checker<'_> {
     /// enclosing declaration's type parameters in scope).
     fn item_body(&mut self, item: &rill_hir::Item) {
         self.type_params = self.enclosing_type_params(item.id);
+        // A body may contain nested declarations, whose bodies are checked while
+        // this body's frames are still on the stack. The isolation frame below
+        // absorbs their effects and origins: a nested function's row is its own,
+        // not this item's.
+        self.effect_frames.push(EffectFrame {
+            span: Span::DUMMY,
+            effects: Vec::new(),
+            origins: Vec::new(),
+        });
         match &item.kind {
             ItemKind::Fn(def) => {
                 self.bind_params(def.params.iter().map(|p| (p.local, p.ty.as_ref())));
                 if let Some(ret) = &def.ret {
                     let expected = self.ast_ty(&ret.ty);
                     if let Some(body) = &def.body {
-                        self.body_effects.clear();
                         let found = self.expr(body);
-                        self.effects_of.insert(body.id, self.body_effects.clone());
                         self.unify(&expected, &found, body.span, "checking the function's body");
                     }
                 } else if let Some(body) = &def.body {
-                    self.body_effects.clear();
                     let found = self.expr(body);
-                    self.effects_of.insert(body.id, self.body_effects.clone());
                     self.unify(&Ty::Unit, &found, body.span, "checking the function's body");
                 }
             }
@@ -1257,16 +1332,23 @@ impl Checker<'_> {
                     .as_ref()
                     .map(|slot| self.ast_ty(&slot.ty))
                     .unwrap_or(Ty::Unit);
-                self.body_effects.clear();
                 // A projection that yields a place has that place as its value:
                 // `{ yield inout x.field }` must type as the field's type, not
                 // as the unit a `yield` statement alone would leave behind.
                 let found = match yielded_expr(&def.body) {
-                    Some(value) => self.expr(value),
+                    Some(value) => {
+                        let ty = self.expr(value);
+                        // The declaration's body id is the block around the
+                        // `yield`; its effects and origins are the yielded
+                        // place's.
+                        let effects = self.effects_of.get(&value.id).cloned().unwrap_or_default();
+                        let origins = self.origins_of.get(&value.id).cloned().unwrap_or_default();
+                        self.effects_of.insert(def.body.id, effects);
+                        self.origins_of.insert(def.body.id, origins);
+                        ty
+                    }
                     None => self.expr(&def.body),
                 };
-                self.effects_of
-                    .insert(def.body.id, self.body_effects.clone());
                 self.unify(
                     &expected,
                     &found,
@@ -1275,11 +1357,11 @@ impl Checker<'_> {
                 );
             }
             ItemKind::Stmt(stmt) => {
-                self.body_effects.clear();
                 self.stmt(stmt);
             }
             _ => {}
         }
+        self.effect_frames.pop();
     }
 
     fn bind_params<'p>(
@@ -1295,65 +1377,135 @@ impl Checker<'_> {
     }
 
     fn check_declared_effects(&mut self, item: &rill_hir::Item) {
-        let (declared, body) = match &item.kind {
+        let (declared, body, declared_at) = match &item.kind {
             ItemKind::Fn(def) => (
                 self.row_effects(&def.effects),
                 def.body.as_ref().map(|body| body.id),
+                Some(def.effects.span),
             ),
-            ItemKind::Project(def) => (self.row_effects(&def.effects), Some(def.body.id)),
+            ItemKind::Project(def) => (
+                self.row_effects(&def.effects),
+                Some(def.body.id),
+                Some(def.effects.span),
+            ),
             _ => return,
         };
         let Some(body_id) = body else { return };
         let Some(used) = self.effects_of.get(&body_id).cloned() else {
             return;
         };
-        let missing: Vec<String> = used
+        let missing: Vec<Effect> = used
             .iter()
+            .copied()
             .filter(|effect| !declared.contains(effect))
-            .map(|effect| effect.name())
             .collect();
-        if !missing.is_empty() {
-            let name = item
-                .name
-                .map(|n| self.text(n).to_string())
-                .unwrap_or_default();
-            let declared_text = if declared.is_empty() {
-                "computes".to_string()
-            } else {
-                declared
-                    .iter()
-                    .map(|e| e.name())
-                    .collect::<Vec<_>>()
-                    .join(" | ")
-            };
-            self.diagnostics.push(
-                Diagnostic::error(
-                    item.span,
-                    format!(
-                        "`{name}` performs {} but its signature declares <{declared_text}>",
-                        describe_effects(&missing)
-                    ),
-                )
-                .note(
-                    "add the effect to the declaration, or call a function that does not need it"
-                        .to_string(),
+        if missing.is_empty() {
+            return;
+        }
+        let name = item
+            .name
+            .map(|n| self.text(n).to_string())
+            .unwrap_or_default();
+        let declared_text = if declared.is_empty() {
+            "computes".to_string()
+        } else {
+            declared
+                .iter()
+                .map(|effect| self.effect_name(*effect))
+                .collect::<Vec<_>>()
+                .join(" | ")
+        };
+        let origins = self.origins_of.get(&body_id).cloned().unwrap_or_default();
+        for effect in missing {
+            let effect_name = self.effect_name(effect);
+            // The widest origin is the call or construct that performed the
+            // effect; a narrower span inside it is a callee path or operand.
+            let performed_at = origins
+                .iter()
+                .filter(|(_, seen)| *seen == effect)
+                .map(|(span, _)| *span)
+                .max_by_key(|span| span.end.to_usize().saturating_sub(span.start.to_usize()));
+            let at = performed_at.unwrap_or(item.span);
+            let mut diagnostic = Diagnostic::error(
+                at,
+                format!(
+                    "`{name}` performs {effect_name} but its signature declares <{declared_text}>"
                 ),
+            )
+            .note(
+                "add the effect to the declaration, or call a function that does not need it"
+                    .to_string(),
             );
+            // Point at the declaration too, but only when the primary label is a
+            // different place - a fallback to the item span needs no duplicate.
+            if let Some(declared_at) = declared_at.filter(|span| !span.is_dummy() && *span != at)
+            {
+                diagnostic =
+                    diagnostic.secondary_label(declared_at, format!("declared <{declared_text}>"));
+            }
+            self.diagnostics.push(diagnostic);
         }
     }
 
     fn add_effects(&mut self, effects: &[Effect]) {
+        let span = self
+            .effect_frames
+            .last()
+            .map(|frame| frame.span)
+            .unwrap_or(Span::DUMMY);
+        self.add_effects_at(span, effects);
+    }
+
+    /// Adds effects attributed to `span` rather than to the expression on the
+    /// stack - for statement-level sources such as `let?`.
+    fn add_effects_at(&mut self, span: Span, effects: &[Effect]) {
+        let Some(frame) = self.effect_frames.last_mut() else {
+            return;
+        };
         for effect in effects {
-            if !self.body_effects.contains(effect) {
-                self.body_effects.push(*effect);
+            if !frame.effects.contains(effect) {
+                frame.effects.push(*effect);
             }
+            if !span.is_dummy() && !frame.origins.iter().any(|(at, seen)| *at == span && seen == effect)
+            {
+                frame.origins.push((span, *effect));
+            }
+        }
+    }
+
+    /// An effect's source name. `Custom` only keeps the symbol, so the interner
+    /// is what turns it back into the name the user wrote.
+    fn effect_name(&self, effect: Effect) -> String {
+        match effect {
+            Effect::Custom(sym) => self.text(sym).to_string(),
+            other => other.name(),
         }
     }
 
     // -- expressions -------------------------------------------------------
 
     fn expr(&mut self, expr: &Expr) -> Ty {
+        self.effect_frames.push(EffectFrame {
+            span: expr.span,
+            effects: Vec::new(),
+            origins: Vec::new(),
+        });
         let ty = self.expr_kind(expr);
+        let frame = self.effect_frames.pop().expect("balanced effect frame");
+        if let Some(parent) = self.effect_frames.last_mut() {
+            for effect in &frame.effects {
+                if !parent.effects.contains(effect) {
+                    parent.effects.push(*effect);
+                }
+            }
+            for origin in &frame.origins {
+                if !parent.origins.contains(origin) {
+                    parent.origins.push(*origin);
+                }
+            }
+        }
+        self.effects_of.insert(expr.id, frame.effects);
+        self.origins_of.insert(expr.id, frame.origins);
         self.expr_types.insert(expr.id, ty.clone());
         ty
     }
@@ -1361,9 +1513,12 @@ impl Checker<'_> {
     fn expr_kind(&mut self, expr: &Expr) -> Ty {
         // `fail` is the failure primitive. It produces no value at all, so its type
         // is the bottom type; giving it the surrounding expectation would say that
-        // failing is a way to produce an `i32`.
+        // failing is a way to produce an `i32`. It transfers control, so it
+        // performs `decides` wherever it stands - which a `|` fallback that cannot
+        // fail then discharges like any other deciding arm.
         if let ExprKind::Path { segments, .. } = &expr.kind {
             if segments.len() == 1 && self.frontend.interner.get(segments[0]) == "fail" {
+                self.add_effects(&[Effect::Decides]);
                 return Ty::Never;
             }
         }
@@ -1495,12 +1650,6 @@ impl Checker<'_> {
                 // Builtins carry real signatures, including their effects.
                 Res::Builtin => {
                     let name = segments.last().map(|s| self.text(*s).to_string());
-                    if name.as_deref() == Some("fail") {
-                        // `fail` has no value of its own: it is a hole that
-                        // takes the type its context asks for, and it decides.
-                        self.add_effects(&[Effect::Decides]);
-                        return self.fresh();
-                    }
                     match name.as_deref().and_then(|n| self.builtin_sig(n)) {
                         Some((params, ret, effects)) => {
                             self.add_effects(&effects);
@@ -1871,25 +2020,23 @@ impl Checker<'_> {
         }
         if op == BinaryOp::Choice {
             // Handled before the shared preamble so the operands are typed
-            // exactly once and the discharge can be *attributed* to this arm's
-            // own contribution: `add_effects` dedups, so looking at the row
-            // afterwards cannot tell whether the left arm decided.
-            let before = self.body_effects.len();
+            // exactly once and the discharge is attributed to the left arm's own
+            // row: the whole expression inherits the operand rows, so looking at
+            // the merged row afterwards cannot tell which arm decided.
             let left = self.expr(lhs);
-            let left_added: Vec<Effect> = self.body_effects[before..].to_vec();
-            let after_left = self.body_effects.len();
+            let left_effects = self.effects_of.get(&lhs.id).cloned().unwrap_or_default();
             let right = self.expr(rhs);
-            let right_added: Vec<Effect> = self.body_effects[after_left..].to_vec();
-            if left_added.contains(&Effect::Decides) && !right_added.contains(&Effect::Decides) {
+            let right_effects = self.effects_of.get(&rhs.id).cloned().unwrap_or_default();
+            if left_effects.contains(&Effect::Decides) && !right_effects.contains(&Effect::Decides) {
                 // A fallback that cannot fail catches every failure inside the
-                // arm it governs, so all of the arm's own `decides` entries go.
-                let mut index = before;
-                while index < self.body_effects.len() {
-                    if self.body_effects[index] == Effect::Decides {
-                        self.body_effects.remove(index);
-                    } else {
-                        index += 1;
-                    }
+                // arm it governs, so the left arm's `decides` is discharged. The
+                // parent only receives this frame when it pops, so removing the
+                // effect here removes it from every enclosing row too - and the
+                // origins go with it, or a later deciding expression would be
+                // blamed on an arm that was already handled.
+                if let Some(frame) = self.effect_frames.last_mut() {
+                    frame.effects.retain(|effect| *effect != Effect::Decides);
+                    frame.origins.retain(|(_, effect)| *effect != Effect::Decides);
                 }
             }
             self.unify(&left, &right, span, "checking `|` alternatives");
@@ -2411,10 +2558,13 @@ impl Checker<'_> {
                 let bound = self.element_ty(&value_ty);
                 self.pattern(pattern, &bound);
             }
-            Stmt::TryBind { local, value, .. } => {
+            Stmt::TryBind {
+                local, value, span, ..
+            } => {
                 // `let? x = e` binds `e`'s value or makes the enclosing function
-                // fail, so the binding decides.
-                self.add_effects(&[Effect::Decides]);
+                // fail, so the binding decides. A statement is not an
+                // expression, so the origin is the statement's own span.
+                self.add_effects_at(*span, &[Effect::Decides]);
                 let value_ty = self.expr(value);
                 let bound = self.element_ty(&value_ty);
                 self.local_types[local.0 as usize] = Some(bound);
@@ -2754,8 +2904,4 @@ fn substitute_vars(ty: &Ty, mapping: &HashMap<u32, Ty>) -> Ty {
         Ty::Choice(inner) => Ty::Choice(Box::new(substitute_vars(inner, mapping))),
         other => other.clone(),
     }
-}
-
-fn describe_effects(effects: &[String]) -> String {
-    effects.join(", ")
 }
