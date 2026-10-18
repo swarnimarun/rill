@@ -187,8 +187,24 @@ static void rill_println(r_text s) { printf("%s\n", s); }
    helpers and `extern` declarations do not. */
 typedef struct { void *code; void *env; } rill_fn;
 
-/* A `dyn Trait` value: the concrete value and its vtable. */
+/* A `dyn Trait` value: the concrete value and its vtable. Boxing copies the value
+   into storage from the ambient arena when one is bound, and the heap otherwise -
+   the same rule closures use for their environments. */
 typedef struct { void *data; void *vtable; } rill_dyn;
+/* The arena helpers are emitted later in this prelude. */
+struct rill_arena;
+static struct rill_arena *rill_arena_current(void);
+static r_u8 *rill_arena_alloc(struct rill_arena *a, r_u64 bytes);
+static rill_dyn rill_dyn_new(const void *src, size_t size, const void *vtable) {
+  void *copy = rill_arena_current()
+                   ? rill_arena_alloc(rill_arena_current(), (r_u64)size)
+                   : malloc(size);
+  memcpy(copy, src, size);
+  rill_dyn value;
+  value.data = copy;
+  value.vtable = (void *)vtable;
+  return value;
+}
 
 typedef struct rill_arena {
   unsigned char *data;
@@ -352,6 +368,8 @@ struct Generator<'a> {
     /// `(trait, implementing C type) -> vtable static`, so a `dyn` value can point
     /// at the right one.
     dyn_vtables: std::collections::HashMap<(String, String), String>,
+    /// `trait -> its vtable layout type`, which is what a `dyn` call casts to.
+    trait_vtables: std::collections::HashMap<String, String>,
     /// Projections of the form `project p (x: inout T) = { yield inout x.f }`:
     /// the name maps to the field they project, so uses inline as an alias.
     projections: std::collections::HashMap<String, String>,
@@ -380,6 +398,7 @@ impl<'a> Generator<'a> {
             inout_locals: std::collections::HashMap::new(),
             trait_impls: std::collections::HashMap::new(),
             dyn_vtables: std::collections::HashMap::new(),
+            trait_vtables: std::collections::HashMap::new(),
             projections: std::collections::HashMap::new(),
         }
     }
@@ -542,6 +561,56 @@ impl<'a> Generator<'a> {
         // One vtable per (trait, implementing type): the slots are collected
         // while the members are emitted, then written as a single static, which is
         // what a `dyn` value points at.
+        // The trait's own layout, which is what a `dyn` value's vtable is cast to:
+        // every impl of the trait has the same method set, and the layout must come
+        // from the trait rather than from one impl's member order.
+        let trait_vt = format!("vt_trait_{trait_name}");
+        if self.emitted_types.insert(trait_vt.clone()) {
+            if let Some(members) = self.hir.items().iter().find_map(|item| match &item.kind {
+                ItemKind::Trait(def)
+                    if item
+                        .name
+                        .map(|n| self.text(n) == trait_name)
+                        .unwrap_or(false) =>
+                {
+                    Some(def.members.clone())
+                }
+                _ => None,
+            }) {
+                let mut body = String::from("typedef struct {\n");
+                for member in &members {
+                    let Some(inner) = self.hir.try_item(*member) else {
+                        continue;
+                    };
+                    let Some(method) = inner.name.map(|n| self.text(n).to_string()) else {
+                        continue;
+                    };
+                    let (params, ret) = match self.checked.item_ty(*member) {
+                        Some(ItemTy::Fn { params, ret, .. }) => (params.clone(), ret.clone()),
+                        _ => (Vec::new(), Ty::Unit),
+                    };
+                    let ret_c = self.c_type(&ret);
+                    let rest: Vec<String> = params
+                        .iter()
+                        .skip(1)
+                        .map(|param| {
+                            let param = param.clone();
+                            self.c_decl(&param, "").trim().to_string()
+                        })
+                        .collect();
+                    let tail = if rest.is_empty() {
+                        String::new()
+                    } else {
+                        format!(", {}", rest.join(", "))
+                    };
+                    body.push_str(&format!("  {ret_c} (*{method})(void *{tail});\n"));
+                }
+                body.push_str("} ");
+                self.types.push_str(&format!("{body}{trait_vt};\n"));
+            }
+            self.trait_vtables
+                .insert(trait_name.clone(), trait_vt.clone());
+        }
         let mut slots: Vec<(String, String)> = Vec::new();
         let mut receiver = Ty::Error;
         for member in &def.members {
@@ -559,6 +628,10 @@ impl<'a> Generator<'a> {
                 .map(|n| self.text(n).to_string())
                 .unwrap_or_default();
             let c_name = format!("rill_impl{}_{}", item.id.0, method);
+            // The vtable slot takes the receiver as a `void *`, but the impl takes
+            // it by value, so the slot holds a thunk that dereferences it and passes
+            // the (null) environment.
+            let thunk = format!("rill_thunk{}_{}", item.id.0, method);
             // The implementing type is the member's first parameter type.
             let first_param = match self.checked.item_ty(*member) {
                 Some(ItemTy::Fn { params, .. }) => params.first().cloned().unwrap_or(Ty::Error),
@@ -578,7 +651,27 @@ impl<'a> Generator<'a> {
             if matches!(receiver, Ty::Error) {
                 receiver = first_param.clone();
             }
-            slots.push((method.clone(), c_name.clone()));
+            {
+                let (params, ret) = match self.checked.item_ty(*member) {
+                    Some(ItemTy::Fn { params, ret, .. }) => (params.clone(), ret.clone()),
+                    _ => (Vec::new(), Ty::Unit),
+                };
+                let ret_c = self.c_type(&ret);
+                let receiver_c = self.c_type(params.first().unwrap_or(&Ty::Error));
+                let mut decls = vec!["void *self".to_string()];
+                let mut args = vec![format!("*({receiver_c} *)self")];
+                for (index, param) in params.iter().skip(1).enumerate() {
+                    let param = param.clone();
+                    decls.push(self.c_decl(&param, &format!("a{index}")));
+                    args.push(format!("a{index}"));
+                }
+                self.defs.push_str(&format!(
+                    "static {ret_c} {thunk}({}) {{ return {c_name}(NULL, {}); }}\n",
+                    decls.join(", "),
+                    args.join(", ")
+                ));
+            }
+            slots.push((method.clone(), thunk.clone()));
             self.emit_fn_named(*member, member_def, c_name, false);
         }
         if slots.is_empty() || matches!(receiver, Ty::Error) {
@@ -597,44 +690,19 @@ impl<'a> Generator<'a> {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect::<String>();
-        let mut body = String::from("typedef struct {\n");
-        for (method, _) in &slots {
-            let member = def
-                .members
-                .iter()
-                .find(|id| {
-                    self.hir
-                        .try_item(**id)
-                        .and_then(|item| item.name.map(|n| self.text(n) == method))
-                        .unwrap_or(false)
-                })
-                .copied();
-            let (params, ret) = match member.and_then(|member| self.checked.item_ty(member)) {
-                Some(ItemTy::Fn { params, ret, .. }) => (params.clone(), ret.clone()),
-                _ => (Vec::new(), Ty::Unit),
-            };
-            let ret_c = self.c_type(&ret);
-            let rest: Vec<String> = params
-                .iter()
-                .skip(1)
-                .map(|param| {
-                    let param = param.clone();
-                    self.c_decl(&param, "")
-                })
-                .collect();
-            let rest = rest
-                .into_iter()
-                .map(|decl| decl.trim().to_string())
-                .collect::<Vec<_>>();
-            let tail = if rest.is_empty() {
-                String::new()
-            } else {
-                format!(", {}", rest.join(", "))
-            };
-            body.push_str(&format!("  {ret_c} (*{method})(void *{tail});\n"));
+        // The instance, with designated initializers so the layout is the
+        // *trait's* order regardless of how the impl lists its members - a cast to
+        // the trait's type must read the right slot.
+        let mut body = format!("static const {trait_vt} {vt_name} = {{\n");
+        for (method, c_name) in &slots {
+            body.push_str(&format!("  .{method} = {c_name},\n"));
         }
-        body.push_str("} ");
-        self.types.push_str(&format!("{body}{vt_name};\n"));
+        body.push_str("};\n");
+        // It refers to the impl functions, so the declaration goes with the
+        // prototypes and the definition with the functions.
+        self.protos
+            .push_str(&format!("static const {trait_vt} {vt_name};\n"));
+        self.defs.push_str(&body);
         self.dyn_vtables
             .insert((trait_name.clone(), receiver_c), vt_name);
     }
@@ -646,11 +714,8 @@ impl<'a> Generator<'a> {
             Stmt::Var {
                 local, ty, init, ..
             } => {
-                // A `dyn`-typed binding type-checks (the checker accepts a concrete
-                // value for it) but the `{ data, vtable }` pair is not built yet, so
-                // it is reported rather than failing in C.
-                if matches!(ty, Some(rill_ast::Type::Dyn { .. })) {
-                    self.unsupported(stmt.span(), "binding a `dyn` value", "M4 (the vtable pair)");
+                if self.dyn_binding(*local, ty.as_ref(), init, stmt.span()) {
+                    return;
                 }
                 let init_code = self.expr(init);
                 let checked_ty = self.local_ty(*local);
@@ -1214,6 +1279,18 @@ impl<'a> Generator<'a> {
             .iter()
             .find(|(param, _)| *param == first_arg)
             .or_else(|| candidates.first());
+        // A `dyn` receiver dispatches through its vtable: the layout comes from
+        // the trait, the concrete implementation from the vtable's slot.
+        if matches!(first_arg, Ty::Nominal(id) if id == self.checked.dyn_id) {
+            let vt = self.trait_vtables.get(&trait_name).cloned()?;
+            let receiver = rest.first().cloned().unwrap_or_else(|| "0".into());
+            let mut args = vec![format!("({receiver}).data")];
+            args.extend(rest.iter().skip(1).cloned());
+            return Some(format!(
+                "((const {vt} *)({receiver}).vtable)->{method}({})",
+                args.join(", ")
+            ));
+        }
         let (_, c_name) = chosen?;
         let c_name = c_name.clone();
         // The generated implementation takes the environment like any other
@@ -1223,6 +1300,47 @@ impl<'a> Generator<'a> {
         } else {
             format!("{c_name}(NULL, {})", rest.join(", "))
         })
+    }
+
+    /// A `dyn` binding boxes its value: the pair is `{ data, vtable }` with the
+    /// vtable chosen by the concrete type's `impl`. Returns whether it emitted the
+    /// binding, so both `var` lowering paths share one implementation.
+    fn dyn_binding(
+        &mut self,
+        local: rill_hir::LocalId,
+        ty: Option<&rill_ast::Type>,
+        init: &Expr,
+        span: rill_span::Span,
+    ) -> bool {
+        let Some(rill_ast::Type::Dyn { inner, .. }) = ty else {
+            return false;
+        };
+        let trait_name = match &**inner {
+            rill_ast::Type::Path { segments, .. } => {
+                segments.last().map(|id| self.text(id.sym).to_string())
+            }
+            _ => None,
+        };
+        let init_code = self.expr(init);
+        let receiver_c = self.c_type(&self.expr_ty(init));
+        let vtable = trait_name
+            .as_ref()
+            .and_then(|name| self.dyn_vtables.get(&(name.clone(), receiver_c)).cloned());
+        match vtable {
+            Some(vtable) => {
+                let name = format!("v_{}", self.text(self.hir.local(local).name));
+                self.body.push_str(&format!(
+                    "  rill_dyn {name} = rill_dyn_new((const void *)&({init_code}), sizeof({init_code}), (const void *)&{vtable});\n"
+                ));
+                self.bind(local, name);
+            }
+            None => self.unsupported(
+                span,
+                "binding a `dyn` value with no `impl` for its type",
+                "M4 (the vtable pair)",
+            ),
+        }
+        true
     }
 
     fn call_through(&mut self, callee: &Expr, arguments: &[String]) -> String {
@@ -2409,11 +2527,8 @@ impl<'a> Generator<'a> {
             Stmt::Var {
                 local, ty, init, ..
             } => {
-                // A `dyn`-typed binding type-checks (the checker accepts a concrete
-                // value for it) but the `{ data, vtable }` pair is not built yet, so
-                // it is reported rather than failing in C.
-                if matches!(ty, Some(rill_ast::Type::Dyn { .. })) {
-                    self.unsupported(stmt.span(), "binding a `dyn` value", "M4 (the vtable pair)");
+                if self.dyn_binding(*local, ty.as_ref(), init, stmt.span()) {
+                    return;
                 }
                 let init_code = self.expr(init);
                 let checked_ty = self.local_ty(*local);

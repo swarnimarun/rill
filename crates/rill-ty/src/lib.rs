@@ -259,6 +259,9 @@ struct Checker<'a> {
     nominals: Vec<NominalDef>,
     nominal_by_item: HashMap<ItemId, NominalId>,
     option_elems: HashMap<ExprId, Ty>,
+    /// The trait a `dyn`-typed local carries, so a method call on it can be typed
+    /// from the trait's own declaration.
+    dyn_locals: HashMap<LocalId, Symbol>,
     /// `(trait, implementing type)` for every `impl` in the module, which is what
     /// makes coercing a concrete value into a `dyn` value checkable.
     dyn_impls: Vec<(Symbol, Symbol)>,
@@ -295,6 +298,7 @@ impl<'a> Checker<'a> {
     fn new(frontend: &'a rill_ast::Frontend, hir: &'a Hir) -> Self {
         Checker {
             option_elems: HashMap::new(),
+            dyn_locals: HashMap::new(),
             dyn_impls: Vec::new(),
             frontend,
             hir,
@@ -1659,6 +1663,57 @@ impl Checker<'_> {
     }
 
     fn binary(&mut self, span: Span, op: BinaryOp, lhs: &Expr, rhs: &Expr) -> Ty {
+        // A method on a `dyn` value is typed from the *trait's* declaration: the
+        // concrete type is only known at run time, so the trait's signature is what
+        // the call site sees.
+        if op == BinaryOp::Flow {
+            let base_ty = self.expr(lhs);
+            if let Ty::Nominal(id) = self.resolve_deep(&base_ty) {
+                if id == self.dyn_id {
+                    if let Some(trait_sym) = lhs.path_res().and_then(|(_, res)| match res {
+                        Res::Local(local) => self.dyn_locals.get(&local).copied(),
+                        _ => None,
+                    }) {
+                        let method = rhs
+                            .path_res()
+                            .map(|(segments, _)| self.text(segments[0]).to_string());
+                        if let (Some(trait_name), Some(method)) =
+                            (self.text(trait_sym).to_string().into(), method)
+                        {
+                            for item in self.hir.items() {
+                                let ItemKind::Trait(def) = &item.kind else {
+                                    continue;
+                                };
+                                if item
+                                    .name
+                                    .map(|n| self.text(n) == trait_name)
+                                    .unwrap_or(false)
+                                {
+                                    for member in &def.members {
+                                        let Some(inner) = self.hir.try_item(*member) else {
+                                            continue;
+                                        };
+                                        if inner
+                                            .name
+                                            .map(|n| self.text(n) == method)
+                                            .unwrap_or(false)
+                                        {
+                                            if let Some(ItemTy::Fn { ret, .. }) =
+                                                self.item_types.get(member.0 as usize).cloned()
+                                            {
+                                                let ret = ret.clone();
+                                                self.expr_types.insert(rhs.id, ret.clone());
+                                                return ret;
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
         if op == BinaryOp::Choice {
             // Handled before the shared preamble so the operands are typed
             // exactly once and the discharge can be *attributed* to this arm's
@@ -2134,6 +2189,13 @@ impl Checker<'_> {
                 local, ty, init, ..
             } => {
                 let init_ty = self.expr(init);
+                if let Some(rill_ast::Type::Dyn { inner, .. }) = ty {
+                    if let rill_ast::Type::Path { segments, .. } = &**inner {
+                        if let Some(trait_name) = segments.last() {
+                            self.dyn_locals.insert(*local, trait_name.sym);
+                        }
+                    }
+                }
                 let expected = match ty {
                     Some(ast) => self.ast_ty(ast),
                     None => init_ty.clone(),
