@@ -1449,6 +1449,32 @@ scattered:
 The check is the existing corpus: all twenty-one examples must still build and
 print what they print now, since every signature in the emitted C changes.
 
+### `dyn Trait`: the representation decision (reconnaissance done)
+
+`dyn Trait` currently types as `Ty::Text` (`rill-ty:931`) - a placeholder from the
+foundation stage, not a partial implementation, so there is nothing to extend.
+
+The value is the pair `{ data, vtable }`, the same shape as a function value's
+`{ code, env }`, and two decisions keep it small:
+
+1. **Represent the type as an alias nominal**, not a new `Ty` variant: a record of
+   `{ data: raw pointer; vtable: raw pointer }`. Alias nominals already exist in
+   the checker and in `c_type`, so no `Ty` arm, `unify` case, `mangle`, `display`
+   or `c_type` needs adding - the pair the closure work just built is the template.
+2. **Coerce in `unify`**, not at a new syntax form: when one side is a `dyn` alias
+   and the other is a nominal whose `impl` of that trait is registered, the
+   coercion is valid. The codegen then needs the *concrete* type to pick a vtable,
+   which is why the registration in `trait_impls` (`(trait, method) -> [(type,
+   c_name)]`) is what makes this checkable.
+
+The remaining pieces, in order: emit a static vtable struct per `(trait, impl)`
+next to the existing `rill_implN_method` functions; construct the pair at the
+coercion site, storing the concrete value where storage comes from (ambient arena,
+else heap - as closures now do) and pointing `vtable` at the static; and dispatch
+`s.method (args)` by loading `vtable`'s slot and calling it with `data` as the
+receiver. The corpus test is the gate, since trait dispatch currently works by
+static resolution and every one of those call sites changes.
+
 ### Directives for the remaining work (in priority order)
 
 1. **FFI — done.** `extern "c"` declarations keep their declared C names (no
