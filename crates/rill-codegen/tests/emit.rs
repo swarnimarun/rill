@@ -66,9 +66,9 @@ fn loops_and_arrays_lower() {
 fn unsupported_constructs_are_reported_not_miscompiled() {
     let (frontend, sm) = parse_and_lower_text(
         "u.rill",
-        // `all { … }` still needs its array-valued result; the handler must be
-        // *reported*, never silently mis-compiled.
-        "let main () -> i32 <decides> = {\n    all { 1 };\n    0\n};\n",
+        // `race { … }` needs cancellation; it must be *reported*, never silently
+        // mis-compiled.
+        "let main () -> i32 <suspends> = {\n    race { 1 };\n    0\n};\n",
     );
     let hir = lower(&frontend);
     let checked = check(&frontend, &hir);
