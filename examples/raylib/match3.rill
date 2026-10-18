@@ -1,0 +1,575 @@
+use std::io;
+
+# A match-3 game written against raylib, with every asset generated in code: the
+# six gem sprites, the board's tiles and the background are images drawn with
+# raylib's image API at startup and uploaded as textures. Nothing is read from
+# disk - not even a palette.
+#
+#   rill exec examples/raylib/match3.rill
+#
+# Click a gem, then a neighbour, to swap them: a swap that lines up three or more
+# clears them, the gems above fall into the gaps and the top of every column is
+# dealt fresh gems. What falls in and lines up again is a chain, worth more. `R`
+# deals a new board, `ESC` or the close button quits.
+#
+# With `RILL_RAYLIB_DEMO=1` the window is hidden, the seed is fixed and the game
+# plays itself for a set number of moves, printing a summary - what the test
+# suite runs.
+
+extern "c" let getenv (name: Text) -> Text <io>;
+
+@link("raylib");
+
+type RL = @include("raylib.h");
+use RL::*;
+
+# ---------------------------------------------------------------------------
+# The board
+# ---------------------------------------------------------------------------
+
+let cols () -> i32 <computes> = 8;
+let rows () -> i32 <computes> = 8;
+let kinds () -> i32 <computes> = 6;
+let tile () -> i32 <computes> = 64;
+let board_x () -> i32 <computes> = 64;
+let board_y () -> i32 <computes> = 136;
+
+# How much of a cell a gem falls per frame. Frame-stepped rather than
+# time-stepped, so the demo mode plays out the same way every run.
+let fall_step () -> f32 <computes> = 0.25f32;
+
+# One gem kind per cell; `drop` is how far above its cell a gem still is, in
+# cells, which is what the fall after a clear is drawn from.
+var board: [i32; 64] = comptime { zeroed () };
+var drop: [f32; 64] = comptime { zeroed () };
+var marks: [Bool; 64] = comptime { zeroed () };
+
+let at (col: i32, row: i32) -> u64 <computes> = (row * cols () + col) as u64;
+
+let inside (col: i32, row: i32) -> Bool <computes> =
+    col >= 0 and col < cols () and row >= 0 and row < rows ();
+
+let kind_at (col: i32, row: i32) -> i32 <computes> = board[at (col, row)];
+
+let swap_cells (a: u64, b: u64) -> () <computes> = {
+    var held = board[a];
+    set board[a] = board[b];
+    set board[b] = held;
+    ()
+};
+
+# Exactly one step apart, compared in board coordinates so a flat index cannot
+# wrap from the end of a row to the start of the next.
+let neighbours (a: i32, b: i32) -> Bool <computes> = {
+    var dc = a % cols () - b % cols ();
+    var dr = a / cols () - b / cols ();
+    if (dc < 0) { set dc = 0 - dc };
+    if (dr < 0) { set dr = 0 - dr };
+    dc + dr == 1
+};
+
+# Every run of three or more, along a row or a column, marks its cells. Asked
+# for after every swap, which is also how a move is judged.
+let find_marks () -> Bool <computes> = {
+    var i = 0;
+    while (i < 64) {
+        set marks[i as u64] = false;
+        set i = i + 1
+    };
+
+    var found = false;
+    var row = 0;
+    while (row < rows ()) {
+        var col = 0;
+        while (col < cols ()) {
+            var kind = kind_at (col, row);
+            # a run to the right: mark it to its end
+            if (col + 2 < cols () and kind_at (col + 1, row) == kind and kind_at (col + 2, row) == kind) {
+                var right = col;
+                while (right < cols () and kind_at (right, row) == kind) {
+                    set marks[at (right, row)] = true;
+                    set right = right + 1
+                };
+                set found = true
+            };
+            # a run downwards
+            if (row + 2 < rows () and kind_at (col, row + 1) == kind and kind_at (col, row + 2) == kind) {
+                var down = row;
+                while (down < rows () and kind_at (col, down) == kind) {
+                    set marks[at (col, down)] = true;
+                    set down = down + 1
+                };
+                set found = true
+            };
+            set col = col + 1
+        };
+        set row = row + 1
+    };
+    found
+};
+
+# Whether a swap worth making exists at all: every cell is tried against its
+# right and lower neighbours, and the swap is undone when it makes nothing.
+let has_move () -> Bool <computes> = {
+    var found = false;
+    var row = 0;
+    while (row < rows ()) {
+        var col = 0;
+        while (col < cols ()) {
+            if (col + 1 < cols ()) {
+                var a = at (col, row);
+                var b = at (col + 1, row);
+                swap_cells (a, b);
+                if (find_marks ()) { set found = true };
+                swap_cells (a, b)
+            };
+            if (row + 1 < rows ()) {
+                var c = at (col, row);
+                var d = at (col, row + 1);
+                swap_cells (c, d);
+                if (find_marks ()) { set found = true };
+                swap_cells (c, d)
+            };
+            set col = col + 1
+        };
+        set row = row + 1
+    };
+    found
+};
+
+# Everything the marks cover goes: the gems above fall into the gaps (their
+# `drop` carries them) and the top of every column is dealt fresh kinds.
+let clear_and_refill () -> i32 <io> = {
+    var cleared = 0;
+    var i = 0;
+    while (i < 64) {
+        if (marks[i as u64]) { set cleared = cleared + 1 };
+        set i = i + 1
+    };
+
+    var col = 0;
+    while (col < cols ()) {
+        var write = rows () - 1;
+        var row = rows () - 1;
+        while (row >= 0) {
+            var from = at (col, row);
+            if (marks[from] == false) {
+                var to = at (col, write);
+                set board[to] = board[from];
+                set drop[to] = (write - row) as f32;
+                set write = write - 1
+            };
+            set row = row - 1
+        };
+        # the cells left at the top of the column are new, falling in from above
+        var fresh = 1;
+        while (write >= 0) {
+            var to = at (col, write);
+            set board[to] = GetRandomValue (0, kinds () - 1);
+            set drop[to] = fresh as f32;
+            set fresh = fresh + 1;
+            set write = write - 1
+        };
+        set col = col + 1
+    };
+    cleared
+};
+
+# Advances every falling gem by one step; `true` once they have all landed.
+let settle () -> Bool <computes> = {
+    var landed = true;
+    var i = 0;
+    while (i < 64) {
+        if (drop[i as u64] > 0.0f32) {
+            var left = drop[i as u64] - fall_step ();
+            if (left < 0.0f32) { set left = 0.0f32 };
+            set drop[i as u64] = left;
+            if (left > 0.0f32) { set landed = false }
+        };
+        set i = i + 1
+    };
+    landed
+};
+
+# A deal with no match already standing and at least one move to make; redone
+# until it has both.
+let new_board () -> () <io> = {
+    var ready = false;
+    while (ready == false) {
+        var i = 0;
+        while (i < 64) {
+            set board[i as u64] = GetRandomValue (0, kinds () - 1);
+            set drop[i as u64] = 0.0f32;
+            set i = i + 1
+        };
+        if (find_marks () == false and has_move ()) { set ready = true }
+    };
+    ()
+};
+
+# The demo's player: the first swap that makes a match, wherever it is. `false`
+# when the board has no move at all, which the caller answers with a new deal.
+let autoplay () -> Bool <computes> = {
+    var moved = false;
+    var row = 0;
+    while (row < rows () and moved == false) {
+        var col = 0;
+        while (col < cols () and moved == false) {
+            if (col + 1 < cols ()) {
+                var a = at (col, row);
+                var b = at (col + 1, row);
+                swap_cells (a, b);
+                if (find_marks ()) { set moved = true } else { swap_cells (a, b) }
+            };
+            if (moved == false and row + 1 < rows ()) {
+                var c = at (col, row);
+                var d = at (col, row + 1);
+                swap_cells (c, d);
+                if (find_marks ()) { set moved = true } else { swap_cells (c, d) }
+            };
+            set col = col + 1
+        };
+        set row = row + 1
+    };
+    moved
+};
+
+# The cell the mouse clicked this frame, or -1 for a click anywhere else.
+let clicked_cell () -> i32 <io> = {
+    if (IsMouseButtonPressed (0) == false) { -1 } else {
+        var mouse = GetMousePosition ();
+        var x = mouse.x - (board_x () as f32);
+        var y = mouse.y - (board_y () as f32);
+        # the board's own edges are checked before dividing, so a click to the
+        # left of it cannot truncate into column zero
+        if (x < 0.0f32 or y < 0.0f32) { -1 } else {
+            var col = (x / (tile () as f32)) as i32;
+            var row = (y / (tile () as f32)) as i32;
+            if (inside (col, row)) { at (col, row) as i32 } else { -1 }
+        }
+    }
+};
+
+# ---------------------------------------------------------------------------
+# The assets, generated here
+# ---------------------------------------------------------------------------
+
+# The gem palette, as code like everything else: a lit, a body and a shaded
+# colour per kind.
+let gem_body (kind: i32) -> Color <computes> = match kind {
+    0 -> Color (226u8, 84u8, 90u8, 255u8),
+    1 -> Color (86u8, 168u8, 232u8, 255u8),
+    2 -> Color (110u8, 206u8, 132u8, 255u8),
+    3 -> Color (236u8, 200u8, 92u8, 255u8),
+    4 -> Color (196u8, 132u8, 226u8, 255u8),
+    _ -> Color (236u8, 142u8, 84u8, 255u8)
+};
+
+let gem_light (kind: i32) -> Color <computes> = match kind {
+    0 -> Color (255u8, 206u8, 200u8, 255u8),
+    1 -> Color (206u8, 232u8, 255u8, 255u8),
+    2 -> Color (212u8, 250u8, 216u8, 255u8),
+    3 -> Color (255u8, 248u8, 204u8, 255u8),
+    4 -> Color (242u8, 216u8, 255u8, 255u8),
+    _ -> Color (255u8, 226u8, 198u8, 255u8)
+};
+
+let gem_dark (kind: i32) -> Color <computes> = match kind {
+    0 -> Color (122u8, 30u8, 44u8, 255u8),
+    1 -> Color (24u8, 66u8, 120u8, 255u8),
+    2 -> Color (34u8, 92u8, 56u8, 255u8),
+    3 -> Color (128u8, 96u8, 20u8, 255u8),
+    4 -> Color (86u8, 40u8, 116u8, 255u8),
+    _ -> Color (128u8, 58u8, 20u8, 255u8)
+};
+
+# One sprite per gem kind: a shape drawn into a 64x64 image with raylib's image
+# API, uploaded as a texture and the image let go. The kinds differ in shape -
+# circle, square, triangle, diamond, cross, ring - so they read apart at a
+# glance.
+let gem_texture (kind: i32) -> Texture2D <io> = {
+    var body = gem_body (kind);
+    var light = gem_light (kind);
+    var dark = gem_dark (kind);
+    var image = GenImageColor (tile (), tile (), Color (0u8, 0u8, 0u8, 0u8));
+    if (kind == 0) {
+        ImageDrawCircleGradient (inout image, Vector2 (32.0f32, 34.0f32), 27.0f32, body, dark);
+        ImageDrawCircle (inout image, 24, 22, 7, light)
+    } else if (kind == 1) {
+        ImageDrawRectangleGradientEx (
+            inout image,
+            Rectangle (9.0f32, 9.0f32, 46.0f32, 46.0f32),
+            light,
+            body,
+            dark,
+            body
+        )
+    } else if (kind == 2) {
+        ImageDrawTriangleGradient (
+            inout image,
+            Vector2 (32.0f32, 6.0f32),
+            Vector2 (58.0f32, 56.0f32),
+            Vector2 (6.0f32, 56.0f32),
+            light,
+            body,
+            dark
+        )
+    } else if (kind == 3) {
+        ImageDrawRectanglePro (
+            inout image,
+            Rectangle (18.0f32, 18.0f32, 28.0f32, 28.0f32),
+            Vector2 (14.0f32, 14.0f32),
+            45.0f32,
+            body
+        );
+        ImageDrawCircle (inout image, 32, 26, 4, light)
+    } else if (kind == 4) {
+        ImageDrawRectangle (inout image, 24, 8, 16, 48, body);
+        ImageDrawRectangle (inout image, 8, 24, 48, 16, body);
+        ImageDrawRectangle (inout image, 27, 11, 10, 10, light)
+    } else {
+        ImageDrawCircleGradient (inout image, Vector2 (32.0f32, 32.0f32), 28.0f32, light, body);
+        ImageDrawCircle (inout image, 32, 32, 14, dark);
+        ImageDrawCircle (inout image, 32, 32, 9, body)
+    };
+    var texture = LoadTextureFromImage (image);
+    UnloadImage (image);
+    texture
+};
+
+# The window's background: a gradient, generated.
+let background_texture () -> Texture2D <io> = {
+    var image = GenImageGradientLinear (
+        640,
+        704,
+        90,
+        Color (30u8, 34u8, 50u8, 255u8),
+        Color (12u8, 14u8, 22u8, 255u8)
+    );
+    var texture = LoadTextureFromImage (image);
+    UnloadImage (image);
+    texture
+};
+
+# The board's tiles: a checkerboard with one square per cell, so that the cells
+# are visible without drawing anything per cell.
+let tiles_texture () -> Texture2D <io> = {
+    var image = GenImageChecked (
+        512,
+        512,
+        cols (),
+        rows (),
+        Color (43u8, 49u8, 64u8, 255u8),
+        Color (36u8, 41u8, 55u8, 255u8)
+    );
+    var texture = LoadTextureFromImage (image);
+    UnloadImage (image);
+    texture
+};
+
+# ---------------------------------------------------------------------------
+# The game
+# ---------------------------------------------------------------------------
+
+let main () -> i32 <io> = {
+    var absent: Text = comptime { zeroed () };
+    var demo = (getenv ("RILL_RAYLIB_DEMO") != absent);
+    if (demo) { SetConfigFlags (FLAG_WINDOW_HIDDEN as u32) };
+
+    # A fixed seed in demo mode: the test pins the score the way the other demos
+    # pin their summary. It is set after `InitWindow`, since the platform's own
+    # start-up draws from the same generator.
+    InitWindow (640, 704, "rill match 3");
+    SetTargetFPS (60);
+    SetRandomSeed (7u32);
+
+    # Every pixel drawn comes from these: six gem sprites, the board's tiles and
+    # the background, each generated here and uploaded once.
+    var gems = [
+        gem_texture (0),
+        gem_texture (1),
+        gem_texture (2),
+        gem_texture (3),
+        gem_texture (4),
+        gem_texture (5)
+    ];
+    var tiles = tiles_texture ();
+    var background = background_texture ();
+
+    new_board ();
+
+    var score = 0;
+    var moves = 0;
+    var chain = 0;
+    var selected = -1;
+    var busy = false;
+    var quit = false;
+    var frame = 0;
+
+    while (quit == false) {
+        if (WindowShouldClose ()) { set quit = true };
+        if (IsKeyPressed (KEY_ESCAPE)) { set quit = true };
+        if (IsKeyPressed (KEY_R)) {
+            new_board ();
+            set score = 0;
+            set moves = 0;
+            set selected = -1;
+            set busy = false
+        };
+
+        # --- play -------------------------------------------------------
+        if (busy == false) {
+            if (demo) {
+                if (autoplay ()) {
+                    set score = score + clear_and_refill ();
+                    set moves = moves + 1;
+                    set chain = 1;
+                    set busy = true
+                } else {
+                    new_board ()
+                }
+            } else {
+                var clicked = clicked_cell ();
+                if (clicked >= 0) {
+                    if (selected < 0) {
+                        set selected = clicked
+                    } else if (neighbours (selected, clicked)) {
+                        var a = selected as u64;
+                        var b = clicked as u64;
+                        swap_cells (a, b);
+                        if (find_marks ()) {
+                            set score = score + clear_and_refill ();
+                            set moves = moves + 1;
+                            set chain = 1;
+                            set busy = true
+                        } else {
+                            swap_cells (a, b)
+                        };
+                        set selected = -1
+                    } else {
+                        set selected = clicked
+                    }
+                }
+            }
+        };
+
+        # --- fall -------------------------------------------------------
+        if (busy) {
+            if (settle ()) {
+                if (find_marks ()) {
+                    # a chain: what falls into place and lines up again is worth
+                    # one more than the clear before it
+                    set chain = chain + 1;
+                    set score = score + clear_and_refill () * chain
+                } else {
+                    set busy = false;
+                    set chain = 0
+                }
+            }
+        };
+
+        # --- draw -------------------------------------------------------
+        BeginDrawing ();
+        DrawTexturePro (
+            background,
+            Rectangle (0.0f32, 0.0f32, 640.0f32, 704.0f32),
+            Rectangle (0.0f32, 0.0f32, 640.0f32, 704.0f32),
+            Vector2 (0.0f32, 0.0f32),
+            0.0f32,
+            Color (255u8, 255u8, 255u8, 255u8)
+        );
+        DrawTexturePro (
+            tiles,
+            Rectangle (0.0f32, 0.0f32, 512.0f32, 512.0f32),
+            Rectangle (board_x () as f32, board_y () as f32, 512.0f32, 512.0f32),
+            Vector2 (0.0f32, 0.0f32),
+            0.0f32,
+            Color (255u8, 255u8, 255u8, 255u8)
+        );
+
+        # the gems are clipped to the board: a gem still falling comes from above
+        # it, and would otherwise be drawn over the score
+        BeginScissorMode (board_x (), board_y (), 512, 512);
+        var i = 0;
+        while (i < 64) {
+            var col = i % cols ();
+            var row = i / cols ();
+            var x = (board_x () + col * tile ()) as f32;
+            var y = ((board_y () + row * tile ()) as f32) - drop[i as u64] * (tile () as f32);
+            DrawTexturePro (
+                gems[board[i as u64] as u64],
+                Rectangle (0.0f32, 0.0f32, 64.0f32, 64.0f32),
+                Rectangle (x, y, 64.0f32, 64.0f32),
+                Vector2 (0.0f32, 0.0f32),
+                0.0f32,
+                Color (255u8, 255u8, 255u8, 255u8)
+            );
+            set i = i + 1
+        };
+        EndScissorMode ();
+
+        if (selected >= 0) {
+            DrawRectangleRoundedLinesEx (
+                Rectangle (
+                    (board_x () + (selected % cols ()) * tile ()) as f32,
+                    (board_y () + (selected / cols ()) * tile ()) as f32,
+                    tile () as f32,
+                    tile () as f32
+                ),
+                0.08f32,
+                4,
+                3.0f32,
+                Color (245u8, 245u8, 250u8, 235u8)
+            )
+        };
+
+        DrawTextEx (
+            GetFontDefault (),
+            "match 3",
+            Vector2 (board_x () as f32, 44.0f32),
+            42.0f32,
+            2.0f32,
+            Color (238u8, 240u8, 246u8, 255u8)
+        );
+        var hud = "score " ++ (score as String) ++ "   moves " ++ (moves as String);
+        DrawTextEx (
+            GetFontDefault (),
+            hud,
+            Vector2 (board_x () as f32, 96.0f32),
+            24.0f32,
+            1.0f32,
+            Color (186u8, 198u8, 220u8, 255u8)
+        );
+        var hint = "click a gem, then a neighbour - R deals again, ESC quits";
+        if (demo) { set hint = "demo: the game is playing itself" };
+        DrawTextEx (
+            GetFontDefault (),
+            hint,
+            Vector2 (board_x () as f32, 664.0f32),
+            20.0f32,
+            1.0f32,
+            Color (150u8, 162u8, 184u8, 255u8)
+        );
+        EndDrawing ();
+
+        set frame = frame + 1;
+        if (demo and moves >= 24) { set quit = true }
+    };
+
+    # the textures belong to the window's context, so they go before it closes
+    var i = 0;
+    while (i < kinds ()) {
+        UnloadTexture (gems[i as u64]);
+        set i = i + 1
+    };
+    UnloadTexture (tiles);
+    UnloadTexture (background);
+    CloseWindow ();
+
+    if (demo) {
+        io::println (
+            "demo frames " ++ (frame as String) ++ " score " ++ (score as String) ++ " moves " ++ (moves as String)
+        )
+    };
+    score
+};

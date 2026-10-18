@@ -1,17 +1,23 @@
 # raylib demos in Rill
 
-Two programs against a system-installed raylib, with no build file: the script
+Three programs against a system-installed raylib, with no build file: the script
 names the header and the library, and the compiler reads the header and links
 the library for it.
 
 ```console
 $ rill exec examples/raylib/window.rill        # a bouncing rectangle
 $ rill exec examples/raylib/sidescroller.rill  # the game
+$ rill exec examples/raylib/match3.rill        # match 3, assets generated in code
 ```
 
-The game: arrow keys walk, `SPACE`/`UP` jumps, `ESC` or the window's close
-button quits. Coins print a line when collected, and the score is the process
-exit code.
+The side-scroller: arrow keys walk, `SPACE`/`UP` jumps, `ESC` or the window's
+close button quits. Coins print a line when collected, and the score is the
+process exit code.
+
+Match 3: click a gem and then a neighbour to swap them; a swap that lines up
+three or more clears them, the gems above fall into the gaps and the top of each
+column is dealt fresh ones, and a clear that cascades is worth more. `R` deals a
+new board.
 
 ## What raylib has to be installed
 
@@ -51,6 +57,32 @@ Types that cannot be expressed (variadic functions, function-pointer parameters,
 arrays) are left out, and a name that never appears in the header reports as an
 unknown name at its use.
 
+## The match-3 assets are code
+
+`match3.rill` reads nothing from disk, not even a palette. At startup it draws
+its own sprites into images with raylib's image API and uploads them as textures:
+
+* six 64×64 gems, one shape per kind - a gradient circle, a gradient square, a
+  gradient triangle, a rotated square, a cross, a ring - each in its own three
+  colours, which are a `match` over the kind in the source;
+* the board's tiles from `GenImageChecked`, one checker square per cell;
+* the window background from `GenImageGradientLinear`.
+
+`LoadTextureFromImage` uploads each one and the image is released; the textures
+go before the window closes. Nothing is loaded from a file path, so the demo runs
+from any directory and has no assets to ship. It is silent: raylib's public API
+has no wave synthesis, so there is no generated sound.
+
+```rill
+let gem_texture (kind: i32) -> Texture2D <io> = {
+    var image = GenImageColor (tile (), tile (), Color (0u8, 0u8, 0u8, 0u8));
+    ImageDrawCircleGradient (inout image, Vector2 (32.0f32, 34.0f32), 27.0f32, body, dark);
+    var texture = LoadTextureFromImage (image);
+    UnloadImage (image);
+    texture
+};
+```
+
 ## Running without a window on screen
 
 raylib has no headless driver of its own, so the demos ask for a hidden window
@@ -66,8 +98,18 @@ demo frames 240 score 3
 ```
 
 The demo mode walks the player to the right at a fixed step, so the score is the
-same on every run and the test can pin it. The environment is read through
-libc's `getenv`, declared in the script itself - raylib has no hint API:
+same on every run and the test can pin it. `match3.rill` plays itself the same
+way, from a fixed seed set *after* the window exists - the platform's start-up
+draws from the same generator, which is what made the first version's summaries
+differ from run to run:
+
+```console
+$ RILL_RAYLIB_DEMO=1 rill exec examples/raylib/match3.rill
+demo frames 213 score 152 moves 24
+```
+
+Both games report their score as the process exit code. The environment is read
+through libc's `getenv`, declared in the script itself - raylib has no hint API:
 
 ```rill
 extern "c" let getenv (name: Text) -> Text <io>;

@@ -114,11 +114,13 @@ bouncing rectangle, a plasma drawn point by point, and a small side-scrolling
 game - and `crates/rill-driver/tests/c_import.rs` builds and runs them headless
 against a system SDL3.
 
-`examples/raylib/` holds two more, against raylib: the bouncing rectangle and the
-same small game. raylib marks its prototypes `RLAPI` instead of `extern` and
-passes records such as `Rectangle` and `Color` by value, both of which the import
-reads; the demos hide their window and run a fixed burst of frames when
-`RILL_RAYLIB_DEMO` is set, which is how the tests drive them.
+`examples/raylib/` holds three more, against raylib: the bouncing rectangle, the
+same small game, and a match-3 game whose gem sprites, board tiles and background
+are generated in code at startup rather than loaded from disk. raylib marks its
+prototypes `RLAPI` instead of `extern` and passes records such as `Rectangle` and
+`Color` by value, both of which the import reads; the demos hide their window and
+run a fixed burst of frames when `RILL_RAYLIB_DEMO` is set, which is how the
+tests drive them.
 
 `rillc` exits non-zero when any phase reports an error, printing the rendered
 diagnostic with its source line and caret:

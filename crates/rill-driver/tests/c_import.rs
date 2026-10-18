@@ -151,14 +151,24 @@ fn a_missing_library_is_reported_not_guessed() {
 
 /// SDL3 has to be installed for the demos to build; the header decides.
 fn sdl3_available() -> bool {
-    let dirs = ["/opt/homebrew/include", "/usr/local/include", "/usr/include"];
-    dirs.iter().any(|dir| Path::new(dir).join("SDL3/SDL.h").is_file())
+    let dirs = [
+        "/opt/homebrew/include",
+        "/usr/local/include",
+        "/usr/include",
+    ];
+    dirs.iter()
+        .any(|dir| Path::new(dir).join("SDL3/SDL.h").is_file())
 }
 
 /// raylib has to be installed for its demos to build, the same way.
 fn raylib_available() -> bool {
-    let dirs = ["/opt/homebrew/include", "/usr/local/include", "/usr/include"];
-    dirs.iter().any(|dir| Path::new(dir).join("raylib.h").is_file())
+    let dirs = [
+        "/opt/homebrew/include",
+        "/usr/local/include",
+        "/usr/include",
+    ];
+    dirs.iter()
+        .any(|dir| Path::new(dir).join("raylib.h").is_file())
 }
 
 /// Runs one of the demos under `examples/` in its headless mode: the demo
@@ -167,10 +177,8 @@ fn run_demo(path: &str) -> (std::process::Output, String) {
     let demo = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
         .join("../../examples")
         .join(path);
-    let cache = std::env::temp_dir().join(format!(
-        "rill-demo-cache-{}",
-        path.replace(['/', '.'], "-")
-    ));
+    let cache =
+        std::env::temp_dir().join(format!("rill-demo-cache-{}", path.replace(['/', '.'], "-")));
     let _ = std::fs::remove_dir_all(&cache);
     let output = Command::new(env!("CARGO_BIN_EXE_rillc"))
         .arg("exec")
@@ -280,5 +288,30 @@ fn raylib_sidescroller_plays_itself_headless() {
         output.status.code(),
         Some(3),
         "the game's score is its exit code"
+    );
+}
+
+#[test]
+fn raylib_match3_plays_itself_headless() {
+    if !raylib_available() {
+        eprintln!("skipping: raylib's header is not installed");
+        return;
+    }
+    let (output, stdout) = run_demo("raylib/match3.rill");
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("error:"),
+        "the game must build and run without diagnostics: {stderr}"
+    );
+    // The demo mode is frame-stepped from a fixed seed, so the moves it makes
+    // and the score they earn are the same every run.
+    assert!(
+        stdout.contains("demo frames 213 score 152 moves 24"),
+        "the summary line pins the game: {stdout}"
+    );
+    assert_eq!(
+        output.status.code(),
+        Some(152),
+        "the score is the exit code"
     );
 }
