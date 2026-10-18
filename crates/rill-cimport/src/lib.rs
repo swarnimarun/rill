@@ -19,11 +19,12 @@
 //! - a `{` at depth zero opens a record/enum body only when the declaration
 //!   starts with `typedef`/`struct`/`union`/`enum`; any other body (a `static
 //!   inline` definition, a macro body) is skipped wholesale
-//! - only `extern ...` declarations are functions, which keeps helper macro
-//!   invocations (`SDL_COMPILE_TIME_ASSERT(...)`) out of the results
-//! - the all-caps `SDL_*` macros SDL decorates prototypes with (`SDLCALL`,
-//!   `SDL_ALLOC_SIZE2(1, 2)`, `SDL_OUT_BYTECAP(len)`...) are dropped, so both
-//!   the return type and the parameters are what is left around them
+//! - only declarations that carry a prototype marker are functions - `extern`,
+//!   `SDL_DECLSPEC` or raylib's `RLAPI` - which keeps helper macro invocations
+//!   (`SDL_COMPILE_TIME_ASSERT(...)`) out of the results
+//! - the all-caps macros a header decorates prototypes with (`SDLCALL`,
+//!   `RLAPI`, `SDL_ALLOC_SIZE2(1, 2)`, `SDL_OUT_BYTECAP(len)`...) are dropped, so
+//!   both the return type and the parameters are what is left around them
 //! - the first declaration of a name wins
 
 use std::collections::{HashMap, HashSet};
@@ -330,9 +331,9 @@ impl Scanner {
         }
         if unit.starts_with("typedef") {
             self.typedef_decl(&unit, header);
-        } else if unit.starts_with("extern")
-            || unit.starts_with("SDL_DECLSPEC")
-            || unit.starts_with("SDLMAIN_DECLSPEC")
+        } else if PROTOTYPE_DECORATIONS
+            .iter()
+            .any(|word| starts_with_word(&unit, word))
         {
             self.function_decl(&unit, header);
         }
@@ -621,7 +622,19 @@ impl Scanner {
 // type spelling -> CType
 // ---------------------------------------------------------------------------
 
-/// macro-ish words that may decorate a type or a declaration
+/// How a header marks a prototype, which is what the scanner keys on: SDL writes
+/// `extern SDL_DECLSPEC …` and raylib writes `RLAPI …`. A declaration carrying
+/// none of these is not imported - a variable declaration has the same shape as
+/// one, so the marker is what tells them apart.
+const PROTOTYPE_DECORATIONS: &[&str] = &[
+    "extern",
+    "SDL_DECLSPEC",
+    "SDLMAIN_DECLSPEC",
+    "RLAPI",
+];
+
+/// Macro-ish words that may decorate a declaration or a type; they are dropped
+/// before the text is split into a return type, a name and parameters.
 const FUNCTION_NOISE: &[&str] = &[
     "extern",
     "static",
@@ -629,6 +642,7 @@ const FUNCTION_NOISE: &[&str] = &[
     "SDL_DECLSPEC",
     "SDLMAIN_DECLSPEC",
     "SDLCALL",
+    "RLAPI",
     "__cdecl",
     "SDL_PRINTF_FORMAT_STRING",
     "SDL_PRINTF_VARARG_FUNC",
@@ -1051,6 +1065,14 @@ fn starts_record(text: &str) -> bool {
         text.split_whitespace().next(),
         Some("struct" | "union" | "enum")
     )
+}
+
+/// Whether `text` starts with `word` as a whole word (`RLAPI`, not `RLAPIX`).
+fn starts_with_word(text: &str, word: &str) -> bool {
+    match text.strip_prefix(word) {
+        Some(rest) => !rest.starts_with(|c: char| c.is_ascii_alphanumeric() || c == '_'),
+        None => false,
+    }
 }
 
 /// Drop SDL's attribute macros, with their argument list when they have one -

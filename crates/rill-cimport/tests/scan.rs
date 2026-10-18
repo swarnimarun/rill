@@ -349,3 +349,141 @@ fn sdl3_real_install() {
         module.headers.len(),
     );
 }
+
+/// raylib's house style: the C++ guard is a real `extern "C" {`, prototypes are
+/// marked `RLAPI` instead of `extern`, and records are passed by value.
+const RAYLIB_STYLE_H: &str = r#"
+#ifndef RAYLIB_STYLE_H_
+#define RAYLIB_STYLE_H_
+
+#if defined(__cplusplus)
+extern "C" {            // Prevents name mangling of functions
+#endif
+
+#define PI 3.14159265358979323846f
+
+typedef struct RaylibColor
+{
+    unsigned char r, g, b, a;
+} RaylibColor;
+
+typedef enum RaylibKey
+{
+    RAYLIB_KEY_ESCAPE = 256,
+    RAYLIB_KEY_RIGHT = 262
+} RaylibKey;
+
+RLAPI void RaylibInitWindow(int width, int height, const char *title);
+RLAPI bool RaylibWindowShouldClose(void);
+RLAPI void RaylibClearBackground(RaylibColor color);
+RLAPI void RaylibTraceLog(int level, const char *text, ...);
+RLAPI RaylibColor RaylibFade(RaylibColor color, float alpha);
+
+#if defined(__cplusplus)
+}
+#endif
+
+#endif
+"#;
+
+#[test]
+fn raylib_style_prototypes_are_functions() {
+    // The `RLAPI` marker is what tells a prototype from a variable declaration,
+    // and it is dropped from the text like SDL's decorations, so the return type
+    // and the parameters are what is left.
+    let dir = scratch("raylib-style");
+    std::fs::write(dir.join("raylib_style.h"), RAYLIB_STYLE_H).expect("write the fixture");
+    let module = scan_header(&dir.join("raylib_style.h"), &[]).expect("scan the fixture");
+
+    let init = function(&module, "RaylibInitWindow");
+    assert_eq!(init.skipped, None);
+    assert_eq!(init.ret, CType::Void);
+    let params: Vec<CType> = init.params.iter().map(|param| param.ty.clone()).collect();
+    assert_eq!(
+        params,
+        vec![
+            CType::Int { bits: 32, signed: true },
+            CType::Int { bits: 32, signed: true },
+            CType::Text,
+        ]
+    );
+
+    assert_eq!(function(&module, "RaylibWindowShouldClose").ret, CType::Bool);
+    assert_eq!(
+        function(&module, "RaylibClearBackground").params[0].ty,
+        CType::Named("RaylibColor".to_string())
+    );
+    assert_eq!(
+        function(&module, "RaylibFade").ret,
+        CType::Named("RaylibColor".to_string())
+    );
+    assert_eq!(
+        function(&module, "RaylibTraceLog").skipped.as_deref(),
+        Some("variadic")
+    );
+
+    let record = &type_decl(&module, "RaylibColor").kind;
+    let CTypeKind::Record(fields) = record else {
+        panic!("RaylibColor is {record:?}");
+    };
+    let names: Vec<&str> = fields.iter().map(|field| field.name.as_str()).collect();
+    assert_eq!(names, ["r", "g", "b", "a"], "dense declarators share a type");
+    assert_eq!(fields[0].ty, CType::Int { bits: 8, signed: false });
+
+    assert_eq!(constant(&module, "RAYLIB_KEY_ESCAPE").value, "256");
+    assert_eq!(constant(&module, "PI").ty, CType::Float { bits: 32 });
+    // The marker is decoration, not a declaration of its own.
+    assert!(module.constants.iter().all(|constant| constant.name != "RLAPI"));
+}
+
+/// The other real install: raylib marks its prototypes `RLAPI` and hands records
+/// over by value. Skipped when the header is absent.
+#[test]
+fn raylib_real_install() {
+    let root = Path::new("/opt/homebrew/include/raylib.h");
+    if !root.exists() {
+        println!("skipping raylib scan test: {} is not installed", root.display());
+        return;
+    }
+    let module =
+        scan_header(root, &[PathBuf::from("/opt/homebrew/include")]).expect("scan raylib");
+
+    let init = function(&module, "InitWindow");
+    assert_eq!(init.ret, CType::Void);
+    let params: Vec<CType> = init.params.iter().map(|param| param.ty.clone()).collect();
+    assert_eq!(
+        params,
+        vec![
+            CType::Int { bits: 32, signed: true },
+            CType::Int { bits: 32, signed: true },
+            CType::Text,
+        ]
+    );
+
+    assert_eq!(function(&module, "WindowShouldClose").ret, CType::Bool);
+    assert_eq!(
+        function(&module, "ClearBackground").params[0].ty,
+        CType::Named("Color".to_string())
+    );
+
+    let color = &type_decl(&module, "Color").kind;
+    let CTypeKind::Record(fields) = color else {
+        panic!("Color is {color:?}");
+    };
+    assert_eq!(fields.len(), 4);
+    assert!(matches!(type_decl(&module, "Rectangle").kind, CTypeKind::Record(_)));
+
+    let skipped = module
+        .functions
+        .iter()
+        .filter(|function| function.skipped.is_some())
+        .count();
+    println!(
+        "raylib scan: {} functions ({} skipped), {} types, {} constants, {} headers",
+        module.functions.len(),
+        skipped,
+        module.types.len(),
+        module.constants.len(),
+        module.headers.len(),
+    );
+}
