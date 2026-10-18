@@ -962,7 +962,8 @@ impl<'a> Generator<'a> {
             Ty::Int { bits, signed } => format!("{}{bits}", if *signed { 'i' } else { 'u' }),
             Ty::Float { bits } => format!("f{bits}"),
             Ty::Bool => "Bool".into(),
-            Ty::Unit => "()".into(),
+                        Ty::Unit => "()".into(),
+            Ty::Never => "()".into(),
             Ty::Text => "String".into(),
             Ty::RawPtr { mutable, pointee } => format!(
                 "&raw{} {}",
@@ -1031,7 +1032,16 @@ impl<'a> Generator<'a> {
             }
             Ty::Float { bits } => format!("r_f{bits}"),
             Ty::Bool => "r_bool".into(),
-            Ty::Unit => "r_unit".into(),
+                        Ty::Unit => "r_unit".into(),
+            // A `never`-typed expression is a failure site: whatever lands in this
+            // slot is the failure fallback, and that value's C type is the enclosing
+            // `decides` function's return. Naming the slot after `()` would give it a
+            // type the fallback does not have.
+            Ty::Never => self
+                .failable
+                .as_ref()
+                .map(|(_, cty)| cty.clone())
+                .unwrap_or_else(|| "int".into()),
             Ty::Text => "r_text".into(),
             Ty::RawPtr { pointee, .. } => format!("{} *", self.c_type(pointee)),
             // `dyn` is an opaque nominal with a fixed C shape.
@@ -1153,7 +1163,8 @@ impl<'a> Generator<'a> {
             Ty::Int { bits, signed } => format!("{}{}", if *signed { 'i' } else { 'u' }, bits),
             Ty::Float { bits } => format!("f{bits}"),
             Ty::Bool => "b".into(),
-            Ty::Unit => "u".into(),
+                        Ty::Unit => "u".into(),
+            Ty::Never => "u".into(),
             Ty::Text => "s".into(),
             Ty::Tuple(elems) => {
                 let parts: Vec<String> = elems.iter().map(|e| self.mangle(e)).collect();
@@ -3570,7 +3581,7 @@ impl<'a> Generator<'a> {
                         }
                         _ => "1".to_string(),
                     },
-                    Ty::Error => "0".to_string(),
+                                        Ty::Never => "0".to_string(),
                     _ => {
                         self.unsupported(arm.span, "this match pattern", "M3");
                         "0".to_string()

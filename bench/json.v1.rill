@@ -38,7 +38,7 @@ let run (s: Text, n: usize, reps: i64) -> i64 <computes> = {
     acc
 };
 
-let main () -> i32 <io> = {
+let main () -> i32 <io | fs> = {
     var s = io::read_file "/tmp/bench.json";
     var n = size s;
     var total = run s n 200i64;

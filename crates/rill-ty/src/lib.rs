@@ -114,6 +114,10 @@ pub enum Ty {
     /// The type of a value produced by a lenient (`|`) expression; unifying two
     /// choices requires their types to agree.
     Choice(Box<Ty>),
+    /// The bottom type: an expression that never produces a value (`fail`, and
+    /// whatever else transfers control without yielding). It unifies with every
+    /// type, which is what lets a failing tail stand where a value is expected.
+    Never,
     Error,
 }
 
@@ -237,6 +241,7 @@ impl Checked {
             Ty::Var(_) => "_".into(),
             Ty::Error => "<error>".into(),
             Ty::Unit => "()".into(),
+            Ty::Never => "never".into(),
             Ty::Bool => "Bool".into(),
             Ty::Text => "Text".into(),
             Ty::Int { bits, signed } => format!("{}{bits}", if *signed { 'i' } else { 'u' }),
@@ -546,6 +551,8 @@ impl<'a> Checker<'a> {
         let found = self.resolve_deep(found);
         match (&expected, &found) {
             (Ty::Error, _) | (_, Ty::Error) => true,
+            // The bottom type is a member of every type.
+            (Ty::Never, _) | (_, Ty::Never) => true,
             // `dyn Trait` accepts a concrete value whose type has an `impl` of
             // that trait: the coercion builds the `{ data, vtable }` pair, so the
             // checker only has to accept it (and the codegen finds the vtable in
@@ -751,6 +758,7 @@ impl<'a> Checker<'a> {
             Ty::Float { bits } => format!("f{bits}"),
             Ty::Bool => "Bool".into(),
             Ty::Unit => "()".into(),
+            Ty::Never => "never".into(),
             Ty::Text => "String".into(),
             Ty::Tuple(elems) => {
                 let parts: Vec<String> = elems.iter().map(|e| self.display(e)).collect();
@@ -1311,6 +1319,14 @@ impl Checker<'_> {
     }
 
     fn expr_kind(&mut self, expr: &Expr) -> Ty {
+        // `fail` is the failure primitive. It produces no value at all, so its type
+        // is the bottom type; giving it the surrounding expectation would say that
+        // failing is a way to produce an `i32`.
+        if let ExprKind::Path { segments, .. } = &expr.kind {
+            if segments.len() == 1 && self.frontend.interner.get(segments[0]) == "fail" {
+                return Ty::Never;
+            }
+        }
         match &expr.kind {
             ExprKind::Error => Ty::Error,
             ExprKind::Literal { kind, text } => match kind {

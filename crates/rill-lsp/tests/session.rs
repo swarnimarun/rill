@@ -280,6 +280,14 @@ fn inlay_hints_sit_after_an_identifier() {
                 "a hint sits after {previous:?} at {line}:{col} in `{text}`"
             );
         }
+        // A written type means no hint: a parameter is declared with its type, so the
+        // only hints left in this file are the two `var` declarations.
+        if let Some(text) = lines.get(line) {
+            assert!(
+                text.contains("var "),
+                "a hint was emitted where the type is already written: `{text}`"
+            );
+        }
         checked += 1;
         search_from = at + 12;
     }
@@ -294,4 +302,34 @@ fn leading_number(text: &str) -> usize {
         .collect::<String>()
         .parse()
         .unwrap_or(0)
+}
+
+#[test]
+fn hovering_fail_reports_the_bottom_type() {
+    // `fail` never produces a value, so it must not be presented with whatever the
+    // surrounding expression wanted - that would read as "failing yields an i32".
+    let source = "let f (x: i32) -> i32 <decides> = { if (x > 0) { x } else { fail } };\n";
+    let at = source.find("fail").expect("fail in the source");
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", "file:///c.rill"), ("TEXT", &json_string(source))],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":0,"character":COL}}}"#,
+            &[("URI", "file:///c.rill"), ("COL", &(at + 1).to_string())],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let answer = output
+        .iter()
+        .find(|body| body.contains(r#""id":9"#))
+        .unwrap_or_else(|| panic!("no hover answer: {output:?}"));
+    assert!(
+        answer.contains("never"),
+        "hovering `fail` should report the bottom type: {answer}"
+    );
 }

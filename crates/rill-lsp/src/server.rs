@@ -420,8 +420,9 @@ impl Server {
                 if start.line != end.line {
                     continue;
                 }
-                let line = start.line as i64;
-                let character = start.col as i64;
+                // `line_col` is 1-based; semantic tokens count from zero.
+                let line = start.line as i64 - 1;
+                let character = start.col as i64 - 1;
                 let length = (end.col as i64 - character).max(0);
                 if length == 0 {
                     continue;
@@ -461,8 +462,15 @@ impl Server {
     fn inlay_hints(&mut self, id: Option<Json>, uri: &str, from_line: u32, to_line: u32) {
         let mut hints = Vec::new();
         if let Some(document) = self.documents.get(uri) {
+            // A hint says what the source does not. A parameter is declared with its
+            // type (`x: i32`), and so is any binding that writes one (`var x: i32 =
+            // ...`), so those are left out; the type is already on the screen.
+            let annotated = annotated_locals(&document.hir);
             for local in document.hir.locals() {
                 if local.owner.is_none() || local.span.is_dummy() {
+                    continue;
+                }
+                if local.kind == rill_hir::LocalKind::Param || annotated.contains(&local.id) {
                     continue;
                 }
                 // The hint goes right after the binding's name. `LocalInfo::span` is
@@ -504,7 +512,9 @@ impl Server {
                         local.span.end.to_usize()
                     );
                 }
-                if (at.line as u32) < from_line || (at.line as u32) > to_line {
+                // `at` is 1-based, the request's range is not.
+                if at.line.saturating_sub(1) < from_line || at.line.saturating_sub(1) > to_line {
+
                     continue;
                 }
                 let Some(ty) = document.checked.local_ty(local.id) else {
@@ -840,6 +850,36 @@ fn collect_expr(expr: &rill_hir::Expr, out: &mut Vec<rill_hir::Expr>) {
         }
         _ => {}
     }
+}
+
+/// Locals whose declaration writes a type, so a hint would only repeat the source.
+///
+/// The walk reuses `collect_expr`: a block *is* an expression, so collecting every
+/// expression reaches every statement list, and the annotations are read off those
+/// statements. Nothing is inferred from the text.
+fn annotated_locals(hir: &rill_hir::Hir) -> Vec<rill_hir::LocalId> {
+    let mut found = Vec::new();
+    for item in hir.items() {
+        let Some(body) = item_body(item) else {
+            continue;
+        };
+        let mut exprs = Vec::new();
+        collect_expr(body, &mut exprs);
+        for expr in &exprs {
+            let rill_hir::ExprKind::Block(block) = &expr.kind else {
+                continue;
+            };
+            for stmt in &block.stmts {
+                if let rill_hir::Stmt::Var {
+                    local, ty: Some(_), ..
+                } = stmt
+                {
+                    found.push(*local);
+                }
+            }
+        }
+    }
+    found
 }
 
 fn collect_expr_block(block: &rill_hir::Block, out: &mut Vec<rill_hir::Expr>) {
