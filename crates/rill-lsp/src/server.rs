@@ -136,6 +136,25 @@ impl Server {
                 }
                 self.hover(id, &uri, line, character)?;
             }
+            "textDocument/references" => {
+                let line = params
+                    .get("position")
+                    .and_then(|p| p.get("line"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let character = params
+                    .get("position")
+                    .and_then(|p| p.get("character"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let uri = params
+                    .get("textDocument")
+                    .and_then(|doc| doc.get("uri"))
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                self.references(id, &uri, line, character);
+            }
             "textDocument/formatting" => {
                 let uri = params
                     .get("textDocument")
@@ -265,6 +284,66 @@ impl Server {
         }
     }
 
+    /// References: every expression that resolves to the same thing as the one
+    /// under the cursor. Resolution is the linker's answer, so this is exact rather
+    /// than a name match - a shadowed local does not collect the outer one's uses.
+    fn references(&mut self, id: Option<Json>, uri: &str, line: u32, character: u32) {
+        let mut locations = Vec::new();
+        if let Some(document) = self.documents.get(uri) {
+            let offset = position_to_offset(&document.source, line, character);
+            let at = expr_at(document, offset);
+            let wanted = at.as_ref().and_then(|expr| match &expr.kind {
+                rill_hir::ExprKind::Path { res, .. } => Some(res.clone()),
+                // A call's callee often carries an empty span, so the resolution is
+                // taken from the call when that is the innermost expression.
+                rill_hir::ExprKind::Call { callee, .. } => {
+                    callee.path_res().map(|(_, res)| res.clone())
+                }
+                _ => None,
+            });
+            if debug() {
+                eprintln!(
+                    "lsp: references at {}:{} -> {wanted:?} (expr span {:?})",
+                    line,
+                    character,
+                    at.as_ref()
+                        .map(|expr| (expr.span.start.to_usize(), expr.span.end.to_usize()))
+                );
+            }
+            if let Some(wanted) = wanted {
+                for item in document.hir.items() {
+                    let mut exprs = Vec::new();
+                    if let Some(body) = item_body(item) {
+                        collect_expr(body, &mut exprs);
+                    }
+                    for expr in exprs {
+                        let rill_hir::ExprKind::Path { res, .. } = &expr.kind else {
+                            continue;
+                        };
+                        if *res != wanted || expr.span.is_dummy() {
+                            continue;
+                        }
+                        let start = document.source.line_col(expr.span.start);
+                        let end = document.source.line_col(expr.span.end);
+                        locations.push(Json::obj(&[
+                            ("uri", Json::Str(uri.to_string())),
+                            (
+                                "range",
+                                range(
+                                    start.line as i64,
+                                    start.col as i64,
+                                    end.line as i64,
+                                    end.col as i64,
+                                ),
+                            ),
+                        ]));
+                    }
+                }
+            }
+        }
+        let _ = self.respond(id, Json::Arr(locations));
+    }
+
     fn publish(&mut self, uri: &str) -> std::io::Result<()> {
         let Some(document) = self.documents.get(uri) else {
             return Ok(());
@@ -387,6 +466,31 @@ fn write_message(body: &str) -> std::io::Result<()> {
     let mut out = stdout.lock();
     write!(out, "Content-Length: {}\r\n\r\n{body}", body.len())?;
     out.flush()
+}
+
+/// The smallest expression containing an offset, which is what a position query
+/// means in practice.
+fn expr_at(document: &Document, offset: rill_span::BytePos) -> Option<rill_hir::Expr> {
+    let mut best: Option<(usize, rill_hir::Expr)> = None;
+    for item in document.hir.items() {
+        let mut exprs = Vec::new();
+        if let Some(body) = item_body(item) {
+            collect_expr(body, &mut exprs);
+        }
+        for expr in exprs {
+            let span = expr.span;
+            if span.is_dummy() || span.is_empty() {
+                continue;
+            }
+            if span.start <= offset && offset <= span.end {
+                let width = span.end.to_usize().saturating_sub(span.start.to_usize());
+                if best.as_ref().map(|(best, _)| width < *best).unwrap_or(true) {
+                    best = Some((width, expr));
+                }
+            }
+        }
+    }
+    best.map(|(_, expr)| expr)
 }
 
 /// Whether the server prints what it is doing, which is how a request that answers

@@ -62,6 +62,10 @@ fn a_session_initialises_reports_diagnostics_and_shuts_down() {
             // annotation, which is where an off-by-a-few first pointed.
             &[("URI", "file:///h.rill"), ("LINE", "1"), ("CHAR", "36")],
         ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":10,"method":"textDocument/references","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[("URI", "file:///h.rill"), ("LINE", "1"), ("CHAR", "36")],
+        ),
         r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
         r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
     ];
@@ -81,6 +85,14 @@ fn a_session_initialises_reports_diagnostics_and_shuts_down() {
     assert!(
         all.contains("\"documentFormattingProvider\":true"),
         "the initialize result should advertise formatting: {all}"
+    );
+    let refs = seen
+        .iter()
+        .find(|body| body.contains(r#""id":10"#))
+        .unwrap_or_else(|| panic!("no references answer: {all}"));
+    assert!(
+        refs.contains("file:///h.rill") && refs.contains("range"),
+        "references should point at the use of `one`: {refs}"
     );
     let diagnostics = seen
         .iter()
