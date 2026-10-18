@@ -46,6 +46,85 @@ fn builds_and_runs_a_native_binary() {
 }
 
 #[test]
+fn exec_compiles_runs_and_reuses_the_cached_artefacts() {
+    // `rill exec` is the quick feedback loop: the first run compiles the binary
+    // and its C source into the cache; the second answers from that cache
+    // instead of the C toolchain, and an edit - a different checksum - compiles
+    // again.
+    let dir = workdir("exec");
+    let cache = dir.join("cache");
+    let script = dir.join("exec_hello.rill");
+    std::fs::write(
+        &script,
+        "use std::io;\nlet main () -> i32 <io> = { io::println \"exec ran\"; 3 };\n",
+    )
+    .expect("write script");
+    let run = |script: &std::path::Path| {
+        Command::new(env!("CARGO_BIN_EXE_rillc"))
+            .arg("exec")
+            .arg(script)
+            .env("RILL_CACHE_DIR", &cache)
+            .output()
+            .expect("run rillc exec")
+    };
+    let first = run(&script);
+    assert_eq!(first.status.code(), Some(3), "exec must forward the exit code");
+    let stdout = String::from_utf8_lossy(&first.stdout);
+    assert!(stdout.contains("exec ran"), "unexpected stdout: {stdout}");
+    let entries = |dir: &std::path::Path| {
+        let mut names: Vec<String> = std::fs::read_dir(dir)
+            .expect("cache dir")
+            .map(|entry| entry.expect("entry").file_name().to_string_lossy().to_string())
+            .collect();
+        names.sort();
+        names
+    };
+    let after_first = entries(&cache);
+    assert_eq!(
+        after_first.len(),
+        2,
+        "the binary and its C source are cached: {after_first:?}"
+    );
+    assert_eq!(
+        after_first.iter().filter(|n| n.ends_with(".c")).count(),
+        1,
+        "the generated source lives next to the binary: {after_first:?}"
+    );
+    let binary = cache.join(after_first.iter().find(|n| !n.ends_with(".c")).unwrap());
+    let built_at = std::fs::metadata(&binary)
+        .expect("cached binary")
+        .modified()
+        .expect("mtime");
+
+    let second = run(&script);
+    assert_eq!(second.status.code(), Some(3));
+    let rebuilt_at = std::fs::metadata(&binary)
+        .expect("cached binary")
+        .modified()
+        .expect("mtime");
+    assert_eq!(
+        built_at, rebuilt_at,
+        "an unchanged script must not be recompiled"
+    );
+
+    std::fs::write(
+        &script,
+        "use std::io;\nlet main () -> i32 <io> = { io::println \"exec ran twice\"; 4 };\n",
+    )
+    .expect("rewrite script");
+    let third = run(&script);
+    assert_eq!(third.status.code(), Some(4), "the new script's exit code");
+    let stdout = String::from_utf8_lossy(&third.stdout);
+    assert!(stdout.contains("exec ran twice"), "unexpected stdout: {stdout}");
+    assert_eq!(
+        entries(&cache).len(),
+        4,
+        "an edited script is a different checksum: {:?}",
+        entries(&cache)
+    );
+}
+
+#[test]
 fn builds_a_statically_linked_elf_when_zig_is_available() {
     if Command::new("zig")
         .arg("version")
