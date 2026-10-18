@@ -619,8 +619,8 @@ fn all_plan_examples_parse_losslessly() {
 fn showcase_ast_shape() {
     let frontend = check(&FIXTURES[14]);
     let module = &frontend.module;
-    // use x2, type, project, transfer, quicksort, main
-    assert_eq!(module.items.len(), 7, "showcase item count");
+    // use, type, project, transfer, first_positive, main
+    assert_eq!(module.items.len(), 6, "showcase item count");
 
     let account = module
         .items
@@ -653,7 +653,11 @@ fn showcase_ast_shape() {
         .iter()
         .map(|e| frontend.text(e.name))
         .collect();
-    assert_eq!(effects, vec!["decides", "transacts"]);
+    // `transacts` is not inferred by the checker: the trail is implicit in a
+    // choice or handler, so the declaration that matches the body is
+    // `<decides | writes>`. Recording `transacts` too would be rejected as a
+    // declared effect the body does not perform.
+    assert_eq!(effects, vec!["decides", "writes"]);
     let body = transfer.body.as_ref().expect("transfer body").clone();
     let Expr::Block(block) = body else {
         panic!("expected a block body")
@@ -676,7 +680,9 @@ fn showcase_ast_shape() {
     let Expr::Block(body) = main.body.as_ref().expect("main body") else {
         panic!("expected a block body")
     };
-    assert_eq!(body.tail.as_deref().unwrap().span().len(), 4, "`0i32` tail");
+    // The tail is an expression whose value becomes the exit status; what it
+    // *is* is pinned by the driver test, which runs the program and checks 44.
+    assert!(body.tail.is_some(), "`main` has a tail value");
 }
 
 /// The plan's own fenced examples, extracted from `PLAN.md` so the corpus

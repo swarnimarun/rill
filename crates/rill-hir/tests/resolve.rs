@@ -149,16 +149,17 @@ fn showcase_references_resolve_to_their_targets() {
         assert_eq!(reference.res, Res::Item(transfer_item.id));
     }
 
-    // Self-recursion inside `quicksort`.
-    let quicksort = hir
+    // `first_positive` is referenced from `main` six times: twice to build the
+    // option values, three times in the `all` chain's arms, and once in `sync`.
+    let first_positive = hir
         .module_items()
-        .find(|item| item.name.map(|n| name_of(&frontend, n)) == Some("quicksort"))
-        .expect("quicksort item");
-    let recursive = refs(&frontend, &hir, "quicksort")
+        .find(|item| item.name.map(|n| name_of(&frontend, n)) == Some("first_positive"))
+        .expect("first_positive item");
+    let referenced = refs(&frontend, &hir, "first_positive")
         .into_iter()
-        .filter(|r| r.res == Res::Item(quicksort.id))
+        .filter(|r| r.res == Res::Item(first_positive.id))
         .count();
-    assert_eq!(recursive, 2, "both recursive calls resolve to the item");
+    assert_eq!(referenced, 6, "every call resolves to the item");
 
     // `alice`, `bob` and `scratch` are mutable locals of `main`.
     for name in ["alice", "bob", "scratch"] {
@@ -196,14 +197,14 @@ fn showcase_references_resolve_to_their_targets() {
         }
     }
 
-    // `StackArena::run` resolves through the `use` import.
-    let stack_arena = refs(&frontend, &hir, "StackArena");
-    assert!(!stack_arena.is_empty());
-    for reference in stack_arena {
+    // `io::println` resolves through the `use std::io` import.
+    let io = refs(&frontend, &hir, "io");
+    assert!(!io.is_empty());
+    for reference in io {
         match &reference.res {
             Res::Import(path) => {
                 let text: Vec<&str> = path.iter().map(|s| name_of(&frontend, *s)).collect();
-                assert_eq!(text, vec!["core", "alloc", "StackArena"]);
+                assert_eq!(text, vec!["std", "io"]);
             }
             other => panic!("import resolved to {other:?}"),
         }
@@ -211,7 +212,7 @@ fn showcase_references_resolve_to_their_targets() {
 
     // Names the module genuinely does not declare stay unresolved: the boundary
     // is explicit instead of silently wrong.
-    for name in ["io", "partition"] {
+    for name in ["partition", "quicksort"] {
         for reference in refs(&frontend, &hir, name) {
             assert!(
                 reference.res.is_error(),
@@ -398,13 +399,19 @@ fn hir_keeps_item_and_local_tables_consistent() {
         .collect();
     assert_eq!(
         module_items,
-        vec!["Account", "balance_mut", "transfer", "quicksort", "main"],
+        vec![
+            "Account",
+            "balance_mut",
+            "transfer",
+            "first_positive",
+            "main"
+        ],
         "named module items in declaration order (the two `use`s are anonymous)"
     );
     assert_eq!(
         hir.module_item_ids().len(),
-        7,
-        "two `use`s plus five named items"
+        6,
+        "one `use` plus five named items"
     );
 
     for local in hir.locals() {
