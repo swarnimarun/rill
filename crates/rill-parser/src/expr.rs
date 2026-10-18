@@ -329,6 +329,9 @@ impl<'a> Parser<'a> {
         self.node(K::LambdaParams, |p| {
             p.expect(K::LBrace, "`{`");
             loop {
+                if p.at(K::Arrow) {
+                    break;
+                }
                 if p.at(K::Name) || p.at(K::Underscore) {
                     p.bump();
                 } else {
@@ -355,6 +358,10 @@ impl<'a> Parser<'a> {
     /// Lookahead: `{` Name ("," Name)* "->" starts a lambda.
     fn lambda_ahead(&self) -> bool {
         let mut i = 1usize;
+        // `{ -> … }` is a lambda with no parameters.
+        if self.nth(i) == K::Arrow {
+            return true;
+        }
         let mut expect_name = true;
         loop {
             match self.nth(i) {

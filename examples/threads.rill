@@ -11,7 +11,13 @@ let beta () -> () <io> = io::println ("thread beta");
 
 let gamma () -> () <io> = io::println ("thread gamma");
 
+# A lambda task is accepted when everything it captures can be owned by the thread:
+# here two scalars each. Its environment is heap-allocated, since the ambient arena
+# is shared state.
 let main () -> i32 <io | suspends> = {
+    var n = 7;
+    var m = 35;
+    spawn_thread ({ -> io::println ("closure " ++ ((n + m) as String)) });
     spawn_thread (alpha);
     spawn_thread (beta);
     spawn_thread (gamma);

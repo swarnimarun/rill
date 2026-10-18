@@ -249,14 +249,21 @@ static rill_fn rill_io_wrap(rill_fn inner) {
 #define RILL_THREADS 64
 static pthread_t rill_threads[RILL_THREADS];
 static int rill_thread_count;
+/* The thread entry gets the whole task pair, not just its code: a closure's
+   environment is part of the task. */
+typedef struct { rill_fn task; } rill_thread_arg;
 static void *rill_thread_main(void *env) {
-  ((void (*)(void *))env)(NULL);
+  rill_thread_arg *arg = (rill_thread_arg *)env;
+  ((void (*)(void *))arg->task.code)(arg->task.env);
   return NULL;
 }
 static int rill_spawn_thread(rill_fn task) {
   if (rill_thread_count >= RILL_THREADS) return 0;
+  rill_thread_arg *arg = (rill_thread_arg *)malloc(sizeof(rill_thread_arg));
+  arg->task = task;
   if (pthread_create(&rill_threads[rill_thread_count], NULL, rill_thread_main,
-                     (void *)task.code) != 0) {
+                     (void *)arg) != 0) {
+    free(arg);
     return 0;
   }
   rill_thread_count += 1;
@@ -464,6 +471,9 @@ struct Generator<'a> {
     /// Coroutines: `ItemId -> the C step function`. A coroutine's task reports
     /// completion itself, so `io_spawn` passes it unwrapped.
     coroutines: std::collections::HashMap<ItemId, String>,
+    /// Set while lowering a `spawn_thread` task: its environment is heap-allocated,
+    /// because the ambient arena is shared state.
+    thread_task: bool,
     /// Projections of the form `project p (x: inout T) = { yield inout x.f }`:
     /// the name maps to the field they project, so uses inline as an alias.
     projections: std::collections::HashMap<String, String>,
@@ -494,6 +504,7 @@ impl<'a> Generator<'a> {
             dyn_vtables: std::collections::HashMap::new(),
             trait_vtables: std::collections::HashMap::new(),
             coroutines: std::collections::HashMap::new(),
+            thread_task: false,
             projections: std::collections::HashMap::new(),
         }
     }
@@ -1039,6 +1050,19 @@ impl<'a> Generator<'a> {
         }
     }
 
+    /// Whether a value of this type can be *owned* by a thread task: scalars and
+    /// text (which is immutable here) can, and composites of them can; pointers,
+    /// arenas and buffers cannot, because they denote state shared with the
+    /// spawning thread.
+    fn owns_state(&self, ty: &Ty) -> bool {
+        match ty {
+            Ty::Int { .. } | Ty::Float { .. } | Ty::Bool | Ty::Unit | Ty::Text => true,
+            Ty::Tuple(elems) => elems.iter().all(|elem| self.owns_state(elem)),
+            Ty::Array { elem, .. } => self.owns_state(elem),
+            _ => false,
+        }
+    }
+
     /// A declaration of `name` with type `ty`. Function pointers need the
     /// name inside the declarator (`r_i32 (*f)(r_i32)`), not before it.
     fn c_decl(&mut self, ty: &Ty, name: &str) -> String {
@@ -1396,9 +1420,18 @@ impl<'a> Generator<'a> {
             }
             self.types
                 .push_str(&format!("typedef struct {{\n{fields}}} {env_ty};\n"));
-            self.body.push_str(&format!(
+            let template = if self.thread_task {
+                // A thread task may not allocate its environment in the ambient
+                // arena: that mark is shared state. The heap is thread-safe.
+                "  {env_ty} *{env_slot} = ({env_ty} *)malloc(sizeof({env_ty}));\n{fill}"
+            } else {
                 "  {env_ty} *{env_slot} = ({env_ty} *)(rill_arena_current() ? (void *)rill_arena_alloc(rill_arena_current(), sizeof({env_ty})) : (void *)malloc(sizeof({env_ty})));\n{fill}"
-            ));
+            };
+            let text = template
+                .replace("{env_ty}", &env_ty)
+                .replace("{env_slot}", &env_slot)
+                .replace("{fill}", &fill);
+            self.body.push_str(&text);
         }
 
         let name = format!("lambda{}", self.lambdas);
@@ -3417,21 +3450,41 @@ impl<'a> Generator<'a> {
         // refusing: threads without a checked ownership rule are a race waiting to
         // be written.
         if is_named_builtin(callee, self, "spawn_thread") {
-            match args.first().and_then(|arg| arg.value.path_res()) {
+            let task = args.first().map(|arg| &arg.value);
+            let named = matches!(
+                task.and_then(|value| value.path_res()),
                 Some((_, Res::Item(id)))
                     if self
                         .checked
                         .item_ty(*id)
                         .map(|ty| matches!(ty, ItemTy::Fn { .. }))
-                        .unwrap_or(false) => {}
-                _ => {
-                    self.unsupported(
-                        whole.span,
-                        "a `spawn_thread` task whose state cannot be checked",
-                        "M5 (a checked thread task)",
-                    );
+                        .unwrap_or(false)
+            );
+            // A lambda is accepted when everything it captures is a value the task
+            // can own: a scalar, text (immutable here), or a composite of those. A
+            // pointer, an `inout` place or an arena handle would be shared state, and
+            // a closure value from a variable cannot be inspected at all.
+            let lambda = matches!(task.map(|value| &value.kind), Some(ExprKind::Lambda { .. }));
+            let captures_owned = lambda && {
+                let mut refs = Vec::new();
+                if let Some(value) = task {
+                    collect_local_refs_expr(value, &mut refs);
                 }
+                refs.iter().all(|local| {
+                    self.checked
+                        .local_ty(*local)
+                        .map(|ty| self.owns_state(ty))
+                        .unwrap_or(false)
+                })
+            };
+            if !named && !captures_owned {
+                self.unsupported(
+                    whole.span,
+                    "a `spawn_thread` task whose state cannot be checked",
+                    "M5 (a checked thread task)",
+                );
             }
+            self.thread_task = lambda;
         }
         let spawns_coroutine = is_spawn_builtin(callee, self)
             && matches!(

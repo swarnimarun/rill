@@ -1082,6 +1082,9 @@ fn builds_and_runs_threads() {
         vec!["thread alpha", "thread beta", "thread gamma"],
         "unexpected stdout: {stdout}"
     );
-    assert!(stdout.contains("joined 3"), "{stdout}");
+    // A lambda task whose captures are owned (two scalars) is accepted, with its
+    // environment on the heap rather than in the shared arena.
+    assert!(stdout.contains("closure 42"), "{stdout}");
+    assert!(stdout.contains("joined 4"), "{stdout}");
     assert_eq!(output.status.code(), Some(0));
 }
