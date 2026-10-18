@@ -1105,6 +1105,44 @@ impl<'a> Generator<'a> {
     /// emitted before, so the corpus must stay green; routing every call through
     /// here first is what makes the hand-built sites findable when the closure
     /// representation changes it to a pair call.
+    /// Dispatch for a call to a trait method. Today it resolves statically: the
+    /// impl whose first parameter type matches the receiver. When the receiver is
+    /// a `dyn` value this is where the call goes through a vtable instead.
+    fn dispatch_method(&mut self, callee: &Expr, args: &[rill_hir::Arg]) -> Option<String> {
+        let ExprKind::Path {
+            segments,
+            res: Res::Item(id),
+        } = &callee.kind
+        else {
+            return None;
+        };
+        let method = segments.last().map(|s| self.text(*s).to_string())?;
+        let trait_name = self.trait_of(*id)?;
+        let first_arg = args
+            .first()
+            .map(|arg| self.expr_ty(&arg.value))
+            .unwrap_or(Ty::Error);
+        let rest: Vec<String> = args.iter().map(|arg| self.expr(&arg.value)).collect();
+        let candidates = self
+            .trait_impls
+            .get(&(trait_name.clone(), method.clone()))
+            .cloned()
+            .unwrap_or_default();
+        let chosen = candidates
+            .iter()
+            .find(|(param, _)| *param == first_arg)
+            .or_else(|| candidates.first());
+        let (_, c_name) = chosen?;
+        let c_name = c_name.clone();
+        // The generated implementation takes the environment like any other
+        // definition.
+        Some(if rest.is_empty() {
+            format!("{c_name}(NULL)")
+        } else {
+            format!("{c_name}(NULL, {})", rest.join(", "))
+        })
+    }
+
     fn call_through(&mut self, callee: &Expr, arguments: &[String]) -> String {
         let joined = arguments.join(", ");
         let is_extern = |this: &Self, id: rill_hir::ItemId| match &this.hir.item(id).kind {
@@ -2903,69 +2941,8 @@ impl<'a> Generator<'a> {
                 }
             }
         }
-        // Static trait dispatch: a call to a trait method is routed to the impl
-        // whose first parameter type matches the first argument.
-        if let ExprKind::Path {
-            segments,
-            res: Res::Item(id),
-        } = &callee.kind
-        {
-            if let Some(method) = segments.last().map(|s| self.text(*s).to_string()) {
-                if let Some(trait_name) = self.trait_of(*id) {
-                    let first_arg = args
-                        .first()
-                        .map(|arg| self.expr_ty(&arg.value))
-                        .unwrap_or(Ty::Error);
-                    let mut rest: Vec<String> =
-                        args.iter().map(|arg| self.expr(&arg.value)).collect();
-                    let candidates = self
-                        .trait_impls
-                        .get(&(trait_name.clone(), method.clone()))
-                        .cloned()
-                        .unwrap_or_default();
-                    if std::env::var_os("RILL_DBG_DISP").is_some() {
-                        eprintln!(
-                            "dispatch {trait_name}::{method} arg={:?} candidates={:?}",
-                            self.display_ty(&first_arg),
-                            candidates
-                                .iter()
-                                .map(|(t, n)| (self.display_ty(t), n.clone()))
-                                .collect::<Vec<_>>()
-                        );
-                    }
-                    let chosen = candidates
-                        .iter()
-                        .find(|(param, _)| *param == first_arg)
-                        .or_else(|| candidates.first());
-                    match chosen {
-                        Some((_, c_name)) => {
-                            let c_name = c_name.clone();
-                            // `rest` were evaluated above; they stay in order. A
-                            // generated implementation takes the environment like
-                            // any other definition.
-                            return if rest.is_empty() {
-                                format!("{c_name}(NULL)")
-                            } else {
-                                format!("{c_name}(NULL, {})", rest.join(", "))
-                            };
-                        }
-                        None => {
-                            let display = self.display_ty(&first_arg);
-                            self.diagnostics.push(
-                                Diagnostic::error(
-                                    whole.span,
-                                    format!(
-                                        "no impl of `{trait_name}` for `{display}` (`{method}`)"
-                                    ),
-                                )
-                                .note("add an `impl` block for this type".to_string()),
-                            );
-                            let _ = rest.drain(..).count();
-                            return "0".into();
-                        }
-                    }
-                }
-            }
+        if let Some(call) = self.dispatch_method(callee, args) {
+            return call;
         }
         // Enum construction: `Type::Variant a b` or a record construction
         // `Name a b`.
