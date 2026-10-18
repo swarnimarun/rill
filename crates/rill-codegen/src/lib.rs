@@ -2938,7 +2938,15 @@ impl<'a> Generator<'a> {
                 self.body.push_str(&format!("  {target} = {value_code};\n"));
             }
             Stmt::Yield { span, .. } => {
-                self.unsupported(*span, "`yield`", "M2 (projections)");
+                // A statement-level yield in a coroutine is consumed by the state
+                // machine, so reaching here means one is nested inside a block: that
+                // needs a control-flow pass rather than statement numbering, and it
+                // is reported instead of being emitted in the wrong state.
+                self.unsupported(
+                    *span,
+                    "a `yield` nested inside a block",
+                    "M5 (a control-flow state machine)",
+                );
             }
             Stmt::TryBind { local, value, span } => {
                 // `let? x = e` binds the value and, when `e` fails, leaves the

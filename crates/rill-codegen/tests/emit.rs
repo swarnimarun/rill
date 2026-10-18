@@ -121,6 +121,26 @@ fn a_two_valued_sync_is_a_tuple_not_its_last_arm() {
 }
 
 #[test]
+fn a_nested_yield_is_reported_not_miscompiled() {
+    // Statement-level yields become states; a yield inside a conditional would need
+    // a control-flow pass, and emitting it in the wrong state would resume a
+    // coroutine at the wrong place - so it must be *reported*.
+    let (frontend, sm) = parse_and_lower_text(
+        "c.rill",
+        "let tick () -> () <suspends> = {\n    if (true) {\n        yield ();\n    } else { () }\n};\n",
+    );
+    let hir = lower(&frontend);
+    let checked = check(&frontend, &hir);
+    let (_source, diagnostics) = emit_c(&frontend, &hir, &checked);
+    assert!(
+        diagnostics.has_errors(),
+        "the nested yield must be reported"
+    );
+    let rendered = rill_diagnostics::render_all(&sm, &diagnostics);
+    assert!(rendered.contains("nested inside a block"), "{rendered}");
+}
+
+#[test]
 fn enums_match_and_guards_lower() {
     let (source, diagnostics) = emit(
         "type Shape = | Circle i32 | Rect i32 i32 | Empty;\n\
