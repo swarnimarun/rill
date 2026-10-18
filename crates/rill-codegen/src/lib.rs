@@ -1971,8 +1971,32 @@ impl<'a> Generator<'a> {
                 }
             }
         }
+        // Every alternative failed. The choice cannot invent a value, so the
+        // failure continues outward; without this the zeroed slot would be
+        // silently returned as a success.
+        // Only a chain whose every arm can fail can fail as a whole; a pure
+        // last arm always produces a value.
+        if failable.iter().all(|call| call.is_some()) {
+            if let Some(exit) = self.fail_statement() {
+                out.push_str(&format!(" if (!{done}) {{ {exit} }}"));
+            } else {
+                self.unsupported(
+                    whole.span,
+                    "a `|` chain every arm of which can fail, outside a `<decides>` function",
+                    "M4 (handlers)",
+                );
+            }
+        }
         out.push_str(&format!(" {slot}; }})"));
         out
+    }
+
+    /// Leaves the current function with a failure: the statement form of the
+    /// failure continuation (`None` outside a `<decides>` function).
+    fn fail_statement(&mut self) -> Option<String> {
+        self.failable
+            .clone()
+            .map(|(out, cty)| format!("{cty} _z = {{0}}; *{out} = _z; return false;"))
     }
 
     /// The adjacent or parenthesised call an alternative is, when it calls a

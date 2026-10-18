@@ -1,0 +1,21 @@
+use std::io;
+
+# Every alternative fails: the program must exit 1 without printing. Before the
+# trailing failure continuation in `choice`, this fell through with a zeroed
+# value and exited 0.
+
+type Account = record { var balance: i64; };
+
+let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | writes> = {
+    amount > 0;
+    from.balance >= amount;
+    set from.balance = from.balance - amount;
+    set to.balance = to.balance + amount;
+};
+
+let main () -> () <io | decides | writes> = {
+    var alice = Account 100i64;
+    var bob = Account 100i64;
+    transfer[inout alice, inout bob, 200] | transfer[inout alice, inout bob, 200];
+    io::println ("unreachable")
+};

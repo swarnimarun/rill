@@ -406,3 +406,34 @@ fn builds_and_runs_transfer() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn a_total_choice_failure_exits_one() {
+    let dir = workdir("decides_fail");
+    let out = dir.join("decides_fail");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/decides_fail.rill")
+        .canonicalize()
+        .expect("examples/decides_fail.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    // Both transfers are underfunded, so the choice cannot produce a value: the
+    // statement after it must not run and the exit status must report failure.
+    // (A `Some(1)` status also proves it exited, rather than dying on a signal.)
+    assert!(
+        output.stdout.is_empty(),
+        "the unreachable print ran: {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(output.status.code(), Some(1));
+}
