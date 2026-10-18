@@ -1964,13 +1964,65 @@ impl<'a> Generator<'a> {
 
     fn block(&mut self, block: &Block) -> String {
         self.push_scope();
+        // A block under a continuation owns a jump label: a failure inside skips
+        // the rest of *this* block and then runs the enclosing continuation, so
+        // statements after a failed guard or binding do not run.
+        let guarded = self.fail_targets.last().cloned();
+        let label = guarded.as_ref().map(|_| {
+            self.temp += 1;
+            format!("_l{}", self.temp)
+        });
+        let carried = self.continuation_used;
+        if let Some(label) = &label {
+            self.fail_targets
+                .push((format!("goto {label};"), guarded.clone().unwrap().1));
+            self.continuation_used = false;
+        }
         for stmt in &block.stmts {
             self.stmt(stmt);
         }
-        let value = match &block.tail {
+        let value_ty = block
+            .tail
+            .as_ref()
+            .map(|tail| self.expr_ty(tail))
+            .unwrap_or(Ty::Unit);
+        let mut value = match &block.tail {
             Some(tail) => self.expr(tail),
             None => "rill_unit()".to_string(),
         };
+        if let (Some(label), Some(outer)) = (label, guarded) {
+            self.fail_targets.pop();
+            let used = self.continuation_used;
+            if used {
+                // The value's text can contain a `goto` (a failable call's exit),
+                // and the caller may splice the statements into its own region.
+                // Hoisting the value into a temporary keeps everything - label
+                // included - in one ordered region, so no jump goes backwards.
+                // Declaration and assignment are split so a jump out of the value
+                // leaves the temporary zeroed rather than uninitialised.
+                let cty = self.c_type(&value_ty);
+                self.temp += 1;
+                let held = format!("_v{}", self.temp);
+                self.body.push_str(&format!("  {cty} {held} = {{0}};\n"));
+                self.body.push_str(&format!("  {held} = ({value});\n"));
+                // Falling *into* the label must not run the continuation, so the
+                // successful path jumps over it; a failure `goto` lands on it.
+                if outer.0.is_empty() {
+                    self.body.push_str(&format!("{label}: ;\n"));
+                } else {
+                    self.body
+                        .push_str(&format!("  goto {label}_after;\n{label}: ;\n"));
+                    // The label runs the enclosing continuation, not the
+                    // function's: an enclosing choice arm still has to learn it
+                    // failed.
+                    self.body.push_str(&format!("  {}\n", outer.0));
+                    self.body.push_str(&format!("{label}_after: ;\n"));
+                }
+                value = format!("({held})");
+            }
+            self.continuation_used = used;
+        }
+        self.continuation_used |= carried;
         self.pop_scope();
         value
     }
@@ -2023,12 +2075,8 @@ impl<'a> Generator<'a> {
                 // guarded by the failure flag, which is not lowered yet.
                 let name = format!("v_{}", self.text(self.hir.local(*local).name));
                 self.bind(*local, name.clone());
-                if !self.fail_targets.is_empty() || self.failable.is_none() {
-                    self.unsupported(
-                        *span,
-                        "`let?` inside a handler or a speculative arm",
-                        "M4 (handlers)",
-                    );
+                if self.fail_targets.is_empty() && self.failable.is_none() {
+                    self.unsupported(*span, "`let?` outside a `<decides>` function", "M4");
                     return;
                 }
                 let ty = self.expr_ty(value);
