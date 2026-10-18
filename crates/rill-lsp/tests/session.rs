@@ -332,4 +332,165 @@ fn hovering_fail_reports_the_bottom_type() {
         answer.contains("never"),
         "hovering `fail` should report the bottom type: {answer}"
     );
+    assert!(
+        answer.contains("never <decides>"),
+        "`fail` decides, so the hover must say so: {answer}"
+    );
+}
+
+#[test]
+fn hover_and_hints_carry_effects() {
+    // The effect row is as much a part of what an expression is as its type: a
+    // call answers with what it performs, and a binding's hint with what its
+    // initializer costs. Neither is written in the source, so the server is the
+    // only place they can come from.
+    let source =
+        "let f () -> i32 <computes> = { var b = buf_new (); buf_len (b) as i32 };\nlet main () -> i32 <io> = f ();\n";
+    // The `(` inside `buf_new ()`: the call, not the callee path, which ends just
+    // before it.
+    let call = source.find("buf_new (").expect("the call") + "buf_new (".len() - 1;
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", "file:///e.rill"), ("TEXT", &json_string(source))],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":0,"character":COL}}}"#,
+            &[("URI", "file:///e.rill"), ("COL", &call.to_string())],
+        ),
+        // A function value has no performed effects of its own to show; its type
+        // carries the row instead.
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":10,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":0,"character":COL}}}"#,
+            &[
+                ("URI", "file:///e.rill"),
+                (
+                    "COL",
+                    &source.find("buf_new").expect("the callee").to_string(),
+                ),
+            ],
+        ),
+        // The binding's name answers what the hint next to it says.
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":11,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":0,"character":COL}}}"#,
+            &[
+                ("URI", "file:///e.rill"),
+                (
+                    "COL",
+                    &source.find("b = buf_new").expect("the binding").to_string(),
+                ),
+            ],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":8,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"URI"},"range":{"start":{"line":0,"character":0},"end":{"line":99,"character":0}}}}"#,
+            &[("URI", "file:///e.rill")],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let hover = output
+        .iter()
+        .find(|body| body.contains(r#""id":9"#))
+        .unwrap_or_else(|| panic!("no hover answer: {output:?}"));
+    assert!(
+        hover.contains("Buf <alloc>"),
+        "hovering the call should report its type and effect: {hover}"
+    );
+    let callee = output
+        .iter()
+        .find(|body| body.contains(r#""id":10"#))
+        .unwrap_or_else(|| panic!("no callee hover answer: {output:?}"));
+    assert!(
+        callee.contains("() -> Buf <alloc>"),
+        "a function value's hover should carry its effect row: {callee}"
+    );
+    let binding = output
+        .iter()
+        .find(|body| body.contains(r#""id":11"#))
+        .unwrap_or_else(|| panic!("no binding hover answer: {output:?}"));
+    assert!(
+        binding.contains("Buf <alloc>"),
+        "the name's hover must agree with its hint: {binding}"
+    );
+    let hints = output
+        .iter()
+        .find(|body| body.contains(r#""id":8"#))
+        .unwrap_or_else(|| panic!("no inlay answer: {output:?}"));
+    assert!(
+        hints.contains(": Buf <alloc>"),
+        "the hint should show the initializer's effect: {hints}"
+    );
+}
+
+#[test]
+fn undeclared_effects_mark_the_expression_that_performs_them() {
+    // "performs alloc" without a place is a riddle in a body with several calls:
+    // the diagnostic has to underline the call that performed the effect, not the
+    // declaration it was written on.
+    let source =
+        "let f () -> i32 <computes> = { var b = buf_new (); buf_len (b) as i32 };\nlet main () -> i32 <io> = f ();\n";
+    let at = source.find("buf_new ()").expect("the offending call");
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", "file:///x.rill"), ("TEXT", &json_string(source))],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let diagnostics = output
+        .iter()
+        .find(|body| body.contains("performs alloc"))
+        .unwrap_or_else(|| panic!("no alloc diagnostic: {output:?}"));
+    let expected = format!(
+        r#""range":{{"start":{{"line":0,"character":{at}}},"end":{{"line":0,"character":{end}}}}}"#,
+        end = at + "buf_new ()".len()
+    );
+    assert!(
+        diagnostics.contains(&expected),
+        "the diagnostic must underline `buf_new ()`: {diagnostics}"
+    );
+}
+
+#[test]
+fn discharged_decides_do_not_blame_the_handled_arm() {
+    // The `let?` arm decides, but a fallback that cannot fail catches it - so the
+    // only undischarged failure is the tail's. The diagnostic must underline the
+    // tail, not the wider statement that was already handled: origins have to be
+    // discharged with the effect, not just recorded as they are performed.
+    let source = "let pick (x: i32) -> i32 <decides> = if (x > 0) { x } else { fail };\nlet f (x: i32) -> i32 <computes> = {\n    var a = { let? v = pick[x]; v } | 0;\n    pick[x]\n};\n";
+    let first = source.find("pick[x]").expect("the arm's call");
+    let handled = first + 1 + source[first + 1..].find("pick[x]").expect("the tail's call");
+    let line_start = source[..handled].rfind('\n').map(|at| at + 1).unwrap_or(0);
+    let (line, character) = (
+        source[..handled].matches('\n').count(),
+        handled - line_start,
+    );
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#.to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", "file:///m.rill"), ("TEXT", &json_string(source))],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let diagnostics = output
+        .iter()
+        .find(|body| body.contains("performs decides"))
+        .unwrap_or_else(|| panic!("no decides diagnostic: {output:?}"));
+    let expected = format!(
+        r#""start":{{"line":{line},"character":{character}}}"#,
+        line = line,
+        character = character
+    );
+    assert!(
+        diagnostics.contains(&expected),
+        "the diagnostic must underline the tail's `pick[x]` at {line}:{character}: {diagnostics}"
+    );
 }

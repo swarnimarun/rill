@@ -204,9 +204,17 @@ impl Server {
     }
 
     fn open(&mut self, uri: String, text: String, version: i64) -> std::io::Result<()> {
-        // The same pipeline a build runs: parse and lower, resolve, check.
+        // The same pipeline a build runs: parse and lower, resolve, check. The
+        // document's own directory is searched first for `@include` headers.
         let (mut frontend, source) = rill_ast::parse_and_lower_text(&uri, &text);
-        let hir = rill_hir::lower(&mut frontend);
+        let mut options = rill_hir::Options::default();
+        if let Some(dir) = uri
+            .strip_prefix("file://")
+            .and_then(|path| std::path::Path::new(path).parent())
+        {
+            options.include_dirs.push(dir.to_path_buf());
+        }
+        let hir = rill_hir::lower_with(&mut frontend, &options);
         let checked = rill_ty::check(&frontend, &hir);
         let mut diagnostics = rill_diagnostics::Diagnostics::default();
         diagnostics.extend(frontend.diagnostics.clone());
@@ -260,22 +268,42 @@ impl Server {
         // A local's name is not an expression, so containment would fall through to
         // the enclosing block and answer `()` - the bug this replaces. Names are
         // answered from the locals table, which is where `var x = 1;` keeps `x: i32`.
-        if let Some(local) = document.hir.locals().iter().find(|local| {
-            local.owner.is_some() && local.span.start <= offset && offset <= local.span.end
-        }) {
-            if let Some(ty) = document.checked.local_ty(local.id) {
-                let text = document.checked.display_ty(&document.frontend, ty);
-                return self.respond(
-                    id,
-                    Json::obj(&[(
-                        "contents",
-                        Json::obj(&[
-                            ("kind", Json::Str("plaintext".into())),
-                            ("value", Json::Str(text)),
-                        ]),
-                    )]),
-                );
-            }
+        // The initializer's effects ride along, so the hover says exactly what the
+        // inlay hint at the same declaration says.
+        let initializers = local_initializers(&document.hir);
+        if let Some((local, ty)) = document
+            .hir
+            .locals()
+            .iter()
+            .find(|local| {
+                local.owner.is_some() && local.span.start <= offset && offset <= local.span.end
+            })
+            .and_then(|local| {
+                document
+                    .checked
+                    .local_ty(local.id)
+                    .map(|ty| (local.id, ty))
+            })
+        {
+            let text = type_with_effects(
+                &document.checked,
+                &document.frontend,
+                ty,
+                initializers
+                    .get(&local)
+                    .map(|init| document.checked.expr_effects(*init))
+                    .unwrap_or_default(),
+            );
+            return self.respond(
+                id,
+                Json::obj(&[(
+                    "contents",
+                    Json::obj(&[
+                        ("kind", Json::Str("plaintext".into())),
+                        ("value", Json::Str(text)),
+                    ]),
+                )]),
+            );
         }
         if debug() {
             let items = document.hir.items().len();
@@ -308,7 +336,13 @@ impl Server {
                     let Some(ty) = document.checked.expr_ty(expr.id) else {
                         continue;
                     };
-                    let text = document.checked.display_ty(&document.frontend, ty);
+                    let performed = document.checked.expr_effects(expr.id);
+                    let text = type_with_effects(
+                        &document.checked,
+                        &document.frontend,
+                        ty,
+                        performed,
+                    );
                     let width = span.end.to_usize().saturating_sub(span.start.to_usize()) as u32;
                     if best.as_ref().map(|(best, _)| width < *best).unwrap_or(true) {
                         best = Some((width, text));
@@ -466,6 +500,7 @@ impl Server {
             // type (`x: i32`), and so is any binding that writes one (`var x: i32 =
             // ...`), so those are left out; the type is already on the screen.
             let annotated = annotated_locals(&document.hir);
+            let initializers = local_initializers(&document.hir);
             for local in document.hir.locals() {
                 if local.owner.is_none() || local.span.is_dummy() {
                     continue;
@@ -523,7 +558,15 @@ impl Server {
                 if matches!(ty, rill_ty::Ty::Unit | rill_ty::Ty::Error) {
                     continue;
                 }
-                let text = document.checked.display_ty(&document.frontend, ty);
+                let text = type_with_effects(
+                    &document.checked,
+                    &document.frontend,
+                    ty,
+                    initializers
+                        .get(&local.id)
+                        .map(|init| document.checked.expr_effects(*init))
+                        .unwrap_or_default(),
+                );
                 hints.push(Json::obj(&[
                     (
                         "position",
@@ -787,28 +830,16 @@ fn item_body(item: &rill_hir::Item) -> Option<&rill_hir::Expr> {
     }
 }
 
-/// Every expression under `expr`, outermost first. The walk covers the shapes that
-/// carry types in practice; a shape it does not reach yields no answer rather than a
-/// wrong one.
+/// Every expression under `expr`, outermost first. Every shape is walked: an
+/// expression the tool cannot reach is an expression hover cannot answer for.
 fn collect_expr(expr: &rill_hir::Expr, out: &mut Vec<rill_hir::Expr>) {
     out.push(expr.clone());
     match &expr.kind {
-        rill_hir::ExprKind::Block(block) => {
-            for stmt in &block.stmts {
-                match stmt {
-                    rill_hir::Stmt::Expr(expr) => collect_expr(expr, out),
-                    rill_hir::Stmt::Set { place, value, .. } => {
-                        collect_expr(place, out);
-                        collect_expr(value, out);
-                    }
-                    rill_hir::Stmt::Var { init, .. } => collect_expr(init, out),
-                    rill_hir::Stmt::Yield { value, .. } => collect_expr(value, out),
-                    rill_hir::Stmt::TryBind { value, .. } => collect_expr(value, out),
-                    _ => {}
-                }
-            }
-            if let Some(tail) = &block.tail {
-                collect_expr(tail, out);
+        rill_hir::ExprKind::Block(block) => collect_block(block, out),
+        rill_hir::ExprKind::Lambda { body, .. } => collect_block(body, out),
+        rill_hir::ExprKind::Tuple(elems) | rill_hir::ExprKind::Array(elems) => {
+            for elem in elems {
+                collect_expr(elem, out);
             }
         }
         rill_hir::ExprKind::Call { callee, args } => {
@@ -836,20 +867,132 @@ fn collect_expr(expr: &rill_hir::Expr, out: &mut Vec<rill_hir::Expr>) {
             collect_expr(scrutinee, out);
             for arm in arms {
                 collect_expr(&arm.body, out);
+                if let Some(guard) = &arm.guard {
+                    collect_expr(guard, out);
+                }
             }
         }
         rill_hir::ExprKind::If {
+            cond,
             then_branch,
             else_branch,
-            ..
         } => {
-            collect_expr_block(then_branch, out);
-            if let Some(rill_hir::ElseBranch::Block(block)) = else_branch {
-                collect_expr_block(block, out);
+            collect_cond(cond, out);
+            collect_block(then_branch, out);
+            match else_branch {
+                Some(rill_hir::ElseBranch::Block(block)) => collect_block(block, out),
+                Some(rill_hir::ElseBranch::If(expr)) => collect_expr(expr, out),
+                None => {}
             }
         }
-        _ => {}
+        rill_hir::ExprKind::Comptime { body }
+        | rill_hir::ExprKind::Unsafe { body }
+        | rill_hir::ExprKind::Handler { body, .. } => collect_block(body, out),
+        rill_hir::ExprKind::Concurrent { arms, .. } => {
+            for arm in arms {
+                collect_expr(arm, out);
+            }
+        }
+        rill_hir::ExprKind::Literal { .. } | rill_hir::ExprKind::Path { .. } | rill_hir::ExprKind::Error => {}
     }
+}
+
+/// The expressions inside a statement list and its tail.
+fn collect_block(block: &rill_hir::Block, out: &mut Vec<rill_hir::Expr>) {
+    for stmt in &block.stmts {
+        match stmt {
+            rill_hir::Stmt::Expr(expr) => collect_expr(expr, out),
+            rill_hir::Stmt::Set { place, value, .. } => {
+                collect_expr(place, out);
+                collect_expr(value, out);
+            }
+            rill_hir::Stmt::Var { init, .. } => collect_expr(init, out),
+            rill_hir::Stmt::Yield { value, .. } => collect_expr(value, out),
+            rill_hir::Stmt::TryBind { value, .. } => collect_expr(value, out),
+            rill_hir::Stmt::Bind { value, .. } => collect_expr(value, out),
+            rill_hir::Stmt::When { cond, .. } => collect_cond(cond, out),
+            rill_hir::Stmt::For { iter, body, .. } => {
+                collect_expr(iter, out);
+                collect_block(body, out);
+            }
+            rill_hir::Stmt::While { cond, body, .. } => {
+                collect_expr(cond, out);
+                collect_block(body, out);
+            }
+            rill_hir::Stmt::Let { .. }
+            | rill_hir::Stmt::Break { .. }
+            | rill_hir::Stmt::Error(_) => {}
+        }
+    }
+    if let Some(tail) = &block.tail {
+        collect_expr(tail, out);
+    }
+}
+
+fn collect_cond(cond: &rill_hir::Cond, out: &mut Vec<rill_hir::Expr>) {
+    match cond {
+        rill_hir::Cond::Expr(expr) => collect_expr(expr, out),
+        rill_hir::Cond::Bind { value, .. } => collect_expr(value, out),
+    }
+}
+
+/// The expression that initialises a local, when its binding wrote one. Inlay
+/// hints show the effects of that expression next to the binding's type, which
+/// is where a reader looks for what the binding costs.
+fn local_initializers(hir: &rill_hir::Hir) -> HashMap<rill_hir::LocalId, rill_hir::ExprId> {
+    let mut found = HashMap::new();
+    for item in hir.items() {
+        let Some(body) = item_body(item) else {
+            continue;
+        };
+        let mut exprs = Vec::new();
+        collect_expr(body, &mut exprs);
+        for expr in &exprs {
+            let rill_hir::ExprKind::Block(block) = &expr.kind else {
+                continue;
+            };
+            for stmt in &block.stmts {
+                match stmt {
+                    rill_hir::Stmt::Var { local, init, .. } => {
+                        found.insert(*local, init.id);
+                    }
+                    rill_hir::Stmt::Bind {
+                        pattern: rill_hir::Pattern::Binding { local, .. },
+                        value,
+                        ..
+                    }
+                    | rill_hir::Stmt::TryBind { local, value, .. } => {
+                        found.insert(*local, value.id);
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    found
+}
+
+/// A type plus the effects evaluating the expression performs. A function type's
+/// own row already answers what calling it does, so performed effects are only
+/// appended when they say something the row does not.
+fn type_with_effects(
+    checked: &rill_ty::Checked,
+    frontend: &rill_ast::Frontend,
+    ty: &rill_ty::Ty,
+    effects: &[rill_ty::Effect],
+) -> String {
+    let mut text = checked.display_ty(frontend, ty);
+    let covered = match ty {
+        rill_ty::Ty::Fn { effects: row, .. } => effects.iter().all(|effect| row.contains(effect)),
+        _ => effects.is_empty(),
+    };
+    if !covered {
+        text.push_str(&format!(
+            " <{}>",
+            checked.display_effects(frontend, effects)
+        ));
+    }
+    text
 }
 
 /// Locals whose declaration writes a type, so a hint would only repeat the source.
@@ -880,17 +1023,6 @@ fn annotated_locals(hir: &rill_hir::Hir) -> Vec<rill_hir::LocalId> {
         }
     }
     found
-}
-
-fn collect_expr_block(block: &rill_hir::Block, out: &mut Vec<rill_hir::Expr>) {
-    for stmt in &block.stmts {
-        if let rill_hir::Stmt::Expr(expr) = stmt {
-            collect_expr(expr, out);
-        }
-    }
-    if let Some(tail) = &block.tail {
-        collect_expr(tail, out);
-    }
 }
 
 /// `(line, character)` as an absolute offset. LSP counts lines from zero; these
