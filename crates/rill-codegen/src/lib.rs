@@ -3360,7 +3360,7 @@ impl<'a> Generator<'a> {
         let spawns_coroutine = is_spawn_builtin(callee, self)
             && matches!(
                 args.first().and_then(|arg| arg.value.path_res()),
-                Some((_, Res::Item(id))) if self.coroutines.contains_key(&id)
+                Some((_, Res::Item(id))) if self.coroutines.contains_key(id)
             );
         // Partial application: `add 1` for `add (x, y)` becomes a generated
         // function that closes over the supplied arguments. Captures must be
