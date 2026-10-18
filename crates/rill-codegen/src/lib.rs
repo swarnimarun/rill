@@ -274,6 +274,10 @@ struct Generator<'a> {
     /// `(out-parameter name, C type)` while emitting a `<decides>` function,
     /// whose status is returned out-of-band (PLAN §12).
     failable: Option<(String, String)>,
+    /// Innermost-first failure continuations: instead of leaving the function, a
+    /// failing site runs the top entry's code and evaluates to its value. Empty
+    /// outside any handler or speculative arm, where `fail` leaves the function.
+    fail_targets: Vec<(String, String)>,
     emitted_types: HashSet<String>,
     diagnostics: Diagnostics,
     scopes: Vec<Vec<(LocalId, String)>>,
@@ -301,6 +305,7 @@ impl<'a> Generator<'a> {
             body: String::new(),
             temp: 0,
             failable: None,
+            fail_targets: Vec::new(),
             emitted_types: HashSet::new(),
             diagnostics: Diagnostics::new(),
             scopes: Vec::new(),
@@ -1251,18 +1256,21 @@ impl<'a> Generator<'a> {
                     match name {
                         // The failure of a `<decides>` expression: write the
                         // out-parameter's zero and leave with a false status.
-                        "fail" => match &self.failable {
-                            Some((out, cty)) => {
-                                format!("({{ {cty} _z = {{0}}; *{out} = _z; return false; _z; }})")
-                            }
-                            None => {
-                                self.unsupported(
-                                    expr.span,
-                                    "`fail` outside a `<decides>` function",
-                                    "M4 (the status-pair ABI)",
-                                );
-                                "0".into()
-                            }
+                        "fail" => match self.fail_targets.last().cloned() {
+                            Some((code, value)) => format!("({{ {code} {value}; }})"),
+                            None => match &self.failable {
+                                Some((out, cty)) => format!(
+                                    "({{ {cty} _z = {{0}}; *{out} = _z; return false; _z; }})"
+                                ),
+                                None => {
+                                    self.unsupported(
+                                        expr.span,
+                                        "`fail` outside a `<decides>` function",
+                                        "M4 (handlers)",
+                                    );
+                                    "0".into()
+                                }
+                            },
                         },
                         "buf_new" => "rill_buf_new".into(),
                         "buf_push" => "rill_buf_push".into(),
@@ -1893,10 +1901,15 @@ impl<'a> Generator<'a> {
                 if self.failable.is_some() && matches!(self.expr_ty(expr), Ty::Bool) {
                     // A bare boolean statement inside a `<decides>` function is a
                     // failure point (PLAN §3): `amount > 0;` fails when false.
-                    let (out, cty) = self.failable.clone().unwrap();
-                    self.body.push_str(&format!(
-                        "  if (!({value})) {{ {cty} _z = {{0}}; *{out} = _z; return false; }}\n"
-                    ));
+                    if let Some((code, _)) = self.fail_targets.last().cloned() {
+                        self.body
+                            .push_str(&format!("  if (!({value})) {{ {code} }}\n"));
+                    } else {
+                        let (out, cty) = self.failable.clone().unwrap();
+                        self.body.push_str(&format!(
+                            "  if (!({value})) {{ {cty} _z = {{0}}; *{out} = _z; return false; }}\n"
+                        ));
+                    }
                 } else if !matches!(self.expr_ty(expr), Ty::Unit) {
                     self.body.push_str(&format!("  (void)({value});\n"));
                 } else {
@@ -1986,11 +1999,6 @@ impl<'a> Generator<'a> {
             .iter()
             .map(|alt| self.failable_call(alt))
             .collect();
-        if failable.iter().all(|call| call.is_none()) {
-            // No arm can fail: the first alternative's value is the result.
-            return format!("({})", self.expr(alternatives[0]));
-        }
-
         let cty = self.c_type(&self.expr_ty(whole));
         self.temp += 1;
         let level = self.temp;
@@ -2025,9 +2033,26 @@ impl<'a> Generator<'a> {
                     ));
                 }
                 None => {
+                    // An arm that is not a call can still fail internally (a
+                    // guard or `fail` inside an `if`). Lower it under a fresh
+                    // continuation so that failure selects the next arm rather
+                    // than leaving the function.
+                    self.temp += 1;
+                    let arm = self.temp;
+                    let ok = format!("_ok{arm}");
+                    let held = format!("_v{arm}");
+                    // The flag and the held value live in the function body:
+                    // lowering the arm may hoist statements there (an
+                    // `if`-expression's branch temporary), and those must be
+                    // able to see the flag the arm's `fail` writes.
+                    self.body
+                        .push_str(&format!("  bool {ok} = true; {cty} {held} = {{0}};\n"));
+                    self.fail_targets
+                        .push((format!("{ok} = false;"), format!("({cty}){{0}}")));
                     let value = self.expr(alt);
+                    self.fail_targets.pop();
                     out.push_str(&format!(
-                        " if (!{done}) {{ rill_txn_rollback({mark}); {slot} = ({value}); {done} = true; }}"
+                        " if (!{done}) {{ rill_txn_rollback({mark}); {ok} = true; {held} = ({value}); if ({ok}) {{ {slot} = {held}; {done} = true; }} }}"
                     ));
                 }
             }

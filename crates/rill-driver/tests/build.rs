@@ -374,6 +374,12 @@ fn builds_and_runs_decides() {
         stdout.contains("pick3[0, 0, 9] = 9 pick3[0, 0, 0] = 0"),
         "unexpected stdout: {stdout}"
     );
+    // A deciding arm that is not a call: the `fail` inside selects the fallback
+    // instead of leaving the function.
+    assert!(
+        stdout.contains("inline_pick[5] = 5 inline_pick[-1] = 0"),
+        "unexpected stdout: {stdout}"
+    );
     assert_eq!(output.status.code(), Some(57));
 }
 

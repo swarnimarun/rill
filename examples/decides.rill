@@ -14,6 +14,10 @@ let pick (x: i32, y: i32) -> i32 <computes> = first_positive[x, y] | 0;
 let pick3 (x: i32, y: i32, z: i32) -> i32 <computes> =
     first_positive[x, y] | first_positive[y, z] | 0;
 
+# A deciding arm that is not a call: the `fail` inside must select the fallback
+# rather than leave the function.
+let inline_pick (x: i32) -> i32 <computes> = (if (x > 0) { x } else { fail }) | 0;
+
 let main () -> i32 <io> = {
     var a = pick[5, 0];
     var b = pick[0, 7];
@@ -22,5 +26,6 @@ let main () -> i32 <io> = {
     var e = pick3[0, 0, 0];
     io::println ("pick[5, 0] = " ++ (a as String) ++ " pick[0, 7] = " ++ (b as String) ++ " pick[0, 0] = " ++ (c as String));
     io::println ("pick3[0, 0, 9] = " ++ (d as String) ++ " pick3[0, 0, 0] = " ++ (e as String));
+    io::println ("inline_pick[5] = " ++ (inline_pick[5] as String) ++ " inline_pick[-1] = " ++ (inline_pick[-1] as String));
     a * 10 + b
 };

@@ -1596,22 +1596,6 @@ impl Checker<'_> {
                 if let Some(index) = discharged {
                     self.body_effects.remove(index);
                 }
-            } else if left_added.contains(&Effect::Decides)
-                && !matches!(&lhs.kind, ExprKind::Index { .. } | ExprKind::Call { .. })
-            {
-                // A deciding left arm that is not a call keeps its function-level
-                // `fail`, which would escape the choice instead of selecting the
-                // fallback. Refuse rather than mis-compile.
-                self.diagnostics.push(
-                    Diagnostic::error(
-                        lhs.span,
-                        "a deciding expression here is not lowered by the C backend yet",
-                    )
-                    .note(
-                        "a `|` left arm can fail only when it is a call; extract the expression into a function"
-                            .to_string(),
-                    ),
-                );
             }
             self.unify(&left, &right, span, "checking `|` alternatives");
             return left;
