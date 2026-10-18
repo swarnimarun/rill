@@ -1143,7 +1143,17 @@ fn formatting_every_example_preserves_its_program() {
             let run = Command::new(&out)
                 .output()
                 .expect("run the produced binary");
-            outputs.push((run.stdout.clone(), run.status.code()));
+            // Compared as *sorted* lines: some examples are deliberately
+            // nondeterministic (the thread pool decides the order), and their real
+            // order is pinned by their own tests. What this test must catch is the
+            // formatter changing what a program prints at all - which is why it was
+            // flaky until this sorted.
+            let mut lines: Vec<String> = String::from_utf8_lossy(&run.stdout)
+                .lines()
+                .map(|line| line.to_string())
+                .collect();
+            lines.sort();
+            outputs.push((lines, run.status.code()));
         }
         assert_eq!(
             outputs[0], outputs[1],
