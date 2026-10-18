@@ -602,3 +602,32 @@ fn builds_and_runs_option_handler() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_sync_composition() {
+    let dir = workdir("sync");
+    let out = dir.join("sync");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/sync.rill")
+        .canonicalize()
+        .expect("examples/sync.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Arms with no suspension point run in order and join.
+    assert!(
+        stdout.contains("step first\nstep second\njoined"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}

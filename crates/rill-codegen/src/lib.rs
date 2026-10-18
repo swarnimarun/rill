@@ -906,8 +906,15 @@ impl<'a> Generator<'a> {
             }
             self.failable = None;
         } else if is_main {
-            let value = tail_value.unwrap_or_else(|| "0".to_string());
-            body.push_str(&format!("  return (int)({value});\n"));
+            // A unit-returning tail is a void call: it cannot be cast to the
+            // exit status, so it runs for its effects and the program exits 0.
+            match tail_value.as_deref() {
+                Some(value) if matches!(ret_ty, Ty::Unit) => {
+                    body.push_str(&format!("  (void)({value});\n  return 0;\n"));
+                }
+                Some(value) => body.push_str(&format!("  return (int)({value});\n")),
+                None => body.push_str("  return 0;\n"),
+            }
         } else if matches!(ret_ty, Ty::Unit) {
             // A unit-returning tail call still has side effects.
             if let Some(value) = tail_value.as_deref() {
@@ -1652,7 +1659,25 @@ impl<'a> Generator<'a> {
                 );
                 "0".into()
             }
-            ExprKind::Concurrent { kind, .. } => {
+            ExprKind::Concurrent { kind, arms } => {
+                // `sync { … }` runs its arms and joins. With no suspension points
+                // in the arms - which is every case this backend can lower today -
+                // sequential evaluation is observationally identical to real
+                // concurrency, and it is the composition the executors will drive.
+                // `race`/`rush`/`branch` need cancellation and stay reported.
+                if matches!(kind, rill_ast::ConcurrentKind::Sync)
+                    && arms.iter().all(|arm| matches!(self.expr_ty(arm), Ty::Unit))
+                {
+                    let mut out = String::from("({");
+                    for arm in arms {
+                        let value = self.expr(arm);
+                        if value != "rill_unit()" {
+                            out.push_str(&format!(" (void)({value});"));
+                        }
+                    }
+                    out.push_str(" rill_unit(); })");
+                    return out;
+                }
                 let name = match kind {
                     rill_ast::ConcurrentKind::Sync => "sync",
                     rill_ast::ConcurrentKind::Race => "race",

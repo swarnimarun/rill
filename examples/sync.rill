@@ -1,0 +1,18 @@
+use std::io;
+
+# `sync { … }` composes work and joins it. Each arm here is straight-line code
+# with no suspension point, so running them in order is what the effect system
+# already promises: `<suspends>` describes composition, and the executor that
+# will actually interleave them lives in the stdlib (PLAN.md §12).
+
+let step (name: String) -> () <io | suspends> = {
+    io::println ("step " ++ name)
+};
+
+let main () -> () <io | suspends> = {
+    sync {
+        step ("first");
+        step ("second")
+    };
+    io::println ("joined")
+};
