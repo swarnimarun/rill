@@ -1009,14 +1009,14 @@ fn builds_and_runs_coroutines() {
         .expect("run the produced binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
     // Two coroutines interleave: each runs to its yield, then the kernel resumes
-    // them round-robin. This is the first work in this compiler that alternates.
-    let lines: Vec<&str> = stdout.lines().take(4).collect();
+    // them round-robin. `a` yields twice, so it has three phases and `b` two.
+    let lines: Vec<&str> = stdout.lines().take(5).collect();
     assert_eq!(
         lines,
-        vec!["a first", "b first", "a second", "b second"],
+        vec!["a first", "b first", "a second", "b second", "a third"],
         "unexpected interleaving: {stdout}"
     );
-    assert!(stdout.contains("steps 4"), "{stdout}");
+    assert!(stdout.contains("steps 5"), "{stdout}");
     assert_eq!(output.status.code(), Some(0));
 }
 

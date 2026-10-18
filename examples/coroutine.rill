@@ -7,7 +7,9 @@ use std::io;
 let count_a () -> () <io | suspends> = {
     io::println ("a first");
     yield ();
-    io::println ("a second")
+    io::println ("a second");
+    yield ();
+    io::println ("a third")
 };
 
 let count_b () -> () <io | suspends> = {

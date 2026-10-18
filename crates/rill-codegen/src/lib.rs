@@ -1195,13 +1195,18 @@ impl<'a> Generator<'a> {
         let ExprKind::Block(block) = &body.kind else {
             return;
         };
-        let Some(yield_at) = block
+        // One state per yield: state N runs the statements up to the Nth yield and
+        // reports 0, and the state past the last one runs the rest and reports 1.
+        let yields: Vec<usize> = block
             .stmts
             .iter()
-            .position(|stmt| matches!(stmt, Stmt::Yield { .. }))
-        else {
+            .enumerate()
+            .filter(|(_, stmt)| matches!(stmt, Stmt::Yield { .. }))
+            .map(|(index, _)| index)
+            .collect();
+        if yields.is_empty() {
             return;
-        };
+        }
         let frame = format!("{name}_frame");
         let locals: Vec<(rill_hir::LocalId, rill_hir::LocalInfo)> = self
             .hir
@@ -1240,17 +1245,20 @@ impl<'a> Generator<'a> {
         }
         self.body
             .push_str(&format!("  switch ((({frame} *)env)->state) {{\n"));
-        self.body.push_str("  case 0:\n");
-        for (index, stmt) in block.stmts.iter().enumerate() {
-            if index >= yield_at {
-                break;
+        let mut cursor = 0usize;
+        for (state, yield_at) in yields.iter().enumerate() {
+            self.body.push_str(&format!("  case {state}:\n"));
+            for stmt in block.stmts[cursor..*yield_at].iter() {
+                self.stmt(stmt);
             }
-            self.stmt(stmt);
+            cursor = yield_at + 1;
+            self.body.push_str(&format!(
+                "    (({frame} *)env)->state = {};\n    return 0;\n",
+                state + 1
+            ));
         }
-        self.body.push_str(&format!(
-            "    (({frame} *)env)->state = 1;\n    return 0;\n  case 1:\n"
-        ));
-        for stmt in block.stmts.iter().skip(yield_at + 1) {
+        self.body.push_str(&format!("  case {}:\n", yields.len()));
+        for stmt in block.stmts[cursor..].iter() {
             self.stmt(stmt);
         }
         // The block's tail is the coroutine's last act (its value is the
