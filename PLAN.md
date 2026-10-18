@@ -1295,3 +1295,65 @@ let main () -> i32 <io | suspends> = {
     0i32
 };
 ```
+---
+
+## 12. Implementation notes recorded during development
+
+Status and decisions taken while building the M0–M4 slices, so later work starts
+from measured reality rather than the original sketch.
+
+### Implemented (Rust compiler, C bootstrap backend)
+
+Lossless CST + resilient parser; name resolution and HIR with `Res`/`LocalId`/
+`ExprId` tables; HM-style type inference with deferred numeric literal types;
+records, enums (tagged unions), views, tuples, fixed arrays, module-level
+statics; `for`, `while`/`break`, `if`/`else`, `match` with guards and payload
+binding; non-capturing closures; `inout` as C pointers; `<alloc>` growable byte
+buffers with the effect enforced (`<computes>` is the empty row and cannot
+allocate); text/byte primitives; `io::println`, `io::read_file`,
+`io::map_file`, `io::file_size`. Backend: typed HIR -> C -> `cc -O2` (native) or
+`zig cc -target <arch>-linux-musl -static` (static ELF). `rillc build`,
+`--dump=cst|ast|hir`, `--emit-c`.
+
+Benchmarks (`bench/`) run the *same algorithm* in Rill, Rust and Zig and assert
+identical checksums: v1 byte scan 0.12/0.13/0.13s, v2 structured parse 0.03/0.03/
+0.02s, v3 577 KB with a 262 k-node pool 0.50/0.51/0.50s.
+
+### Known blocker
+
+Traits: members parse, lower, resolve as callable names, impls are emitted under
+mangled names and a dispatch table routes trait-method calls by argument type.
+Typing an impl member's parameter (`show (p: Point)`) still reports
+`unknown type Point` even though the lookup that would resolve it succeeds
+(debug output: `named_items=[3] nominals=[3]`), so the failing check is inside
+the same fallback arm in `rill_ty::Checker::path_ty`. Next diagnostic: print the
+reference's span alongside `type_ids` in that arm to find which occurrence fails.
+
+### Directives for the remaining work (in priority order)
+
+1. **FFI** — `extern "c"` declarations become real C prototypes; `&raw`/`&raw mut`
+   pointers; link flags for extra libraries.
+2. **Arenas** — `StackArena::run`-style scoped `<alloc>` handlers; a bind-at-top-
+   scope arena that the whole lexical context can allocate from, in layers.
+3. **Projections** — `project`/`yield inout` inlined as prologue/body/epilog, and
+   `.`-method calls routed through them.
+4. **`<decides>` / `<transacts>`** — success/fail edges, `|` with undo-trail
+   rollback, then `option`/`one`/`all` handlers.
+5. **Currying / partial application** — syntactic arity grouping plus closure
+   structs for partial applications.
+6. **SIMD** — `[T; N]` lane operations and a `simd { }` builder lowered to loops
+   that clang vectorises; shaped tensors later.
+7. **`dyn`** — trait objects as fat pointers `(data, vtable)` with dispatch; the
+   current `dyn` -> `Text` placeholder is to be deleted.
+8. **`<suspends>` / structured concurrency** — the language provides only the
+   scaffolding: stackless coroutines/generators that lower to state machines,
+   plus green threads. Executors, thread pools, and the whole `Io` layer live in
+   the standard library (or external libraries), not in the compiler.
+   `sync`/`race`/`rush`/`branch`/`spawn` are the surface; cancellation and
+   deadlines belong to the runtime. The Io/async context is *bound at the top
+   scope* and reaches the entire lexical context in layers — the same shape as
+   `StackArena::run` for allocation — and is deliberately Zig-inspired while
+   keeping Rill's explicit, effect-tracked style.
+
+MLIR (`rill-mlir`) and self-hosting remain deferred; the C backend is the
+bootstrap that the typed HIR is lowered to meanwhile.
