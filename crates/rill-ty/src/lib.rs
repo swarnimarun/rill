@@ -1954,6 +1954,9 @@ impl Checker<'_> {
                 vec![Effect::Suspends],
             ),
             "join_threads" => (Vec::new(), Ty::usize_(), vec![Effect::Suspends]),
+            // The executor is configured from the language, like the arena layer.
+            "threads_bind" => (vec![Ty::i32()], Ty::Unit, vec![Effect::Writes]),
+            "threads_count" => (Vec::new(), Ty::i32(), Vec::new()),
             "arena_unbind" => (Vec::new(), Ty::Unit, vec![Effect::Writes]),
             "buf_new" => (Vec::new(), buf, vec![Effect::Alloc]),
             "buf_push" => (

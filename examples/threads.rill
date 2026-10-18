@@ -14,7 +14,9 @@ let gamma () -> () <io> = io::println ("thread gamma");
 # A lambda task is accepted when everything it captures can be owned by the thread:
 # here two scalars each. Its environment is heap-allocated, since the ambient arena
 # is shared state.
-let main () -> i32 <io | suspends> = {
+let main () -> i32 <io | suspends | writes> = {
+    # The executor is configured from the language, at the top scope.
+    threads_bind (2);
     var n = 7;
     var m = 35;
     spawn_thread ({ -> io::println ("closure " ++ ((n + m) as String)) });
@@ -30,6 +32,6 @@ let main () -> i32 <io | suspends> = {
         } else { () }
     };
     var joined = join_threads ();
-    io::println ("accepted " ++ (accepted as String) ++ " joined " ++ (joined as String));
+    io::println ("workers " ++ (threads_count () as String) ++ " accepted " ++ (accepted as String) ++ " joined " ++ (joined as String));
     0
 };

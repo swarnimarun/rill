@@ -251,7 +251,9 @@ static rill_fn rill_io_wrap(rill_fn inner) {
    what makes it an executor rather than a thread per spawn. The queue and the
    counters are guarded by one mutex and one condition variable; the workers are
    never joined, since the program exits with them. */
-#define RILL_POOL_WORKERS 4
+/* The worker count is bound from the language (`threads_bind`), so the executor is
+   configured where the arena and `Io` layers are bound: at the top scope. */
+static int rill_pool_workers = 4;
 #define RILL_POOL_QUEUE 256
 typedef struct {
   rill_fn tasks[RILL_POOL_QUEUE];
@@ -293,7 +295,7 @@ static int rill_spawn_thread(rill_fn task) {
   pthread_mutex_lock(&rill_pool_state.lock);
   if (!rill_pool_state.started) {
     rill_pool_state.started = 1;
-    for (int i = 0; i < RILL_POOL_WORKERS; i++) {
+    for (int i = 0; i < rill_pool_workers; i++) {
       pthread_t worker;
       if (pthread_create(&worker, NULL, rill_worker, NULL) != 0) {
         pthread_mutex_unlock(&rill_pool_state.lock);
@@ -313,6 +315,10 @@ static int rill_spawn_thread(rill_fn task) {
   pthread_mutex_unlock(&rill_pool_state.lock);
   return 1;
 }
+static void rill_threads_bind(int workers) {
+  rill_pool_workers = workers > 0 ? workers : 1;
+}
+static int rill_threads_count(void) { return rill_pool_workers; }
 static int rill_join_threads(void) {
   pthread_mutex_lock(&rill_pool_state.lock);
   while (rill_pool_state.done < rill_pool_state.spawned) {
@@ -2020,6 +2026,8 @@ impl<'a> Generator<'a> {
                         "io_spawn" => "rill_io_spawn".into(),
                         "spawn_thread" => "rill_spawn_thread".into(),
                         "join_threads" => "rill_join_threads".into(),
+                        "threads_bind" => "rill_threads_bind".into(),
+                        "threads_count" => "rill_threads_count".into(),
                         "f64x4" => "r_f64x4".into(),
                         "io_run" => "rill_io_run".into(),
                         "arena_unbind" => "rill_arena_unbind".into(),

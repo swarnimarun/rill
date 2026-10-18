@@ -1088,5 +1088,7 @@ fn builds_and_runs_threads() {
     // The pool queues more tasks than it has workers, and every one still runs:
     // with a thread per spawn, `spawn_thread` would have failed at the cap.
     assert!(stdout.contains("accepted 71 joined 75"), "{stdout}");
+    // The worker count is bound from the language, like the arena and Io layers.
+    assert!(stdout.contains("workers 2"), "{stdout}");
     assert_eq!(output.status.code(), Some(0));
 }
