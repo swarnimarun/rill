@@ -990,14 +990,6 @@ impl<'a> Checker<'a> {
             // `dyn Trait` is a `{ data, vtable }` pair; the trait itself is
             // recorded where the value is coerced.
             AstType::Dyn { .. } => Ty::Nominal(self.dyn_id),
-            AstType::Path { segments, .. }
-                if segments
-                    .last()
-                    .map(|id| self.text(id.sym) == "f64x4")
-                    .unwrap_or(false) =>
-            {
-                Ty::Nominal(self.vec_id)
-            }
             AstType::Error(_) => Ty::Error,
         }
     }
@@ -1013,6 +1005,8 @@ impl<'a> Checker<'a> {
                 bits: 16,
                 signed: true,
             },
+            // `f64x4`: four `f64` lanes, arithmetic supplied by the backend.
+            "f64x4" => Ty::Nominal(self.vec_id),
             "i32" => Ty::i32(),
             "i64" | "isize" => Ty::Int {
                 bits: 64,
@@ -1436,7 +1430,7 @@ impl Checker<'_> {
                             let index = self.expr(&arg.value);
                             self.unify(&Ty::usize_(), &index, arg.span, "checking an index");
                         }
-                        return Ty::Float { bits: 64 };
+                        Ty::Float { bits: 64 }
                     }
                     Ty::Array { elem, len } => {
                         if args.len() != 1 {
