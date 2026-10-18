@@ -367,30 +367,33 @@ impl<'a> Generator<'a> {
     }
 
     /// The field name yielded by a projection body of the shape
-    /// `{ yield inout x.f }` (also accepting a trailing `;` statement form).
+    /// `{ yield inout x.field }` — the place the projection inlines to.
     fn yielded_field(&self, body: &Expr) -> Option<String> {
         let block = match &body.kind {
             ExprKind::Block(block) => block,
             _ => return None,
         };
-        let tail = block.tail.as_deref()?;
-        if !block.stmts.is_empty() {
+        if block.tail.is_some() || block.stmts.len() != 1 {
             return None;
         }
-        match &tail.kind {
+        let value = match &block.stmts[0] {
+            Stmt::Yield { value, .. } => value,
+            _ => return None,
+        };
+        match &value.kind {
+            // `yield inout x.field`
+            ExprKind::Binary {
+                op: rill_ast::BinaryOp::Flow,
+                rhs,
+                ..
+            } => rhs
+                .path_res()
+                .map(|(segments, _)| self.text(segments[0]).to_string()),
+            // `yield inout (*ptr)` — a dereferenced place yields no field name.
             ExprKind::Unary {
                 op: rill_ast::UnaryOp::Deref,
-                operand,
-            } => match &operand.kind {
-                ExprKind::Binary {
-                    op: rill_ast::BinaryOp::Flow,
-                    rhs,
-                    ..
-                } => rhs
-                    .path_res()
-                    .map(|(segments, _)| self.text(segments[0]).to_string()),
-                _ => None,
-            },
+                ..
+            } => None,
             _ => None,
         }
     }
@@ -1805,6 +1808,14 @@ impl<'a> Generator<'a> {
                 rhs,
             } => {
                 let base = self.expr(lhs);
+                // A projection place inlines as the field it yields, so
+                // `set (acc . balance_mut) = v` writes `acc.balance`.
+                if let Some((segments, Res::Item(_))) = rhs.path_res() {
+                    let name = self.text(segments[0]).to_string();
+                    if let Some(field) = self.projections.get(&name).cloned() {
+                        return format!("({base}).{field}");
+                    }
+                }
                 let field = match rhs.path_res() {
                     Some((segments, _)) => self.text(segments[0]).to_string(),
                     None => "0".to_string(),

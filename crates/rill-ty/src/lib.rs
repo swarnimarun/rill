@@ -1070,7 +1070,13 @@ impl Checker<'_> {
                     .map(|slot| self.ast_ty(&slot.ty))
                     .unwrap_or(Ty::Unit);
                 self.body_effects.clear();
-                let found = self.expr(&def.body);
+                // A projection that yields a place has that place as its value:
+                // `{ yield inout x.field }` must type as the field's type, not
+                // as the unit a `yield` statement alone would leave behind.
+                let found = match yielded_expr(&def.body) {
+                    Some(value) => self.expr(value),
+                    None => self.expr(&def.body),
+                };
                 self.effects_of
                     .insert(def.body.id, self.body_effects.clone());
                 self.unify(
@@ -2242,6 +2248,22 @@ pub fn numeric_suffix(text: &str) -> Option<Ty> {
         "f64" => Ty::Float { bits: 64 },
         _ => return None,
     })
+}
+
+/// The expression a projection body yields, when its body is exactly
+/// `{ yield inout <place> }` (possibly with a trailing `;`).
+fn yielded_expr(body: &Expr) -> Option<&Expr> {
+    let block = match &body.kind {
+        ExprKind::Block(block) => block,
+        _ => return None,
+    };
+    if block.tail.is_some() || block.stmts.len() != 1 {
+        return None;
+    }
+    match &block.stmts[0] {
+        Stmt::Yield { value, .. } => Some(value),
+        _ => None,
+    }
 }
 
 /// Every unification variable occurring in `ty`.

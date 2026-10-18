@@ -1372,8 +1372,14 @@ rather than inventing a second one.
    `examples/arena.rill` runs two layers and is verified by a driver test.
    Still to come for the full directive: a `StackArena::run`-style *scope*
    handler that binds the arena for the lexical context implicitly.
-3. **Projections** — `project`/`yield inout` inlined as prologue/body/epilog, and
-   `.`-method calls routed through them.
+3. **Projections — first form done.** A `project` whose body is exactly
+   `{ yield inout x.field }` is a *place projection*: the checker types the body
+   by the yielded place and the codegen inlines uses as that field, so
+   `x . proj` reads it and `set (x . proj) = v` writes it, with no getter/setter
+   pair and no copy. `examples/projections.rill` deposits twice through
+   `balance_mut` and prints `balance 142`; a driver test asserts stdout and the
+   exit code. Still to come: computed bodies (`yield` of a temporary that is
+   written back on release) and `.`-method calls taking parameters.
 4. **`<decides>` / `<transacts>`** — success/fail edges, `|` with undo-trail
    rollback, then `option`/`one`/`all` handlers.
 5. **Currying / partial application — first cut done.** `add 1` fixes the

@@ -284,3 +284,32 @@ fn builds_and_runs_partial_application() {
     );
     assert_eq!(output.status.code(), Some(42));
 }
+
+#[test]
+fn builds_and_runs_place_projections() {
+    let dir = workdir("projections");
+    let out = dir.join("projections");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/projections.rill")
+        .canonicalize()
+        .expect("examples/projections.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Two deposits through the projection: 100 + 20 + 22.
+    assert!(
+        stdout.contains("balance 142"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(142));
+}
