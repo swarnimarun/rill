@@ -181,6 +181,12 @@ static r_text rill_f64_to_text(r_f64 v) {
 static void rill_println(r_text s) { printf("%s\n", s); }
 
 // ---- arenas: bump allocation with marks (the "layers" of §4/§12) ----------
+/* Every function value is a `{code, env}` pair: one representation for named
+   functions and (later) capturing lambdas, so no call site needs a distinction.
+   `code` takes the environment as its first argument; hand-written runtime
+   helpers and `extern` declarations do not. */
+typedef struct { void *code; void *env; } rill_fn;
+
 typedef struct rill_arena {
   unsigned char *data;
   size_t cap;
@@ -781,15 +787,7 @@ impl<'a> Generator<'a> {
                     name
                 }
             },
-            Ty::Fn { params, ret, .. } => {
-                let params: Vec<String> = params.iter().map(|p| self.c_type(p)).collect();
-                let ret = self.c_type(ret);
-                if params.is_empty() {
-                    format!("{ret} (*)(void)")
-                } else {
-                    format!("{ret} (*)({})", params.join(", "))
-                }
-            }
+            Ty::Fn { .. } => "rill_fn".to_string(),
             Ty::Choice(inner) => {
                 let inner = inner.clone();
                 self.c_type(&inner)
@@ -802,16 +800,7 @@ impl<'a> Generator<'a> {
     /// name inside the declarator (`r_i32 (*f)(r_i32)`), not before it.
     fn c_decl(&mut self, ty: &Ty, name: &str) -> String {
         match ty {
-            Ty::Fn { params, ret, .. } => {
-                let ret = self.c_type(ret);
-                let params: Vec<String> = params.iter().map(|p| self.c_type(p)).collect();
-                let params = if params.is_empty() {
-                    "void".to_string()
-                } else {
-                    params.join(", ")
-                };
-                format!("{ret} (*{name})({params})")
-            }
+            Ty::Fn { .. } => format!("rill_fn {name}"),
             other => {
                 let c_ty = self.c_type(other);
                 format!("{c_ty} {name}")
@@ -903,6 +892,13 @@ impl<'a> Generator<'a> {
             (ret.clone(), name.clone())
         };
         // The program's `main` must be visible to the C runtime's entry point.
+        if !is_main && def.abi.is_none() {
+            params = if params == "void" {
+                "void *env".to_string()
+            } else {
+                format!("void *env, {params}")
+            };
+        }
         let linkage = if is_main { "" } else { "static " };
         self.protos
             .push_str(&format!("{linkage}{ret_decl} {final_name}({params});\n"));
@@ -1032,14 +1028,11 @@ impl<'a> Generator<'a> {
             None => Ty::Unit,
         };
         let ret = self.c_type(&ret_ty);
-        let params_c: Vec<String> = param_tys
-            .iter()
-            .enumerate()
-            .map(|(index, ty)| {
-                let ty = ty.clone();
-                self.c_decl(&ty, &format!("a{index}"))
-            })
-            .collect();
+        let mut params_c: Vec<String> = vec!["void *env".to_string()];
+        params_c.extend(param_tys.iter().enumerate().map(|(index, ty)| {
+            let ty = ty.clone();
+            self.c_decl(&ty, &format!("a{index}"))
+        }));
 
         let previous_body = std::mem::take(&mut self.body);
         let previous_scopes = std::mem::take(&mut self.scopes);
@@ -1072,7 +1065,7 @@ impl<'a> Generator<'a> {
                 params_c.join(", ")
             }
         ));
-        name
+        format!("((rill_fn){{ .code = (void *)&{name}, .env = NULL }})")
     }
 
     /// One place that renders a call. It currently reproduces the text every site
@@ -1080,8 +1073,68 @@ impl<'a> Generator<'a> {
     /// here first is what makes the hand-built sites findable when the closure
     /// representation changes it to a pair call.
     fn call_through(&mut self, callee: &Expr, arguments: &[String]) -> String {
+        let joined = arguments.join(", ");
+        let is_extern = |this: &Self, id: rill_hir::ItemId| match &this.hir.item(id).kind {
+            rill_hir::ItemKind::Fn(def) => def.abi.is_some(),
+            _ => false,
+        };
+        match callee.path_res().map(|(_, res)| res) {
+            // A Rill function takes the environment first.
+            Some(Res::Item(id)) => {
+                let raw = self.item_c_name(*id);
+                if is_extern(self, *id) {
+                    return format!("{raw}({joined})");
+                }
+                return if joined.is_empty() {
+                    format!("{raw}(NULL)")
+                } else {
+                    format!("{raw}(NULL, {joined})")
+                };
+            }
+            // A hand-written runtime helper: no environment at all.
+            Some(Res::Builtin) | Some(Res::Import(_)) => {
+                let code = self.expr(callee);
+                return format!("{code}({joined})");
+            }
+            Some(Res::Local(_)) | Some(Res::Field) => {}
+            _ => {
+                // A method (`.area`) or another non-path callee renders to a plain
+                // function name, which takes a null environment.
+                if matches!(
+                    &callee.kind,
+                    ExprKind::Binary {
+                        op: rill_hir::BinaryOp::Flow,
+                        ..
+                    }
+                ) {
+                    let code = self.expr(callee);
+                    return if joined.is_empty() {
+                        format!("{code}(NULL)")
+                    } else {
+                        format!("{code}(NULL, {joined})")
+                    };
+                }
+            }
+        }
+        // A place holding a function value - a local or a field, including a
+        // parameter of function type - is called through the pair, cast to the
+        // signature it has here.
         let code = self.expr(callee);
-        format!("{code}({})", arguments.join(", "))
+        let Ty::Fn { params, ret, .. } = self.expr_ty(callee) else {
+            return format!("({code}).code");
+        };
+        let ret_c = self.c_type(&ret);
+        let param_c: Vec<String> = params.iter().map(|p| self.c_type(p)).collect();
+        let sig = if param_c.is_empty() {
+            format!("{ret_c} (*)(void *)")
+        } else {
+            format!("{ret_c} (*)(void *, {})", param_c.join(", "))
+        };
+        if joined.is_empty() {
+            format!("(({sig})({code}).code)(({code}).env)")
+        } else {
+            format!("(({sig})({code}).code)(({code}).env, {joined})")
+        }
     }
 
     fn param_list(&mut self, id: ItemId, def: &rill_hir::FnDef) -> String {
@@ -1296,6 +1349,28 @@ impl<'a> Generator<'a> {
                         "0".into()
                     }
                 },
+                Res::Item(id)
+                    if self
+                        .checked
+                        .item_ty(*id)
+                        .map(|ty| matches!(ty, ItemTy::Fn { .. }))
+                        .unwrap_or(false) =>
+                {
+                    let is_extern = match &self.hir.item(*id).kind {
+                        rill_hir::ItemKind::Fn(def) => def.abi.is_some(),
+                        _ => false,
+                    };
+                    if is_extern {
+                        self.unsupported(
+                            expr.span,
+                            "an `extern` function used as a value",
+                            "M4 (a wrapper that drops the environment)",
+                        );
+                        return "0".into();
+                    }
+                    let name = self.item_c_name(*id);
+                    format!("((rill_fn){{ .code = (void *)&{name}, .env = NULL }})")
+                }
                 Res::Item(id) => {
                     // A nominal in value position: a payload-less variant is a
                     // value (`Empty`), anything else needs arguments.
@@ -1460,9 +1535,16 @@ impl<'a> Generator<'a> {
                             // a choice's arm or a handler body it selects the next
                             // alternative, and only at the outermost level does it
                             // leave the function.
+                            let call = self.call_through(
+                                callee_expr,
+                                &arguments
+                                    .iter()
+                                    .cloned()
+                                    .chain(std::iter::once(format!("&{slot}")))
+                                    .collect::<Vec<_>>(),
+                            );
                             return format!(
-                                "({{ {value_ty} {slot} = {{0}}; if (!{base}({}, &{slot})) {{ {exit} }} {slot}; }})",
-                                arguments.join(", ")
+                                "({{ {value_ty} {slot} = {{0}}; if (!{call}) {{ {exit} }} {slot}; }})"
                             );
                         }
                         let arguments: Vec<String> = args
@@ -1713,7 +1795,7 @@ impl<'a> Generator<'a> {
                     for alt in &alternatives {
                         match self.failable_call(alt) {
                             Some((base, args)) => {
-                                            let arguments: Vec<String> = args
+                                let arguments: Vec<String> = args
                                     .iter()
                                     .map(|arg| {
                                         let value = self.expr(&arg.value);
@@ -2022,7 +2104,7 @@ impl<'a> Generator<'a> {
         if !self.emitted_types.contains(&name) {
             self.emitted_types.insert(name.clone());
             let ret_c = self.c_type(ret);
-            let mut param_decls = Vec::new();
+            let mut param_decls = vec!["void *env".to_string()];
             let mut call_args = captured.clone();
             for (index, ty) in remaining.iter().enumerate() {
                 let ty = ty.clone();
@@ -2049,7 +2131,7 @@ impl<'a> Generator<'a> {
             ));
         }
         let _ = whole;
-        name
+        format!("((rill_fn){{ .code = (void *)&{name}, .env = NULL }})")
     }
 
     /// `x.field[i]` — select the field, then index into it.
@@ -2825,8 +2907,14 @@ impl<'a> Generator<'a> {
                     match chosen {
                         Some((_, c_name)) => {
                             let c_name = c_name.clone();
-                            // `rest` were evaluated above; they stay in order.
-                            return format!("{c_name}({})", rest.join(", "));
+                            // `rest` were evaluated above; they stay in order. A
+                            // generated implementation takes the environment like
+                            // any other definition.
+                            return if rest.is_empty() {
+                                format!("{c_name}(NULL)")
+                            } else {
+                                format!("{c_name}(NULL, {})", rest.join(", "))
+                            };
                         }
                         None => {
                             let display = self.display_ty(&first_arg);

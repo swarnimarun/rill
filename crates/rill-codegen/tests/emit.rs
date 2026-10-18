@@ -151,8 +151,9 @@ fn non_capturing_closures_become_function_pointers() {
     );
     assert!(!diagnostics.has_errors(), "{diagnostics:?}");
     assert!(source.contains("lambda0"), "{source}");
-    // The binding is a function-pointer variable, not a value copy.
-    assert!(source.contains("(*v_inc)"), "{source}");
+    // The binding is a value - a `{code, env}` pair - and calls go through it.
+    assert!(source.contains("rill_fn v_inc"), "{source}");
+    assert!(source.contains(".code"), "{source}");
 }
 
 #[test]
