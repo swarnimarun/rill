@@ -230,6 +230,9 @@ struct Generator<'a> {
     /// Static trait dispatch: (trait, method) -> impls keyed by first-parameter
     /// type, with the C function implementing each.
     trait_impls: std::collections::HashMap<(String, String), Vec<(Ty, String)>>,
+    /// Projections of the form `project p (x: inout T) = { yield inout x.f }`:
+    /// the name maps to the field they project, so uses inline as an alias.
+    projections: std::collections::HashMap<String, String>,
 }
 
 impl<'a> Generator<'a> {
@@ -249,6 +252,7 @@ impl<'a> Generator<'a> {
             scopes: Vec::new(),
             inout_locals: std::collections::HashMap::new(),
             trait_impls: std::collections::HashMap::new(),
+            projections: std::collections::HashMap::new(),
         }
     }
 
@@ -331,14 +335,63 @@ impl<'a> Generator<'a> {
                 ItemKind::Signature(def) => {
                     let _ = def;
                 }
-                ItemKind::Project(_) => {
-                    self.unsupported(item.span, "`project` bodies", "M2/M4");
-                }
+                ItemKind::Project(def) => self.register_projection(item, def),
                 ItemKind::Impl(def) => self.emit_impl(item, def),
                 ItemKind::Builder(_) | ItemKind::Trait(_) | ItemKind::Use(_) => {}
                 ItemKind::Stmt(stmt) => self.module_static(stmt),
                 ItemKind::Type(_) | ItemKind::Placeholder => {}
             }
+        }
+    }
+
+    /// A `project` whose body is a single `yield inout <place>` is a field
+    /// projection: uses inline as the place itself (reads and writes).
+    fn register_projection(&mut self, item: &rill_hir::Item, def: &rill_hir::ProjectDef) {
+        let name = item
+            .name
+            .map(|n| self.text(n).to_string())
+            .unwrap_or_default();
+        let place = self.yielded_field(&def.body);
+        match place {
+            Some(field) => {
+                self.projections.insert(name, field);
+            }
+            None => {
+                self.unsupported(
+                    item.span,
+                    "a computed `project` body",
+                    "M2/M4 (needs the prologue/epilog coroutine form)",
+                );
+            }
+        }
+    }
+
+    /// The field name yielded by a projection body of the shape
+    /// `{ yield inout x.f }` (also accepting a trailing `;` statement form).
+    fn yielded_field(&self, body: &Expr) -> Option<String> {
+        let block = match &body.kind {
+            ExprKind::Block(block) => block,
+            _ => return None,
+        };
+        let tail = block.tail.as_deref()?;
+        if !block.stmts.is_empty() {
+            return None;
+        }
+        match &tail.kind {
+            ExprKind::Unary {
+                op: rill_ast::UnaryOp::Deref,
+                operand,
+            } => match &operand.kind {
+                ExprKind::Binary {
+                    op: rill_ast::BinaryOp::Flow,
+                    rhs,
+                    ..
+                } => rhs
+                    .path_res()
+                    .map(|(segments, _)| self.text(segments[0]).to_string()),
+                _ => None,
+            },
+            _ => None,
         }
     }
 
@@ -1360,6 +1413,19 @@ impl<'a> Generator<'a> {
         match op {
             BinaryOp::Flow => match &rhs.kind {
                 ExprKind::Index { base, args } => self.indexed_member(whole, lhs, base, args),
+                // A projection inlines as the place it yields.
+                ExprKind::Path {
+                    segments,
+                    res: Res::Item(_),
+                } => {
+                    let name = self.text(segments[0]).to_string();
+                    if let Some(field) = self.projections.get(&name).cloned() {
+                        let base = self.expr(lhs);
+                        format!("({base}).{field}")
+                    } else {
+                        self.field_access(whole, lhs, rhs)
+                    }
+                }
                 _ => self.field_access(whole, lhs, rhs),
             },
             BinaryOp::Concat => {
