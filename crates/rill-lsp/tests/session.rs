@@ -163,3 +163,74 @@ fn json_string(text: &str) -> String {
     out.push('"');
     out
 }
+
+#[test]
+fn hover_on_a_var_name_gives_its_type_not_unit() {
+    // A local's name is not an expression, so an expression-only search answers with
+    // the enclosing block's type - `()`. The name must come from the locals table.
+    let source = "let main () -> i32 <computes> = {\n    var counter = 42;\n    counter\n};\n";
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", "file:///v.rill"), ("TEXT", &json_string(source))],
+        ),
+        // Inside `counter` in its declaration.
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":9,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[("URI", "file:///v.rill"), ("LINE", "1"), ("CHAR", "10")],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":8,"method":"textDocument/inlayHint","params":{"textDocument":{"uri":"URI"},"range":{"start":{"line":0,"character":0},"end":{"line":99,"character":0}}}}"#,
+            &[("URI", "file:///v.rill")],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let hints = output
+        .iter()
+        .find(|body| body.contains(r#""id":8"#))
+        .unwrap_or_else(|| panic!("no inlay answer: {output:?}"));
+    assert!(
+        hints.contains(": i32"),
+        "the binding should get a type hint: {hints}"
+    );
+    let hover = output
+        .iter()
+        .find(|body| body.contains(r#""id":9"#))
+        .unwrap_or_else(|| panic!("no hover answer: {output:?}"));
+    assert!(
+        hover.contains("i32"),
+        "a var's name should answer its type, not the block's unit: {hover}"
+    );
+    assert!(
+        !hover.contains("\"value\":\"()\""),
+        "the block's unit type leaked: {hover}"
+    );
+}
+
+/// Runs a scripted session against the freshly built server, which is fast enough to
+/// use in tests (no install step).
+fn run_session(messages: &[String]) -> Vec<String> {
+    use std::io::{Read, Write};
+    let mut child = std::process::Command::new(env!("CARGO_BIN_EXE_rill-lsp"))
+        .stdin(std::process::Stdio::piped())
+        .stdout(std::process::Stdio::piped())
+        .spawn()
+        .expect("spawn the server");
+    let mut stdin = child.stdin.take().expect("stdin");
+    for message in messages {
+        stdin.write_all(frame(message).as_bytes()).expect("write");
+    }
+    stdin.flush().expect("flush");
+    drop(stdin);
+    let mut stdout = child.stdout.take().expect("stdout");
+    let mut out = Vec::new();
+    while let Some(body) = read_frame(&mut stdout) {
+        out.push(body);
+    }
+    let _ = child.wait();
+    out
+}

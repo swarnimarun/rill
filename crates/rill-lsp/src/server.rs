@@ -465,7 +465,23 @@ impl Server {
                 if local.owner.is_none() || local.span.is_dummy() {
                     continue;
                 }
-                let at = document.source.line_col(local.span.end);
+                // The hint goes right after the *name*, not after the statement:
+                // the HIR records the statement's span, so the name comes from the
+                // concrete tree (the first `Name` token inside the local's span).
+                let (parse, _map) = rill_parser::parse_text(uri, &document.text);
+                let mut names = Vec::new();
+                collect_tokens(&parse.cst.root, &mut names);
+                let name_end = names
+                    .iter()
+                    .filter(|(span, kind)| {
+                        *kind == rill_syntax::SyntaxKind::Name
+                            && local.span.start <= span.start
+                            && span.end <= local.span.end
+                    })
+                    .map(|(span, _)| span.end)
+                    .min()
+                    .unwrap_or(local.span.end);
+                let at = document.source.line_col(name_end);
                 if (at.line as u32) < from_line || (at.line as u32) > to_line {
                     continue;
                 }
@@ -650,6 +666,7 @@ fn capabilities() -> Json {
         // hover and references were never declared here.
         ("hoverProvider", Json::Bool(true)),
         ("referencesProvider", Json::Bool(true)),
+        ("inlayHintProvider", Json::Bool(true)),
         (
             "semanticTokensProvider",
             Json::obj(&[
