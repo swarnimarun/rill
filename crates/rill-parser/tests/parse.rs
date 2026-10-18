@@ -288,3 +288,54 @@ fn contextual_operators_are_not_application_arguments() {
         "the `;`-less statement still parses"
     );
 }
+
+#[test]
+fn attributes_may_precede_an_item() {
+    let (parse, sm) = parse_ok("@link(\"SDL3\");\n@inline;\nuse m;\n");
+    let root = root(&parse);
+    let items = root.child_list();
+    assert_eq!(items[0].kind, K::AttributeDecl);
+    assert_eq!(items[1].kind, K::AttributeDecl);
+    assert_eq!(items[2].kind, K::UseDecl);
+    assert!(items[0].has_token(K::At), "@ is in the CST");
+    assert_eq!(items[0].text(&sm), "@link(\"SDL3\");");
+    assert_eq!(items[1].text(&sm), "@inline;", "value is optional");
+    assert_eq!(root.count_tokens(K::At), 2);
+}
+
+#[test]
+fn include_in_a_type_body() {
+    let (parse, sm) = parse_ok("type M = @include(\"SDL3/SDL.h\");\n");
+    let root = root(&parse);
+    let decl = root.find(K::TypeDecl).expect("type declaration");
+    let include = decl.find(K::Include).expect("include body");
+    assert!(include.has_token(K::At));
+    assert!(include.has_token(K::Text));
+    assert_eq!(include.text(&sm), "@include(\"SDL3/SDL.h\")");
+}
+
+#[test]
+fn use_plain_glob_and_group_paths() {
+    let (parse, _) = parse_ok("use M;\nuse A::B::*;\nuse core::alloc::{X, Y};\n");
+    let root = root(&parse);
+    let uses = root.descendants(K::UsePath);
+    assert_eq!(uses.len(), 3, "one UsePath per non-text use");
+    assert_eq!(uses[0].count_tokens(K::Star), 0);
+    assert_eq!(uses[1].count_tokens(K::Star), 1);
+    assert!(uses[1].has_token(K::ColonColon), "`::*` keeps its separator");
+    assert_eq!(root.count(K::UseGroup), 1);
+}
+
+#[test]
+fn keyword_after_dot_is_a_field_path() {
+    let (parse, sm) = parse_ok("let f (ev: Event) = ev.type;\nlet g (x: X) = x.view;\nlet h (p: P) = p.match;\n");
+    let root = root(&parse);
+    let flows = root.descendants(K::BinaryExpr);
+    assert_eq!(flows.len(), 3);
+    for (flow, text) in flows.iter().zip(["type", "view", "match"]) {
+        assert!(flow.has_token(K::Dot));
+        let rhs = &flow.child_list()[1];
+        assert_eq!(rhs.kind, K::PathExpr, "keyword is a plain path");
+        assert_eq!(rhs.text(&sm), text);
+    }
+}

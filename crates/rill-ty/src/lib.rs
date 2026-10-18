@@ -987,6 +987,7 @@ impl<'a> Checker<'a> {
                     .collect(),
             ),
             TypeBody::Alias(ty) => NominalKind::Alias(self.ast_ty(ty)),
+            TypeBody::Include { .. } => NominalKind::Opaque,
             TypeBody::Error(_) => NominalKind::Opaque,
         };
         self.nominals[id.0 as usize].kind = kind;

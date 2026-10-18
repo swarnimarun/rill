@@ -110,6 +110,7 @@ impl<'a> Lower<'a> {
             K::LetDecl => Item::Fn(self.fn_decl(node)),
             K::ProjectDecl => Item::Project(self.project_decl(node)),
             K::SignatureDecl => Item::Signature(self.signature_decl(node)),
+            K::AttributeDecl => Item::Attribute(self.attribute_decl(node)),
             k if is_stmt_kind(k) => Item::Stmt(self.stmt(node)),
             k if is_expr_kind(k) => Item::Stmt(Stmt::Expr(self.expr(node))),
             _ => {
@@ -134,10 +135,18 @@ impl<'a> Lower<'a> {
                 Some(path_node) => {
                     let mut pc = Cursor::new(path_node);
                     let mut segments = Vec::new();
+                    let mut glob = false;
                     while let Some(tok) = pc.name() {
                         segments.push(self.ident(tok));
-                        // `a::b::c` — the separator between segments.
-                        pc.eat(K::ColonColon);
+                        // `a::b::c` — the separator between segments. A
+                        // trailing `*` after the separator is a glob.
+                        if pc.eat(K::ColonColon).is_none() {
+                            break;
+                        }
+                        if pc.eat(K::Star).is_some() {
+                            glob = true;
+                            break;
+                        }
                     }
                     if let Some(group) = cur.expect_node(K::UseGroup) {
                         let mut gc = Cursor::new(group);
@@ -150,6 +159,8 @@ impl<'a> Lower<'a> {
                             prefix: segments,
                             names,
                         }
+                    } else if glob {
+                        UsePath::Glob { prefix: segments }
                     } else {
                         UsePath::Plain(segments)
                     }
@@ -164,6 +175,51 @@ impl<'a> Lower<'a> {
             path,
             span: node.span,
         }
+    }
+
+    /// `@name("value");` — a module-level directive.
+    fn attribute_decl(&mut self, node: &SyntaxNode) -> AttributeDecl {
+        let mut cur = Cursor::new(node);
+        cur.eat(K::At);
+        let name = match cur.name() {
+            Some(tok) => self.ident(tok),
+            None => {
+                self.err(node.span, "expected an attribute name");
+                Ident::new(Symbol::EMPTY, node.span)
+            }
+        };
+        let mut value = None;
+        if cur.eat(K::LParen).is_some() {
+            let tok = cur
+                .eat_token(K::Text)
+                .or_else(|| cur.eat_token(K::RawText));
+            match tok {
+                Some(tok) => value = Some(self.text_value(tok)),
+                None => self.err(node.span, "expected a text literal"),
+            }
+            cur.eat(K::RParen);
+        }
+        AttributeDecl {
+            name,
+            value,
+            span: node.span,
+        }
+    }
+
+    /// A text literal's contents: surrounding quotes removed, escapes left
+    /// exactly as written.
+    fn text_value(&self, tok: SyntaxToken) -> String {
+        let raw = self.text(tok);
+        if let Some(inner) = raw
+            .strip_prefix("r#\"")
+            .and_then(|s| s.strip_suffix("\"#"))
+        {
+            return inner.to_string();
+        }
+        raw.strip_prefix('"')
+            .and_then(|s| s.strip_suffix('"'))
+            .unwrap_or(raw)
+            .to_string()
     }
 
     fn signature_decl(&mut self, node: &SyntaxNode) -> SignatureDecl {
@@ -286,6 +342,24 @@ impl<'a> Lower<'a> {
             Some(K::VariantList) => {
                 let list = cur.node().expect("peeked node");
                 TypeBody::Variants(self.variants(list))
+            }
+            Some(K::Include) => {
+                let include_node = cur.node().expect("peeked node");
+                let mut ic = Cursor::new(include_node);
+                ic.eat(K::At);
+                ic.name();
+                ic.eat(K::LParen);
+                let path = match ic.eat_token(K::Text).or_else(|| ic.eat_token(K::RawText)) {
+                    Some(tok) => self.text_value(tok),
+                    None => {
+                        self.err(include_node.span, "expected a text literal");
+                        String::new()
+                    }
+                };
+                TypeBody::Include {
+                    path,
+                    span: include_node.span,
+                }
             }
             Some(k) if is_type_kind(k) => TypeBody::Alias(self.type_child(&mut cur, node.span)),
             _ => {
@@ -1129,7 +1203,7 @@ impl<'a> Lower<'a> {
             K::PathExpr => {
                 let mut cur = Cursor::new(node);
                 let mut segments = Vec::new();
-                while let Some(tok) = cur.name() {
+                while let Some(tok) = cur.path_segment() {
                     segments.push(self.ident(tok));
                     cur.eat(K::ColonColon);
                 }
@@ -1767,6 +1841,20 @@ impl<'a> Cursor<'a> {
     fn name(&mut self) -> Option<SyntaxToken> {
         match self.peek() {
             Some(Element::Token(tok)) if tok.kind == K::Name || tok.kind == K::Underscore => {
+                self.pos += 1;
+                Some(*tok)
+            }
+            _ => None,
+        }
+    }
+
+    /// A path segment, as written after `.`: `ev.type` keeps `type` as the
+    /// segment's text even though the token is a keyword.
+    fn path_segment(&mut self) -> Option<SyntaxToken> {
+        match self.peek() {
+            Some(Element::Token(tok))
+                if tok.kind == K::Name || tok.kind == K::Underscore || tok.kind.is_keyword() =>
+            {
                 self.pos += 1;
                 Some(*tok)
             }

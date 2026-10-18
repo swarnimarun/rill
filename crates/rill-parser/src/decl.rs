@@ -5,6 +5,24 @@ use crate::Parser;
 use rill_syntax::SyntaxKind as K;
 
 impl<'a> Parser<'a> {
+    /// `@name ("(" "text" ")")? ;` — a module-level directive.
+    pub fn attribute_decl(&mut self) {
+        self.node(K::AttributeDecl, |p| {
+            p.bump(); // `@`
+            p.expect(K::Name, "an attribute name");
+            if p.at(K::LParen) {
+                p.bump();
+                if p.at(K::Text) {
+                    p.bump();
+                } else {
+                    p.error("expected a text literal");
+                }
+                p.expect(K::RParen, "`)`");
+            }
+            p.semi_or_block_end();
+        });
+    }
+
     /// `use path (:: name)* | "text" ;`
     pub fn use_decl(&mut self) {
         self.node(K::UseDecl, |p| {
@@ -18,6 +36,11 @@ impl<'a> Parser<'a> {
                         if p.nth(1) == K::LBrace {
                             p.bump(); // `::`
                             p.use_group();
+                            break;
+                        }
+                        if p.nth(1) == K::Star {
+                            p.bump(); // `::`
+                            p.bump(); // `*`
                             break;
                         }
                         p.bump();
@@ -71,10 +94,26 @@ impl<'a> Parser<'a> {
                         p.view_fields_node();
                     });
                 }
+                K::At => p.include_body(),
                 _ if p.variants_ahead() => p.variant_list(),
                 _ => p.parse_type(),
             }
             p.semi_or_block_end();
+        });
+    }
+
+    /// `@include("text")` — an external source file in a type body.
+    fn include_body(&mut self) {
+        self.node(K::Include, |p| {
+            p.bump(); // `@`
+            p.expect(K::Name, "`include`");
+            p.expect(K::LParen, "`(`");
+            if p.at(K::Text) || p.at(K::RawText) {
+                p.bump();
+            } else {
+                p.error("expected a text literal");
+            }
+            p.expect(K::RParen, "`)`");
         });
     }
 

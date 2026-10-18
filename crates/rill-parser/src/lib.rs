@@ -173,6 +173,9 @@ pub struct Parser<'a> {
     /// scrutinee of `match scrutinee { arms }`, where the brace belongs to
     /// the match and not to the scrutinee.
     block_arg_suppressed: u32,
+    /// While non-zero, a keyword token may stand in for a path segment — it is
+    /// the right-hand side of `.`, as in `ev.type`.
+    keyword_paths: u32,
     pub(crate) events: Vec<Event>,
     pub(crate) diagnostics: Diagnostics,
 }
@@ -190,6 +193,7 @@ impl<'a> Parser<'a> {
             prev_end: None,
             last_kind: K::Root,
             block_arg_suppressed: 0,
+            keyword_paths: 0,
             events: Vec::new(),
             diagnostics: Diagnostics::new(),
         };
@@ -268,6 +272,19 @@ impl<'a> Parser<'a> {
     /// True while brace arguments are suppressed (see `block_arg_suppressed`).
     pub fn block_args_suppressed(&self) -> bool {
         self.block_arg_suppressed > 0
+    }
+
+    /// True while a keyword may be used as a path segment (`ev.type`).
+    pub fn keyword_path_allowed(&self) -> bool {
+        self.keyword_paths > 0
+    }
+
+    /// Runs `f` allowing keywords to act as path segments.
+    pub fn with_keyword_paths<T>(&mut self, f: impl FnOnce(&mut Self) -> T) -> T {
+        self.keyword_paths += 1;
+        let result = f(self);
+        self.keyword_paths -= 1;
+        result
     }
 
     /// Runs `f` with brace arguments suppressed.

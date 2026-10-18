@@ -11,6 +11,7 @@ impl<'a> Parser<'a> {
     /// One statement (or declaration) at module or block level.
     pub fn statement(&mut self) {
         match self.kind() {
+            K::At => self.attribute_decl(),
             K::KwUse => self.use_decl(),
             K::KwType => self.type_decl(),
             K::KwTrait => self.trait_decl(),

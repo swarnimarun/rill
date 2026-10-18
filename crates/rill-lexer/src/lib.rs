@@ -423,6 +423,7 @@ impl<'a> Lexer<'a> {
             '{' => SyntaxKind::LBrace,
             '}' => SyntaxKind::RBrace,
             '?' => SyntaxKind::Question,
+            '@' => SyntaxKind::At,
             _ => unreachable!("is_punct guard"),
         };
         self.token(kind, start)
@@ -462,6 +463,7 @@ fn is_punct(c: char) -> bool {
             | '{'
             | '}'
             | '?'
+            | '@'
     )
 }
 

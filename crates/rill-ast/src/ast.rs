@@ -47,6 +47,8 @@ pub enum Item {
     Extern(ExternDecl),
     Stmt(Stmt),
     Error(Span),
+    /// `@link("SDL3");` — a module-level directive.
+    Attribute(AttributeDecl),
 }
 
 impl Item {
@@ -63,8 +65,19 @@ impl Item {
             Item::Extern(d) => d.span,
             Item::Stmt(s) => s.span(),
             Item::Error(span) => *span,
+            Item::Attribute(d) => d.span,
         }
     }
+}
+
+/// A module-level directive: `@name("value");`.
+#[derive(Clone, Debug)]
+pub struct AttributeDecl {
+    pub name: Ident,
+    /// The text literal with the surrounding quotes removed; escapes are kept
+    /// exactly as written.
+    pub value: Option<String>,
+    pub span: Span,
 }
 
 #[derive(Clone, Debug)]
@@ -84,6 +97,8 @@ pub enum UsePath {
     },
     /// `use "path";`
     Text { text: String },
+    /// `use A::B::*;`
+    Glob { prefix: Vec<Ident> },
 }
 
 #[derive(Clone, Debug)]
@@ -133,6 +148,8 @@ pub enum TypeBody {
     View(RecordDef),
     Variants(Vec<Variant>),
     Alias(Type),
+    /// `type M = @include("SDL3/SDL.h");`
+    Include { path: String, span: Span },
     Error(Span),
 }
 

@@ -48,7 +48,11 @@ impl<'a> Parser<'a> {
                         Assoc::Left | Assoc::NonAssoc => op.bp + 1,
                         Assoc::Right => op.bp,
                     };
-                    self.expr_bp(next_min);
+                    if op.kind == K::Dot {
+                        self.with_keyword_paths(|p| p.expr_bp(next_min));
+                    } else {
+                        self.expr_bp(next_min);
+                    }
                 }
             }
             prev_non_assoc = if op.assoc == Assoc::NonAssoc {
@@ -223,6 +227,7 @@ impl<'a> Parser<'a> {
                 marker.complete(self, K::LiteralExpr)
             }
             K::Name | K::Underscore => self.path_expr(),
+            k if self.keyword_path_allowed() && k.is_keyword() => self.path_expr(),
             K::KwIf => self.if_expr(),
             K::KwMatch => self.match_expr(),
             K::KwComptime => {

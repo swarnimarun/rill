@@ -73,6 +73,7 @@ pub enum SyntaxKind {
     Question,   // ?
     Bang,       // !
     Underscore, // _
+    At,         // @
 
     // ---- keywords ---------------------------------------------------------
     KwType,
@@ -118,6 +119,7 @@ pub enum SyntaxKind {
     // ---- interior node kinds ---------------------------------------------
     // Declarations & statements
     Root,
+    AttributeDecl, // `@name("value");` — module-level directive
     UseDecl,
     UsePath,
     UseGroup,
@@ -125,6 +127,7 @@ pub enum SyntaxKind {
     LetDecl,
     ProjectDecl,
     TypeDecl,
+    Include, // `@include("text")` in a type body
     TypeParams,
     TraitDecl,
     ImplDecl,
@@ -386,6 +389,7 @@ impl SyntaxKind {
             Question => "?",
             Bang => "!",
             Underscore => "_",
+            At => "@",
             Eof => "",
             _ => return None,
         })

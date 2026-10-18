@@ -379,6 +379,7 @@ impl ErrorFinder {
             }
             Item::Extern(decl) => self.item(&decl.inner),
             Item::Stmt(stmt) => self.stmt(stmt),
+            Item::Attribute(_) => {}
         }
     }
 
@@ -417,6 +418,7 @@ impl ErrorFinder {
                 }
             }
             TypeBody::Alias(ty) => self.ty(ty),
+            TypeBody::Include { .. } => {}
         }
     }
 

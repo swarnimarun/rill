@@ -272,6 +272,10 @@ impl<'a> Resolver<'a> {
                 let name = top_level_bindings(stmt).first().map(|(name, _)| *name);
                 self.fill_or_push(slot, name, ItemKind::Stmt(lowered), stmt.span())
             }
+            // An attribute is a directive, not a declaration of its own.
+            AstItem::Attribute(_) => {
+                self.fill_or_push(slot, None, ItemKind::Placeholder, item.span())
+            }
             AstItem::Error(span) => {
                 self.err(*span, "malformed item");
                 self.fill_or_push(slot, None, ItemKind::Stmt(Stmt::Error(*span)), *span)
@@ -925,7 +929,9 @@ fn item_name(item: &AstItem) -> (Option<Symbol>, Namespace) {
             top_level_bindings(stmt).first().map(|(name, _)| *name),
             Namespace::Value,
         ),
-        AstItem::Impl(_) | AstItem::Use(_) | AstItem::Error(_) => (None, Namespace::Value),
+        AstItem::Attribute(_) | AstItem::Impl(_) | AstItem::Use(_) | AstItem::Error(_) => {
+            (None, Namespace::Value)
+        }
     }
 }
 
@@ -944,6 +950,7 @@ fn import_names(path: &UsePath) -> Vec<(Symbol, Vec<Symbol>)> {
                 (name.sym, full)
             })
             .collect(),
+        UsePath::Glob { .. } => Vec::new(),
         UsePath::Text { .. } => Vec::new(),
     }
 }

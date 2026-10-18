@@ -782,7 +782,7 @@ impl<'a> Desugar<'a> {
                 let taken = std::mem::replace(stmt, Stmt::Error(Span::DUMMY));
                 *stmt = self.stmt(taken);
             }
-            Item::Use(_) | Item::Error(_) => {}
+            Item::Use(_) | Item::Error(_) | Item::Attribute(_) => {}
         }
     }
 
