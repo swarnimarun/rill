@@ -642,3 +642,33 @@ fn builds_and_runs_sync_composition() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_let_try() {
+    let dir = workdir("let_try");
+    let out = dir.join("let_try");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/let_try.rill")
+        .canonicalize()
+        .expect("examples/let_try.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Two `let?` bindings: both succeed (3 + 4), then the first fails and the
+    // failure leaves `sum_two` for the caller's fallback.
+    assert!(
+        stdout.contains("sum_two[3, 4] = 7 sum_two[0, 4] = 0"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}

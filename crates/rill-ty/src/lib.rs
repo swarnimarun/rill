@@ -2049,6 +2049,9 @@ impl Checker<'_> {
                 self.pattern(pattern, &bound);
             }
             Stmt::TryBind { local, value, .. } => {
+                // `let? x = e` binds `e`'s value or makes the enclosing function
+                // fail, so the binding decides.
+                self.add_effects(&[Effect::Decides]);
                 let value_ty = self.expr(value);
                 let bound = self.element_ty(&value_ty);
                 self.local_types[local.0 as usize] = Some(bound);

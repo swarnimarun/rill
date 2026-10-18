@@ -2001,8 +2001,27 @@ impl<'a> Generator<'a> {
             Stmt::Yield { span, .. } => {
                 self.unsupported(*span, "`yield`", "M2 (projections)");
             }
-            Stmt::TryBind { span, .. } => {
-                self.unsupported(*span, "`let?`", "M3 (`<decides>`)");
+            Stmt::TryBind { local, value, span } => {
+                // `let? x = e` binds the value and, when `e` fails, leaves the
+                // function through its own status return. That is correct only
+                // while the innermost continuation is that return: inside an
+                // arm or a handler, the remaining statements would have to be
+                // guarded by the failure flag, which is not lowered yet.
+                let name = format!("v_{}", self.text(self.hir.local(*local).name));
+                self.bind(*local, name.clone());
+                if !self.fail_targets.is_empty() || self.failable.is_none() {
+                    self.unsupported(
+                        *span,
+                        "`let?` inside a handler or a speculative arm",
+                        "M4 (handlers)",
+                    );
+                    return;
+                }
+                let ty = self.expr_ty(value);
+                let cty = self.c_type(&ty);
+                let value_code = self.expr(value);
+                self.body
+                    .push_str(&format!("  {cty} {name} = {value_code};\n"));
             }
             Stmt::When { span, .. } => {
                 self.unsupported(*span, "`when` guards", "M3 (`<decides>`)");

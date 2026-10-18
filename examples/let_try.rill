@@ -1,0 +1,17 @@
+use std::io;
+
+# `let? x = e` binds `e`'s value or makes the function fail, so a chain of
+# failable steps reads linearly and the failure leaves through the status return.
+
+let first_positive (x: i32, y: i32) -> i32 <decides> =
+    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+
+let sum_two (a: i32, b: i32) -> i32 <decides> = {
+    let? x = first_positive[a, 0];
+    let? y = first_positive[b, 0];
+    x + y
+};
+
+let main () -> () <io | decides> = {
+    io::println ("sum_two[3, 4] = " ++ ((sum_two[3, 4] | 0) as String) ++ " sum_two[0, 4] = " ++ ((sum_two[0, 4] | 0) as String))
+};
