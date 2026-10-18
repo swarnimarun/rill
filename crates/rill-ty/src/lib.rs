@@ -259,6 +259,9 @@ struct Checker<'a> {
     nominals: Vec<NominalDef>,
     nominal_by_item: HashMap<ItemId, NominalId>,
     option_elems: HashMap<ExprId, Ty>,
+    /// `(trait, implementing type)` for every `impl` in the module, which is what
+    /// makes coercing a concrete value into a `dyn` value checkable.
+    dyn_impls: Vec<(Symbol, Symbol)>,
     item_types: Vec<ItemTy>,
     local_types: Vec<Option<Ty>>,
     expr_types: HashMap<ExprId, Ty>,
@@ -292,6 +295,7 @@ impl<'a> Checker<'a> {
     fn new(frontend: &'a rill_ast::Frontend, hir: &'a Hir) -> Self {
         Checker {
             option_elems: HashMap::new(),
+            dyn_impls: Vec::new(),
             frontend,
             hir,
             subst: HashMap::new(),
@@ -462,6 +466,13 @@ impl<'a> Checker<'a> {
         let found = self.resolve_deep(found);
         match (&expected, &found) {
             (Ty::Error, _) | (_, Ty::Error) => true,
+            // `dyn Trait` accepts a concrete value whose type has an `impl` of
+            // that trait: the coercion builds the `{ data, vtable }` pair, so the
+            // checker only has to accept it (and the codegen finds the vtable in
+            // its own registry).
+            (Ty::Nominal(id), other) | (other, Ty::Nominal(id)) if *id == self.dyn_id => {
+                self.coerces_to_dyn(other)
+            }
             // A choice unifies with either of its alternatives.
             (Ty::Choice(inner), other) | (other, Ty::Choice(inner)) => {
                 self.unify(inner, other, span, context)
@@ -745,6 +756,15 @@ impl<'a> Checker<'a> {
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
         });
+        // Every `impl Trait Type` in the module, so a `dyn` coercion can require
+        // that one exists for the concrete type involved.
+        for item in self.hir.items() {
+            if let ItemKind::Impl(def) = &item.kind {
+                if let (Some(trait_name), Some(target)) = (item.name, def.params.first().copied()) {
+                    self.dyn_impls.push((trait_name, target));
+                }
+            }
+        }
         // Nominal types and signatures first, so order does not matter.
         for item in self.hir.items() {
             if let ItemKind::Type(def) = &item.kind {
@@ -1598,6 +1618,31 @@ impl Checker<'_> {
                 }
             }
         }
+    }
+
+    /// Whether `ty` is a concrete type that some registered `impl` provides for -
+    /// the check a `dyn` coercion needs.
+    fn coerces_to_dyn(&mut self, ty: &Ty) -> bool {
+        let ty = self.resolve_deep(ty);
+        // The implementing type in an `impl` head is a name, so the check is by
+        // name: a nominal whose name matches a registered target can be coerced.
+        // A miss here is reported by code generation, which is where the vtable
+        // registry lives, so this stays a necessary condition rather than a guess.
+        let name = match &ty {
+            Ty::Nominal(id) | Ty::Record(id) => {
+                Some(self.text(self.nominals[id.0 as usize].name).to_string())
+            }
+            _ => None,
+        };
+        let Some(name) = name else {
+            return false;
+        };
+        if name.is_empty() {
+            return false;
+        }
+        self.dyn_impls
+            .iter()
+            .any(|(_, target)| self.text(*target) == name)
     }
 
     fn numeric(&mut self, ty: &Ty, span: Span, context: &str) {

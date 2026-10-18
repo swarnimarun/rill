@@ -646,6 +646,12 @@ impl<'a> Generator<'a> {
             Stmt::Var {
                 local, ty, init, ..
             } => {
+                // A `dyn`-typed binding type-checks (the checker accepts a concrete
+                // value for it) but the `{ data, vtable }` pair is not built yet, so
+                // it is reported rather than failing in C.
+                if matches!(ty, Some(rill_ast::Type::Dyn { .. })) {
+                    self.unsupported(stmt.span(), "binding a `dyn` value", "M4 (the vtable pair)");
+                }
                 let init_code = self.expr(init);
                 let checked_ty = self.local_ty(*local);
                 let declared = if matches!(checked_ty, Ty::Error) {
@@ -2403,6 +2409,12 @@ impl<'a> Generator<'a> {
             Stmt::Var {
                 local, ty, init, ..
             } => {
+                // A `dyn`-typed binding type-checks (the checker accepts a concrete
+                // value for it) but the `{ data, vtable }` pair is not built yet, so
+                // it is reported rather than failing in C.
+                if matches!(ty, Some(rill_ast::Type::Dyn { .. })) {
+                    self.unsupported(stmt.span(), "binding a `dyn` value", "M4 (the vtable pair)");
+                }
                 let init_code = self.expr(init);
                 let checked_ty = self.local_ty(*local);
                 let declared = if matches!(checked_ty, Ty::Error) {
@@ -2422,6 +2434,9 @@ impl<'a> Generator<'a> {
                 self.bind_pattern(pattern, &value_code);
             }
             Stmt::Set { place, value, .. } => {
+                // A `dyn` coercion type-checks (the checker accepts a concrete
+                // value for a `dyn` place) but its pair is not constructed yet, so
+                // it is reported instead of failing in C.
                 let target = self.place(place);
                 let value_code = self.expr(value);
                 // A writing function records the bytes it is about to
