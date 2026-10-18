@@ -1539,6 +1539,25 @@ impl Checker<'_> {
         // A `.`-selected name is a field or a method of the left operand.
         if op == BinaryOp::Flow {
             match &rhs.kind {
+                // `x . proj` — a projection selected by name. Its value is the
+                // projection's declared result (the yielded place). The arm must
+                // *return*: falling through would report the selection as an
+                // unknown field.
+                ExprKind::Path {
+                    res: Res::Item(id), ..
+                } => {
+                    return match self.item_types.get(id.0 as usize).cloned() {
+                        Some(ItemTy::Fn { ret, .. }) => {
+                            self.expr_types.insert(rhs.id, ret.clone());
+                            ret
+                        }
+                        _ => {
+                            let display = self.display(&left);
+                            self.err(span, format!("`{display}`: no such field or projection"));
+                            Ty::Error
+                        }
+                    };
+                }
                 ExprKind::Path {
                     res: Res::Field, ..
                 } => {
