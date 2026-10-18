@@ -1439,6 +1439,67 @@ impl<'a> Generator<'a> {
         }
     }
 
+    /// A partial application of a named function, closed over constant
+    /// arguments, emitted as a static function.
+    fn partial_application(
+        &mut self,
+        whole: &Expr,
+        id: ItemId,
+        params: &[Ty],
+        ret: &Ty,
+        args: &[rill_hir::Arg],
+    ) -> String {
+        // Only constants can be captured: a generated C function has no
+        // environment, so anything else needs the closure representation.
+        let mut captured: Vec<String> = Vec::new();
+        for arg in args {
+            match &arg.value.kind {
+                ExprKind::Literal { kind, text } => {
+                    captured.push(self.literal(*kind, text));
+                }
+                _ => {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            arg.span,
+                            "partial application can only capture constants for now",
+                        )
+                        .note(
+                            "capturing a local needs the closure representation ({fn, env}), planned next"
+                                .to_string(),
+                        ),
+                    );
+                    return "0".into();
+                }
+            }
+        }
+        let remaining = &params[args.len()..];
+        let name = format!("rill_partial{}_{}", id.0, args.len());
+        if !self.emitted_types.contains(&name) {
+            self.emitted_types.insert(name.clone());
+            let ret_c = self.c_type(ret);
+            let mut param_decls = Vec::new();
+            let mut call_args = captured.clone();
+            for (index, ty) in remaining.iter().enumerate() {
+                let ty = ty.clone();
+                let decl = self.c_decl(&ty, &format!("a{index}"));
+                param_decls.push(decl);
+                call_args.push(format!("a{index}"));
+            }
+            let callee_name = self.item_c_name(id);
+            self.defs.push_str(&format!(
+                "static {ret_c} {name}({}) {{ return {callee_name}({}); }}\n",
+                if param_decls.is_empty() {
+                    "void".to_string()
+                } else {
+                    param_decls.join(", ")
+                },
+                call_args.join(", ")
+            ));
+        }
+        let _ = whole;
+        name
+    }
+
     /// `x.field[i]` — select the field, then index into it.
     fn indexed_member(
         &mut self,
@@ -1867,6 +1928,25 @@ impl<'a> Generator<'a> {
     }
 
     fn call(&mut self, whole: &Expr, callee: &Expr, args: &[rill_hir::Arg]) -> String {
+        // Partial application: `add 1` for `add (x, y)` becomes a generated
+        // function that closes over the supplied arguments. Captures must be
+        // constants, which keeps the value an ordinary function pointer (so it
+        // can be stored, passed and called); anything else is reported.
+        if let ExprKind::Path {
+            res: Res::Item(id), ..
+        } = &callee.kind
+        {
+            let callee_ty = self
+                .checked
+                .expr_ty(callee.id)
+                .cloned()
+                .unwrap_or(Ty::Error);
+            if let Ty::Fn { params, ret, .. } = callee_ty {
+                if args.len() < params.len() && !args.is_empty() {
+                    return self.partial_application(whole, *id, &params, &ret, args);
+                }
+            }
+        }
         // Static trait dispatch: a call to a trait method is routed to the impl
         // whose first parameter type matches the first argument.
         if let ExprKind::Path {

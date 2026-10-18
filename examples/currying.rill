@@ -1,0 +1,17 @@
+use std::io;
+
+# Partial application (PLAN §9): `add 1` fixes the leading parameter and yields
+# a function of the rest. With constant captures the result is an ordinary
+# function pointer, so it can be stored, passed to another function and called.
+
+let add (x: i32, y: i32) -> i32 <computes> = x + y;
+let scale (factor: i32, value: i32) -> i32 <computes> = factor * value;
+
+let apply (f: (i32) -> i32, value: i32) -> i32 <computes> = f value;
+
+let main () -> i32 <io> = {
+    inc := add 1;
+    triple := scale 3;
+    io::println ("inc 41 = " ++ (inc 41 as String) ++ " triple 14 = " ++ (triple 14 as String));
+    apply (inc, 41)
+};

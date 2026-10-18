@@ -1841,6 +1841,21 @@ impl Checker<'_> {
                 ret,
                 effects,
             } => {
+                if arg_tys.len() < params.len() {
+                    // Partial application (PLAN §9): the supplied arguments fix
+                    // the leading parameters, and the value is a function of the
+                    // remaining ones.
+                    self.add_effects(&effects);
+                    for (index, (param, arg)) in params.iter().zip(arg_tys.iter()).enumerate() {
+                        let arg_span = args.get(index).map(|a| a.span).unwrap_or(span);
+                        self.unify(param, arg, arg_span, context);
+                    }
+                    return Ty::Fn {
+                        params: params[arg_tys.len()..].to_vec(),
+                        ret,
+                        effects,
+                    };
+                }
                 if params.len() != arg_tys.len() {
                     self.diagnostics.push(
                         Diagnostic::error(

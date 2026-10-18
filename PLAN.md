@@ -1376,8 +1376,14 @@ rather than inventing a second one.
    `.`-method calls routed through them.
 4. **`<decides>` / `<transacts>`** — success/fail edges, `|` with undo-trail
    rollback, then `option`/`one`/`all` handlers.
-5. **Currying / partial application** — syntactic arity grouping plus closure
-   structs for partial applications.
+5. **Currying / partial application — first cut done.** `add 1` fixes the
+   leading parameter and yields a function of the rest. With constant captures
+   the result is an ordinary function pointer (generated per (callee, arity)),
+   so it can be stored in a local, passed to another function and called through
+   that parameter. `examples/currying.rill` verifies both, plus passing the
+   result to a function. Capturing a *local* is reported with a note pointing at
+   the closure representation (see the design note above); that and escaping
+   closures are the remaining half.
 6. **SIMD** — `[T; N]` lane operations and a `simd { }` builder lowered to loops
    that clang vectorises; shaped tensors later.
 7. **`dyn`** — trait objects as fat pointers `(data, vtable)` with dispatch; the
