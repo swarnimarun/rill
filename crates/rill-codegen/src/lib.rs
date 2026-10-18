@@ -1075,6 +1075,15 @@ impl<'a> Generator<'a> {
         name
     }
 
+    /// One place that renders a call. It currently reproduces the text every site
+    /// emitted before, so the corpus must stay green; routing every call through
+    /// here first is what makes the hand-built sites findable when the closure
+    /// representation changes it to a pair call.
+    fn call_through(&mut self, callee: &Expr, arguments: &[String]) -> String {
+        let code = self.expr(callee);
+        format!("{code}({})", arguments.join(", "))
+    }
+
     fn param_list(&mut self, id: ItemId, def: &rill_hir::FnDef) -> String {
         let checked_params: Vec<Ty> = match self.checked.item_ty(id).cloned() {
             Some(ItemTy::Fn { params, .. }) => params,
@@ -1404,6 +1413,7 @@ impl<'a> Generator<'a> {
             ExprKind::Lambda { params, body } => self.lambda(expr, params, body),
             ExprKind::Call { callee, args } => self.call(expr, callee, args),
             ExprKind::Index { base, args } => {
+                let callee_expr = base;
                 let base = self.expr(base);
                 let index = args
                     .first()
@@ -1465,7 +1475,7 @@ impl<'a> Generator<'a> {
                                 }
                             })
                             .collect();
-                        format!("{base}({})", arguments.join(", "))
+                        self.call_through(callee_expr, &arguments)
                     }
                     Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
                     Ty::Array { len: None, .. } => format!("({base}).ptr[{index}]"),
@@ -1718,9 +1728,16 @@ impl<'a> Generator<'a> {
                                     .collect();
                                 self.temp += 1;
                                 let hand = format!("_a{}", self.temp);
+                                let call = self.call_through(
+                                    base,
+                                    &arguments
+                                        .iter()
+                                        .cloned()
+                                        .chain(std::iter::once(format!("&{hand}")))
+                                        .collect::<Vec<_>>(),
+                                );
                                 self.body.push_str(&format!(
-                                    "  {{ {ety} {hand} = {{0}}; if ({callee}({}, &{hand})) {{ {out_slice}.ptr[{out_slice}.len] = {hand}; {out_slice}.len += 1; }} }}\n",
-                                    arguments.join(", ")
+                                    "  {{ {ety} {hand} = {{0}}; if ({call}) {{ {out_slice}.ptr[{out_slice}.len] = {hand}; {out_slice}.len += 1; }} }}\n"
                                 ));
                             }
                             None => {
@@ -2014,15 +2031,22 @@ impl<'a> Generator<'a> {
                 param_decls.push(decl);
                 call_args.push(format!("a{index}"));
             }
-            let callee_name = self.item_c_name(id);
+            let callee_expr = rill_hir::Expr {
+                id: rill_hir::ExprId(0),
+                kind: rill_hir::ExprKind::Path {
+                    segments: Vec::new(),
+                    res: Res::Item(id),
+                },
+                span: rill_span::Span::DUMMY,
+            };
+            let call = self.call_through(&callee_expr, &call_args);
             self.defs.push_str(&format!(
-                "static {ret_c} {name}({}) {{ return {callee_name}({}); }}\n",
+                "static {ret_c} {name}({}) {{ return {call}; }}\n",
                 if param_decls.is_empty() {
                     "void".to_string()
                 } else {
                     param_decls.join(", ")
-                },
-                call_args.join(", ")
+                }
             ));
         }
         let _ = whole;
@@ -2397,9 +2421,16 @@ impl<'a> Generator<'a> {
                         .collect();
                     self.temp += 1;
                     let hand = format!("_a{}", self.temp);
+                    let call = self.call_through(
+                        base,
+                        &arguments
+                            .iter()
+                            .cloned()
+                            .chain(std::iter::once(format!("&{hand}")))
+                            .collect::<Vec<_>>(),
+                    );
                     out.push_str(&format!(
-                        " if (!{done}) {{ rill_txn_rollback({mark}); {cty} {hand} = {{0}}; if ({callee}({}, &{hand})) {{ {slot} = {hand}; {done} = true; }} }}",
-                        arguments.join(", ")
+                        " if (!{done}) {{ rill_txn_rollback({mark}); {cty} {hand} = {{0}}; if ({call}) {{ {slot} = {hand}; {done} = true; }} }}"
                     ));
                 }
                 None => {
@@ -2839,7 +2870,6 @@ impl<'a> Generator<'a> {
             );
             return "0".into();
         }
-        let callee_code = self.expr(callee);
         let callee_ty = self.expr_ty(callee);
         let mut arguments: Vec<String> = args
             .iter()
@@ -2861,7 +2891,7 @@ impl<'a> Generator<'a> {
                 }
             }
         }
-        format!("{callee_code}({})", arguments.join(", "))
+        self.call_through(callee, &arguments)
     }
 
     fn construct(
