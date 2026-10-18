@@ -43,6 +43,7 @@ pub fn emit_c(
 }
 
 const RUNTIME: &str = r#"// ---- rill runtime (libc-backed bootstrap) ---------------------------------
+#include <stdbool.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -221,6 +222,9 @@ struct Generator<'a> {
     /// Statements of the function currently being emitted.
     body: String,
     temp: usize,
+    /// `(out-parameter name, C type)` while emitting a `<decides>` function,
+    /// whose status is returned out-of-band (PLAN §12).
+    failable: Option<(String, String)>,
     emitted_types: HashSet<String>,
     diagnostics: Diagnostics,
     scopes: Vec<Vec<(LocalId, String)>>,
@@ -247,6 +251,7 @@ impl<'a> Generator<'a> {
             defs: String::new(),
             body: String::new(),
             temp: 0,
+            failable: None,
             emitted_types: HashSet::new(),
             diagnostics: Diagnostics::new(),
             scopes: Vec::new(),
@@ -747,7 +752,21 @@ impl<'a> Generator<'a> {
             _ => Ty::Unit,
         };
         let ret = self.c_type(&ret_ty);
-        let params = self.param_list(id, def);
+        let is_failable = def
+            .effects
+            .items
+            .iter()
+            .any(|effect| self.text(effect.name.sym) == "decides");
+        let mut params = self.param_list(id, def);
+        if is_failable {
+            // The status is returned out-of-band, so the value travels through
+            // an out-parameter (PLAN.md §12).
+            params = if params == "void" {
+                format!("{ret} *_out")
+            } else {
+                format!("{params}, {ret} *_out")
+            };
+        }
         // Only the program's own `main` becomes the C entry point; an impl
         // method that happens to be called `main` must stay a static function.
         let is_main = allow_main
@@ -757,7 +776,16 @@ impl<'a> Generator<'a> {
                 .name
                 .map(|n| self.text(n) == "main")
                 .unwrap_or(false);
-        let (ret_decl, final_name) = if is_main {
+        let (ret_decl, final_name) = if is_failable {
+            // A failable `main` becomes `rill_main_impl`, with a wrapper whose
+            // exit code reports the failure.
+            let impl_name = if is_main {
+                format!("{name}_impl")
+            } else {
+                name.clone()
+            };
+            ("bool".to_string(), impl_name)
+        } else if is_main {
             // The program's `main` becomes the C entry point; its value is the
             // process exit code.
             ("int".to_string(), "main".to_string())
@@ -768,6 +796,7 @@ impl<'a> Generator<'a> {
         let linkage = if is_main { "" } else { "static " };
         self.protos
             .push_str(&format!("{linkage}{ret_decl} {final_name}({params});\n"));
+        let wrapper_for = is_failable.then(|| (is_main, ret.clone(), final_name.clone()));
 
         let previous = std::mem::take(&mut self.body);
         // A body sees module-level statics but no enclosing function's locals.
@@ -790,10 +819,30 @@ impl<'a> Generator<'a> {
                 }
             }
         }
+        self.failable = if is_failable {
+            Some(("_out".to_string(), ret.clone()))
+        } else {
+            None
+        };
         let tail_value = def.body.as_ref().map(|body| self.expr(body));
         self.body.push('\n');
         let mut body = std::mem::take(&mut self.body);
-        if is_main {
+        if is_failable {
+            // Status out-of-band: the caller gets `true` and reads `*_out`.
+            match tail_value.as_deref() {
+                Some(value) if !matches!(ret_ty, Ty::Unit) => {
+                    body.push_str(&format!("  *_out = {value};\n  return true;\n"));
+                }
+                Some(value) => {
+                    if value != "rill_unit()" {
+                        body.push_str(&format!("  (void)({value});\n"));
+                    }
+                    body.push_str("  *_out = rill_unit();\n  return true;\n");
+                }
+                None => body.push_str("  return true;\n"),
+            }
+            self.failable = None;
+        } else if is_main {
             let value = tail_value.unwrap_or_else(|| "0".to_string());
             body.push_str(&format!("  return (int)({value});\n"));
         } else if matches!(ret_ty, Ty::Unit) {
@@ -813,6 +862,17 @@ impl<'a> Generator<'a> {
         self.defs.push_str(&format!(
             "{linkage}{ret_decl} {final_name}({params}) {{\n{body}}}\n"
         ));
+        if let Some((true, ret, impl_name)) = wrapper_for {
+            // An unhandled failure at the top level exits with status 1.
+            let value = if matches!(ret_ty, Ty::Unit) {
+                "0".to_string()
+            } else {
+                "(int)(_v)".to_string()
+            };
+            self.defs.push_str(&format!(
+                "int main(void) {{\n  {ret} _v = {{0}};\n  return {impl_name}(&_v) ? {value} : 1;\n}}\n"
+            ));
+        }
     }
 
     /// Parameter list from the *checked* signature: nominal parameters must use
@@ -1090,6 +1150,15 @@ impl<'a> Generator<'a> {
     // -- expressions -------------------------------------------------------
 
     fn expr(&mut self, expr: &Expr) -> String {
+        // `f[x] | fallback` — the call's status picks the value (PLAN §3).
+        if let ExprKind::Binary {
+            op: BinaryOp::Choice,
+            lhs,
+            rhs,
+        } = &expr.kind
+        {
+            return self.choice(lhs, rhs);
+        }
         match &expr.kind {
             ExprKind::Literal { kind, text } => self.literal(*kind, text),
             ExprKind::Path { segments, res } => match res {
@@ -1131,6 +1200,21 @@ impl<'a> Generator<'a> {
                 Res::Builtin => {
                     let name = segments.last().map(|s| self.text(*s)).unwrap_or("");
                     match name {
+                        // The failure of a `<decides>` expression: write the
+                        // out-parameter's zero and leave with a false status.
+                        "fail" => match &self.failable {
+                            Some((out, cty)) => {
+                                format!("({{ {cty} _z = {{0}}; *{out} = _z; return false; _z; }})")
+                            }
+                            None => {
+                                self.unsupported(
+                                    expr.span,
+                                    "`fail` outside a `<decides>` function",
+                                    "M4 (the status-pair ABI)",
+                                );
+                                "0".into()
+                            }
+                        },
                         "buf_new" => "rill_buf_new".into(),
                         "buf_push" => "rill_buf_push".into(),
                         "buf_len" => "rill_buf_len".into(),
@@ -1204,17 +1288,48 @@ impl<'a> Generator<'a> {
                     // `f[x]` — an adjacent call, same ABI as `f(x)` for a
                     // non-failable callee; the failable case needs the status
                     // ABI (PLAN.md §12, `<decides>`).
-                    Ty::Fn { effects, .. } => {
+                    Ty::Fn { effects, ret, .. } => {
                         if effects.contains(&rill_ty::Effect::Decides) {
-                            self.unsupported(
-                                expr.span,
-                                "an adjacent call to a `<decides>` function",
-                                "M3/M4 (the status-pair ABI)",
+                            // Inside a `<decides>` function an adjacent call
+                            // propagates the failure: the status is checked and
+                            // a false one leaves through the caller's own
+                            // out-parameter.
+                            let Some((out, cty)) = self.failable.clone() else {
+                                self.unsupported(
+                                    expr.span,
+                                    "an adjacent call to a `<decides>` function",
+                                    "M4 (handlers)",
+                                );
+                                return "0".into();
+                            };
+                            let value_ty = self.c_type(&ret);
+                            let arguments: Vec<String> = args
+                                .iter()
+                                .map(|arg| {
+                                    let value = self.expr(&arg.value);
+                                    match arg.convention {
+                                        Some(rill_ast::Convention::Inout) => format!("&({value})"),
+                                        _ => value,
+                                    }
+                                })
+                                .collect();
+                            self.temp += 1;
+                            let slot = format!("_t{}", self.temp);
+                            return format!(
+                                "({{ {value_ty} {slot} = {{0}}; if (!{base}({}, &{slot})) {{ {cty} _z = {{0}}; *{out} = _z; return false; }} {slot}; }})",
+                                arguments.join(", ")
                             );
-                            return "0".into();
                         }
-                        let arguments: Vec<String> =
-                            args.iter().map(|arg| self.expr(&arg.value)).collect();
+                        let arguments: Vec<String> = args
+                            .iter()
+                            .map(|arg| {
+                                let value = self.expr(&arg.value);
+                                match arg.convention {
+                                    Some(rill_ast::Convention::Inout) => format!("&({value})"),
+                                    _ => value,
+                                }
+                            })
+                            .collect();
                         format!("{base}({})", arguments.join(", "))
                     }
                     Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
@@ -1720,7 +1835,14 @@ impl<'a> Generator<'a> {
                 // The value is discarded, but the expression must still *run*:
                 // calls carry their side effects in the emitted text.
                 let value = self.expr(expr);
-                if !matches!(self.expr_ty(expr), Ty::Unit) {
+                if self.failable.is_some() && matches!(self.expr_ty(expr), Ty::Bool) {
+                    // A bare boolean statement inside a `<decides>` function is a
+                    // failure point (PLAN §3): `amount > 0;` fails when false.
+                    let (out, cty) = self.failable.clone().unwrap();
+                    self.body.push_str(&format!(
+                        "  if (!({value})) {{ {cty} _z = {{0}}; *{out} = _z; return false; }}\n"
+                    ));
+                } else if !matches!(self.expr_ty(expr), Ty::Unit) {
                     self.body.push_str(&format!("  (void)({value});\n"));
                 } else {
                     self.body.push_str(&format!("  {value};\n"));
@@ -1797,6 +1919,47 @@ impl<'a> Generator<'a> {
     }
 
     /// An assignable C lvalue.
+    /// `lhs | rhs`: when the left operand is an adjacent call to a `<decides>`
+    /// function, its status selects between the value and the fallback.
+    fn choice(&mut self, lhs: &Expr, rhs: &Expr) -> String {
+        let (base, args) = match &lhs.kind {
+            ExprKind::Index { base, args } => (base.as_ref(), args),
+            ExprKind::Call { callee, args } => (callee.as_ref(), args),
+            _ => return format!("({})", self.expr(lhs)),
+        };
+        let failable = match self.expr_ty(base) {
+            Ty::Fn { ret, effects, .. } => {
+                effects.contains(&rill_ty::Effect::Decides).then_some(*ret)
+            }
+            _ => None,
+        };
+        let Some(ret) = failable else {
+            return format!("({})", self.expr(lhs));
+        };
+        let cty = self.c_type(&ret);
+        let callee = self.expr(base);
+        let arguments: Vec<String> = args
+            .iter()
+            .map(|arg| {
+                let value = self.expr(&arg.value);
+                match arg.convention {
+                    Some(rill_ast::Convention::Inout) => format!("&({value})"),
+                    _ => value,
+                }
+            })
+            .collect();
+        let fallback = self.expr(rhs);
+        // The slot starts at zero so a failed call never hands back an
+        // uninitialised value, and the fallback may itself be a failable call
+        // (so slots are unique per nesting level).
+        self.temp += 1;
+        let slot = format!("_t{}", self.temp);
+        format!(
+            "({{ {cty} {slot} = {{0}}; if (!{callee}({}, &{slot})) {{ {slot} = ({fallback}); }} {slot}; }})",
+            arguments.join(", ")
+        )
+    }
+
     fn place(&mut self, expr: &Expr) -> String {
         match &expr.kind {
             ExprKind::Path {

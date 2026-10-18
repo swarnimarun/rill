@@ -1,0 +1,18 @@
+use std::io;
+
+# `<decides>` (PLAN §3): a failable function returns its status out-of-band and
+# `f[x] | fallback` picks between the value and the fallback; a fallback that
+# cannot fail discharges the failure, so `pick` stays `<computes>`.
+
+let first_positive (x: i32, y: i32) -> i32 <decides> =
+    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+
+let pick (x: i32, y: i32) -> i32 <computes> = first_positive[x, y] | 0;
+
+let main () -> i32 <io> = {
+    var a = pick[5, 0];
+    var b = pick[0, 7];
+    var c = pick[0, 0];
+    io::println ("pick[5, 0] = " ++ (a as String) ++ " pick[0, 7] = " ++ (b as String) ++ " pick[0, 0] = " ++ (c as String));
+    a * 10 + b
+};

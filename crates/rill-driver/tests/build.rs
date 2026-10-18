@@ -342,3 +342,62 @@ fn builds_and_runs_adjacent_calls() {
     );
     assert_eq!(output.status.code(), Some(20));
 }
+
+#[test]
+fn builds_and_runs_decides() {
+    let dir = workdir("decides");
+    let out = dir.join("decides");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/decides.rill")
+        .canonicalize()
+        .expect("examples/decides.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `first_positive[x, y] | 0`: success, fallback, and failure-then-fallback.
+    assert!(
+        stdout.contains("pick[5, 0] = 5 pick[0, 7] = 7 pick[0, 0] = 0"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(57));
+}
+
+#[test]
+fn builds_and_runs_transfer() {
+    let dir = workdir("transfer");
+    let out = dir.join("transfer");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/transfer.rill")
+        .canonicalize()
+        .expect("examples/transfer.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The 800 arm fails its guard; the `|` fallback performs 200. `main` is
+    // `<decides>`; both arms' failure would exit 1, so 0 proves it succeeded.
+    assert!(
+        stdout.contains("Alice: 300 Bob: 300"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}

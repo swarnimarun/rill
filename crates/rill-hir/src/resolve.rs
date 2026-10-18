@@ -979,7 +979,9 @@ fn pattern_bindings(pattern: &AstPattern) -> Vec<(Symbol, Span)> {
 pub fn is_builtin(name: &str) -> bool {
     matches!(
         name,
-        "zeroed"
+        // `fail` is the failure of a `<decides>` expression (PLAN §3).
+        "fail"
+            | "zeroed"
             | "buf_new"
             | "buf_push"
             | "buf_len"

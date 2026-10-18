@@ -1357,6 +1357,36 @@ Coupled work: the same pair representation is what `dyn` fat pointers need
 (`{ data, vtable }`), so doing currying first means `dyn` reuses the call shape
 rather than inventing a second one.
 
+### `<decides>`: implemented core
+
+`examples/transfer.rill` runs the §11 failure/choice target: guards
+(`amount > 0;`, `from.balance >= amount;`) fail inside a `<decides>` function,
+`transfer[inout a, inout b, 800] | transfer[inout a, inout b, 200]` falls back,
+and the print shows `Alice: 300 Bob: 300` with exit 0.
+
+What is implemented:
+
+- **Status ABI**: a `<decides>` function is `bool f(args…, T *_out)`; its tail
+  writes `*_out` and returns `true`, `fail` in value position writes a zeroed
+  `*_out` and returns `false`, and a bare `bool` statement is a guard.
+- **`f[x]`**: an adjacent call. Inside a `<decides>` function a failing call
+  propagates through the caller's own out-parameter.
+- **`e1 | e2`**: `({ T t = {0}; if (!f(args, &t)) { t = (<e2>); } t; })`, so the
+  fallback may itself be a failable call, whose failure then propagates.
+- **Effect discipline**: a fallback that cannot fail discharges one `decides`
+  from the left side, which is why `pick = first_positive[x, y] | 0` is
+  `<computes>`; `writes` propagates and must be declared.
+- **Failable `main`**: emitted as `bool <name>_impl(void *_out)` plus
+  `int main(void)` returning 1 when the impl fails.
+
+Not implemented, and honestly labelled: a fallback that *itself* fails does not
+restore writes made by the failed left arm — that is `transacts` (the undo
+trail), and it is needed only when a failure happens *between* writes; the
+transfer's guards run before any write, which is why its numbers are correct
+without a trail. Handlers (`option { }`, `one { }`, `all { }`) are also still to
+come; `option { … }` currently parses and type-checks but code generation
+refuses it.
+
 ### Design note: `<decides>` / `<transacts>` (the next block)
 
 This is the largest remaining block and it fixes an ABI, so the order matters:
@@ -1372,7 +1402,9 @@ This is the largest remaining block and it fixes an ABI, so the order matters:
    `T tmp; if (f(args, &tmp)) { tmp } else { <failure path> }`, where the failure
    path is the enclosing choice's next alternative, a handler's failure edge, or
    a `fail` exit.
-3. **`e1 | e2`.** When `e2` is pure, the choice is a branch and the value is a
+3. **`e1 | e2` — done for a pure or failable fallback** (see the status note below).
+   The original design follows.
+ When `e2` is pure, the choice is a branch and the value is a
    phi — no trail. When either side can perform `<writes>`/`<alloc>`, wrap it in
    `transacts`: checkpoint `trail_len`/`arena_used` before, and on failure restore
    bytes backwards from the trail and reset the arena pointers. The undo trail is

@@ -1298,6 +1298,12 @@ impl Checker<'_> {
                 // Builtins carry real signatures, including their effects.
                 Res::Builtin => {
                     let name = segments.last().map(|s| self.text(*s).to_string());
+                    if name.as_deref() == Some("fail") {
+                        // `fail` has no value of its own: it is a hole that
+                        // takes the type its context asks for, and it decides.
+                        self.add_effects(&[Effect::Decides]);
+                        return self.fresh();
+                    }
                     match name.as_deref().and_then(|n| self.builtin_sig(n)) {
                         Some((params, ret, effects)) => {
                             self.add_effects(&effects);
@@ -1695,9 +1701,28 @@ impl Checker<'_> {
                 Ty::Range(Box::new(left))
             }
             BinaryOp::Choice => {
-                self.add_effects(&[Effect::Decides]);
+                // A deciding left operand records `decides` itself; a fallback
+                // that cannot fail discharges it (PLAN §3), which is what makes
+                // `f[x] | 0` usable inside a `<computes>` body.
+                let after_left = self.body_effects.clone();
+                let right = self.expr(rhs);
+                let right_added: Vec<Effect> = self
+                    .body_effects
+                    .iter()
+                    .skip(after_left.len())
+                    .cloned()
+                    .collect();
+                if !right_added.contains(&Effect::Decides) {
+                    if let Some(pos) = self
+                        .body_effects
+                        .iter()
+                        .rposition(|e| *e == Effect::Decides)
+                    {
+                        self.body_effects.remove(pos);
+                    }
+                }
                 self.unify(&left, &right, span, "checking `|` alternatives");
-                Ty::Choice(Box::new(left))
+                left
             }
             BinaryOp::Flow => {
                 let display = self.display(&left);
