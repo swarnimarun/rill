@@ -1,0 +1,26 @@
+use std::io;
+
+# A speculative region inside a loop: the trail must be released when the
+# outermost region ends, or entries accumulate until the caps abort the process.
+# 5000 iterations write twice each — far past the 4096-entry cap.
+
+type Account = record { var balance: i64; };
+
+let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | writes> = {
+    amount > 0;
+    from.balance >= amount;
+    set from.balance = from.balance - amount;
+    to.balance >= amount;
+    set to.balance = to.balance + amount;
+};
+
+let main () -> () <io | decides | writes> = {
+    var alice = Account 1000000i64;
+    var bob = Account 1000000i64;
+    var i = 0;
+    while (i < 5000) {
+        transfer[inout alice, inout bob, 1] | transfer[inout alice, inout bob, 0];
+        set i = i + 1;
+    };
+    io::println ("alice = " ++ (alice.balance as String) ++ " bob = " ++ (bob.balance as String))
+};

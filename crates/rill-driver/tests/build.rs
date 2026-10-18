@@ -468,3 +468,34 @@ fn builds_and_runs_transacts() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_trail_loop() {
+    let dir = workdir("trail_loop");
+    let out = dir.join("trail_loop");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/trail_loop.rill")
+        .canonicalize()
+        .expect("examples/trail_loop.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // 5000 speculative regions of two writes each: 10000 records against a
+    // 4096-entry trail. Before `rill_txn_end` released the trail at depth zero
+    // this aborted; the balances also pin the arithmetic (1 per iteration).
+    assert!(
+        stdout.contains("alice = 995000 bob = 1005000"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}

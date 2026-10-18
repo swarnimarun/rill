@@ -84,7 +84,17 @@ static size_t rill_trail_used;
 static int rill_trail_depth;
 
 static void rill_txn_begin(void) { rill_trail_depth += 1; }
-static void rill_txn_end(void) { if (rill_trail_depth > 0) rill_trail_depth -= 1; }
+static void rill_txn_end(void) {
+  if (rill_trail_depth > 0) rill_trail_depth -= 1;
+  /* Only the outermost region releases the trail. An inner region that
+     succeeded must keep its entries, because an enclosing rollback still has to
+     undo them; resetting here is what stops a loop's regions from accumulating
+     entries until the caps abort the process. */
+  if (rill_trail_depth == 0) {
+    rill_trail_count = 0;
+    rill_trail_used = 0;
+  }
+}
 static size_t rill_txn_checkpoint(void) { return rill_trail_count; }
 static void rill_txn_record(void *addr, size_t size) {
   if (rill_trail_depth == 0) return;
