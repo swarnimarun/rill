@@ -326,6 +326,22 @@ impl<'a> Checker<'a> {
         self.diagnostics.push(Diagnostic::error(span, message));
     }
 
+    /// Fresh variables for a signature's variables: a polymorphic item (a trait
+    /// method, a generic function) must be instantiated per call site, otherwise
+    /// the first call would fix its type parameters for every later call.
+    fn instantiate(&mut self, tys: &[Ty]) -> Vec<Ty> {
+        let mut mapping: HashMap<u32, Ty> = HashMap::new();
+        let mut collector = Vec::new();
+        for ty in tys {
+            collect_vars(ty, &mut collector);
+        }
+        for var in collector {
+            let fresh = self.fresh();
+            mapping.entry(var).or_insert(fresh);
+        }
+        tys.iter().map(|ty| substitute_vars(ty, &mapping)).collect()
+    }
+
     fn fresh(&mut self) -> Ty {
         let id = self.next_var;
         self.next_var += 1;
@@ -959,8 +975,10 @@ impl<'a> Checker<'a> {
 }
 
 impl Checker<'_> {
-    /// Checks one item's body, in its own effect context.
+    /// Checks one item's body, in its own effect context (and with the
+    /// enclosing declaration's type parameters in scope).
     fn item_body(&mut self, item: &rill_hir::Item) {
+        self.type_params = self.enclosing_type_params(item.id);
         match &item.kind {
             ItemKind::Fn(def) => {
                 self.bind_params(def.params.iter().map(|p| (p.local, p.ty.as_ref())));
@@ -1125,8 +1143,16 @@ impl Checker<'_> {
                         effects,
                     }) => {
                         self.add_effects(&effects);
+                        // A polymorphic item (a trait method, a generic
+                        // function) must be instantiated per call site: the
+                        // stored signature's variables are shared, so the first
+                        // call would otherwise fix them for every later call.
+                        let mut all: Vec<Ty> = params.clone();
+                        all.push(ret.clone());
+                        let mut instantiated = self.instantiate(&all);
+                        let ret = instantiated.pop().unwrap_or(Ty::Error);
                         Ty::Fn {
-                            params,
+                            params: instantiated,
                             ret: Box::new(ret),
                             effects,
                         }
@@ -2101,6 +2127,50 @@ pub fn numeric_suffix(text: &str) -> Option<Ty> {
         "f64" => Ty::Float { bits: 64 },
         _ => return None,
     })
+}
+
+/// Every unification variable occurring in `ty`.
+fn collect_vars(ty: &Ty, out: &mut Vec<u32>) {
+    match ty {
+        Ty::Var(id) => {
+            if !out.contains(id) {
+                out.push(*id);
+            }
+        }
+        Ty::Tuple(elems) => elems.iter().for_each(|e| collect_vars(e, out)),
+        Ty::Array { elem, .. } => collect_vars(elem, out),
+        Ty::Range(elem) => collect_vars(elem, out),
+        Ty::Fn { params, ret, .. } => {
+            params.iter().for_each(|p| collect_vars(p, out));
+            collect_vars(ret, out);
+        }
+        Ty::Choice(inner) => collect_vars(inner, out),
+        _ => {}
+    }
+}
+
+/// Replaces variables according to `mapping`.
+fn substitute_vars(ty: &Ty, mapping: &HashMap<u32, Ty>) -> Ty {
+    match ty {
+        Ty::Var(id) => mapping.get(id).cloned().unwrap_or_else(|| ty.clone()),
+        Ty::Tuple(elems) => Ty::Tuple(elems.iter().map(|e| substitute_vars(e, mapping)).collect()),
+        Ty::Array { elem, len } => Ty::Array {
+            elem: Box::new(substitute_vars(elem, mapping)),
+            len: *len,
+        },
+        Ty::Range(elem) => Ty::Range(Box::new(substitute_vars(elem, mapping))),
+        Ty::Fn {
+            params,
+            ret,
+            effects,
+        } => Ty::Fn {
+            params: params.iter().map(|p| substitute_vars(p, mapping)).collect(),
+            ret: Box::new(substitute_vars(ret, mapping)),
+            effects: effects.clone(),
+        },
+        Ty::Choice(inner) => Ty::Choice(Box::new(substitute_vars(inner, mapping))),
+        other => other.clone(),
+    }
 }
 
 fn describe_effects(effects: &[String]) -> String {

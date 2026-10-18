@@ -287,7 +287,12 @@ impl<'a> Generator<'a> {
             match &item.kind {
                 ItemKind::Fn(def) => {
                     if def.body.is_none() {
-                        continue; // signatures/trait members have no body to emit
+                        continue; // signatures have no body to emit
+                    }
+                    if self.member_owner(item.id).is_some() {
+                        // Trait and impl members are emitted by their owner
+                        // (`emit_impl`), under names that keep impls distinct.
+                        continue;
                     }
                     self.emit_fn(item.id, def);
                 }
@@ -297,11 +302,8 @@ impl<'a> Generator<'a> {
                 ItemKind::Project(_) => {
                     self.unsupported(item.span, "`project` bodies", "M2/M4");
                 }
-                ItemKind::Builder(_)
-                | ItemKind::Trait(_)
-                | ItemKind::Impl(_)
-                | ItemKind::Use(_) => {}
                 ItemKind::Impl(def) => self.emit_impl(item, def),
+                ItemKind::Builder(_) | ItemKind::Trait(_) | ItemKind::Use(_) => {}
                 ItemKind::Stmt(stmt) => self.module_static(stmt),
                 ItemKind::Type(_) | ItemKind::Placeholder => {}
             }
@@ -342,6 +344,12 @@ impl<'a> Generator<'a> {
                 _ => Ty::Error,
             };
             let _ = target;
+            if std::env::var_os("RILL_DBG_DISP").is_some() {
+                eprintln!(
+                    "impl registered: trait={trait_name:?} method={method:?} param={:?} name={c_name}",
+                    self.display_ty(&first_param)
+                );
+            }
             self.trait_impls
                 .entry((trait_name.clone(), method.clone()))
                 .or_default()
@@ -387,6 +395,22 @@ impl<'a> Generator<'a> {
             }
             _ => {}
         }
+    }
+
+    /// The declaration that owns `id` as a member (a trait, impl or builder).
+    fn member_owner(&self, id: ItemId) -> Option<ItemId> {
+        for item in self.hir.items() {
+            let member_ids = match &item.kind {
+                ItemKind::Trait(def) => &def.members,
+                ItemKind::Impl(def) => &def.members,
+                ItemKind::Builder(def) => &def.members,
+                _ => continue,
+            };
+            if member_ids.contains(&id) {
+                return Some(item.id);
+            }
+        }
+        None
     }
 
     /// The trait named by `id`: either the trait item itself (a call by the
@@ -626,12 +650,15 @@ impl<'a> Generator<'a> {
         };
         let ret = self.c_type(&ret_ty);
         let params = self.param_list(id, def);
-        let is_main = self
-            .hir
-            .item(id)
-            .name
-            .map(|n| self.text(n) == "main")
-            .unwrap_or(false);
+        // Only the program's own `main` becomes the C entry point; an impl
+        // method that happens to be called `main` must stay a static function.
+        let is_main = allow_main
+            && self
+                .hir
+                .item(id)
+                .name
+                .map(|n| self.text(n) == "main")
+                .unwrap_or(false);
         let (ret_decl, final_name) = if is_main {
             // The program's `main` becomes the C entry point; its value is the
             // process exit code.
@@ -1802,6 +1829,16 @@ impl<'a> Generator<'a> {
                         .get(&(trait_name.clone(), method.clone()))
                         .cloned()
                         .unwrap_or_default();
+                    if std::env::var_os("RILL_DBG_DISP").is_some() {
+                        eprintln!(
+                            "dispatch {trait_name}::{method} arg={:?} candidates={:?}",
+                            self.display_ty(&first_arg),
+                            candidates
+                                .iter()
+                                .map(|(t, n)| (self.display_ty(t), n.clone()))
+                                .collect::<Vec<_>>()
+                        );
+                    }
                     let chosen = candidates
                         .iter()
                         .find(|(param, _)| *param == first_arg)

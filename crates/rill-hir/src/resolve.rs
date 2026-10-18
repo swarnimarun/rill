@@ -109,14 +109,17 @@ impl<'a> Resolver<'a> {
         let members: Vec<(Symbol, ItemId)> = {
             let mut found = Vec::new();
             for item in self.out.items() {
+                // Only trait members are nameable: a method name must resolve to
+                // the trait's polymorphic signature, and static dispatch picks
+                // the impl. Registering impl members too would let the first
+                // call fix the method's type parameter for every later call.
                 let member_ids = match &item.kind {
                     ItemKind::Trait(def) => &def.members,
-                    ItemKind::Impl(def) => &def.members,
                     _ => continue,
                 };
                 for member in member_ids {
                     if let Some(name) = self.out.try_item(*member).and_then(|m| m.name) {
-                        found.push((name, item.id));
+                        found.push((name, *member));
                     }
                 }
             }
@@ -152,18 +155,6 @@ impl<'a> Resolver<'a> {
         for item in &module.items {
             if let AstItem::Use(decl) = item {
                 self.declare_use(&decl.path);
-            }
-        }
-        // Trait methods are callable by name; static dispatch picks the impl.
-        for (item, slot) in module.items.iter().zip(&slots) {
-            let AstItem::Trait(decl) = item else { continue };
-            for member in &decl.members {
-                if let AstItem::Fn(member_fn) = member {
-                    self.module_values
-                        .entry(member_fn.name.sym)
-                        .or_default()
-                        .push(*slot);
-                }
             }
         }
         // Enum variants are nameable on their own (`Circle r`, `Rect 6 7`) as
@@ -300,6 +291,7 @@ impl<'a> Resolver<'a> {
         match slot {
             Some(id) => {
                 self.out.set_item(id, kind, span);
+                self.out.set_item_name(id, name);
                 id
             }
             None => self.push_item_owned(name, kind, span, false),

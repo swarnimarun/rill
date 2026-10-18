@@ -161,3 +161,31 @@ fn allocation_outside_declared_effects_is_rejected() {
         "unexpected stderr: {stderr}"
     );
 }
+
+#[test]
+fn builds_and_runs_static_trait_dispatch() {
+    let dir = workdir("traits");
+    let out = dir.join("traits");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/traits.rill")
+        .canonicalize()
+        .expect("examples/traits.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    assert!(
+        stdout.contains("p Point(3, 4) r Rect(6x7)"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(42));
+}

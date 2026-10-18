@@ -571,6 +571,17 @@ impl HirBuilder {
     }
 
     /// Fills a slot created by the declaration pass.
+    /// Records the declaring name on a slot created by the declaration pass
+    /// (impls declare no module-level name, but their head names the trait).
+    pub(crate) fn set_item_name(&mut self, id: ItemId, name: Option<Symbol>) {
+        if let Some(name) = name {
+            let item = &mut self.hir.items[id.0 as usize];
+            if item.name.is_none() {
+                item.name = Some(name);
+            }
+        }
+    }
+
     pub(crate) fn set_item(&mut self, id: ItemId, kind: ItemKind, span: Span) {
         let item = &mut self.hir.items[id.0 as usize];
         debug_assert!(
