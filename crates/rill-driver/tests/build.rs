@@ -605,6 +605,17 @@ fn builds_and_runs_option_handler() {
         .output()
         .expect("run the produced binary");
     let stdout = String::from_utf8_lossy(&output.stdout);
+    // `when (cond)` guards the rest of its block: the print happens only for the
+    // call where the condition holds.
+    assert_eq!(
+        stdout.matches("positive").count(),
+        1,
+        "the guard did not skip the rest of the block: {stdout}"
+    );
+    assert!(
+        stdout.contains("guarded[5] = 5 guarded[0] = 0"),
+        "unexpected stdout: {stdout}"
+    );
     // A body with statements runs under the handler's continuation: the print
     // after the failed binding must not run, so it appears exactly once.
     assert_eq!(

@@ -21,7 +21,17 @@ let noisy (x: i32) -> i32 <io> =
         v
     })? | 0;
 
+# `when (cond)` is a guard: when it is false the rest of the block is skipped and
+# the enclosing continuation is taken.
+let guarded (x: i32) -> i32 <io> =
+    (option {
+        when (x > 0);
+        io::println ("positive");
+        x
+    })? | 0;
+
 let main () -> () <io | decides> = {
+    io::println ("guarded[5] = " ++ (guarded[5] as String) ++ " guarded[0] = " ++ (guarded[0] as String));
     io::println ("noisy[5] = " ++ (noisy[5] as String) ++ " noisy[0] = " ++ (noisy[0] as String));
     io::println ("maybe[5, 0] = " ++ (maybe[5, 0] as String) ++ " maybe[0, 0] = " ++ (maybe[0, 0] as String))
 };

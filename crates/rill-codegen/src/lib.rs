@@ -2160,7 +2160,26 @@ impl<'a> Generator<'a> {
                 self.body
                     .push_str(&format!("  {cty} {name} = {value_code};\n"));
             }
-            Stmt::When { span, .. } => {
+            Stmt::When { cond, span } => {
+                // `when (cond)` is a guard: when it is false the rest of the block
+                // does not run and the enclosing continuation is taken, which is
+                // the same edge a bare boolean statement uses.
+                if let rill_hir::Cond::Expr(cond) = cond {
+                    let value = self.expr(cond);
+                    if let Some((code, _)) = self.fail_targets.last().cloned() {
+                        self.continuation_used = true;
+                        self.body
+                            .push_str(&format!("  if (!({value})) {{ {code} }}\n"));
+                    } else if let Some((out, cty)) = self.failable.clone() {
+                        self.body.push_str(&format!(
+                            "  if (!({value})) {{ {cty} _z = {{0}}; *{out} = _z; return false; }}\n"
+                        ));
+                    } else {
+                        self.unsupported(*span, "`when` outside a `<decides>` context", "M4");
+                    }
+                    return;
+                }
+                self.unsupported(*span, "a `when` that binds", "M4 (handlers)");
                 self.unsupported(*span, "`when` guards", "M3 (`<decides>`)");
             }
             Stmt::While { cond, body, .. } => {
