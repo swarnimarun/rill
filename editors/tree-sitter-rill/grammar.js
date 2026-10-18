@@ -7,6 +7,23 @@ module.exports = grammar({
 
   extras: $ => [/\s/, $.line_comment, $.block_comment],
 
+  // For highlighting, resolving these by declaration is right: the parser picks one
+  // reading and the queries colour it, and the compiler's own parser remains the
+  // authority on what a program means.
+  conflicts: $ => [
+    [$._expression, $.try_expression],
+    [$.match_expression, $.operator],
+    [$.set_statement, $.operator],
+    [$.application],
+    [$.conditional],
+    [$._body, $._operand, $._expression],
+    [$._operand, $._expression],
+    [$._operand, $._expression, $.binary_expression],
+    [$.parameter_list, $.tuple_expression],
+    [$._body, $._expression],
+    [$._body, $._operand],
+  ],
+
   word: $ => $.identifier,
 
   rules: {
@@ -29,6 +46,7 @@ module.exports = grammar({
     function_definition: $ => seq(
       'let', field('name', $.identifier), $.parameter_list,
       '->', $._type, optional($.effect_row), '=', $._body,
+      optional(';'),
     ),
 
     type_definition: $ => seq(
@@ -48,6 +66,7 @@ module.exports = grammar({
     project_definition: $ => seq(
       'project', field('name', $.identifier), $.parameter_list,
       '->', 'inout', $._type, optional($.effect_row), '=', $._body,
+      optional(';'),
     ),
 
     effect_row: $ => seq('<', sep1('|', $._type), '>'),
@@ -72,13 +91,15 @@ module.exports = grammar({
 
     dyn_type: $ => seq('dyn', $.path),
     raw_pointer: $ => seq('&raw', optional('mut'), $._type),
-    type_application: $ => seq($.identifier, repeat1($._type)),
+    type_application: $ => prec.left(1, seq($.identifier, repeat1($._type))),
     tuple_type: $ => seq('(', sep(',', $._type), ')'),
     array_type: $ => seq('[', $._type, ';', $.number, ']'),
     function_type: $ => seq('(', sep(',', $._type), ')', '->', $._type),
 
     _body: $ => choice($.block, $._expression),
-    block: $ => seq('{', repeat($._statement), optional($._expression), '}'),
+    // A block is a sequence of statements; an expression in tail position is an
+    // expression *statement*, which is what removes the block/statement ambiguity.
+    block: $ => seq('{', repeat($._statement), '}'),
 
     statement: $ => seq($._statement_kind, optional(';')),
     _statement_kind: $ => choice(
@@ -87,10 +108,11 @@ module.exports = grammar({
       $.yield_statement,
       $.when_statement,
       $.for_statement,
-      $.expression,
+      $._expression,
       $.let_stmt,
     ),
     _statement: $ => $._statement_kind,
+    expression_statement: $ => seq($._expression, optional(';')),
 
     let_stmt: $ => seq('let', $.identifier, $._expression),
     variable_declaration: $ => choice(
@@ -101,6 +123,29 @@ module.exports = grammar({
     yield_statement: $ => choice(seq('yield', 'inout', $._expression), seq('yield', $._expression)),
     when_statement: $ => seq('when', '(', $._expression, ')'),
     for_statement: $ => seq('for', '(', $.identifier, ':=', $._expression, ')', $._expression),
+
+    // Operators take an *operand* - everything that is not itself an operator
+    // application - which is what keeps the expression grammar unambiguous without
+    // a precedence cascade.
+    _operand: $ => choice(
+      $.conditional,
+      $.match_expression,
+      $.lambda,
+      $.handler,
+      $.call_expression,
+      $.index_expression,
+      $.field_expression,
+      $.try_expression,
+      $.path,
+      $.number,
+      $.string,
+      $.character,
+      $.boolean,
+      $.tuple_expression,
+      $.array_expression,
+      $.record_expression,
+      $.block,
+    ),
 
     _expression: $ => choice(
       $.conditional,
@@ -118,7 +163,6 @@ module.exports = grammar({
       $.string,
       $.character,
       $.boolean,
-      $.unit,
       $.tuple_expression,
       $.array_expression,
       $.record_expression,
@@ -132,11 +176,12 @@ module.exports = grammar({
     record_expression: $ => seq($.identifier, '{', sep(',', seq($.identifier, ':', $._expression)), '}'),
 
     binary_expression: $ => prec.left(1, seq($._expression, $.operator, $._expression)),
-    unary_expression: $ => prec(2, seq(choice('not', '-', '&raw', 'inout', 'unsafe'), $._expression)),
-    call_expression: $ => prec(3, seq($._expression, '(', sep(',', $._expression), ')')),
-    index_expression: $ => prec(3, seq($._expression, '[', sep(',', $._expression), ']')),
-    application: $ => prec(3, seq($._expression, $._expression)),
-    field_expression: $ => prec(4, seq($._expression, '.', choice($.identifier, $.number))),
+    unary_expression: $ => prec(2, seq(choice('not', '-', '&raw', 'inout', 'unsafe'), $._operand)),
+    call_expression: $ => prec(4, seq($._operand, '(', sep(',', $._expression), ')')),
+    index_expression: $ => prec(4, seq($._operand, '[', sep(',', $._expression), ']')),
+    application: $ => prec(3, seq($._operand, $._operand)),
+    field_expression: $ => prec(5, seq($._operand, '.', choice($.identifier, $.number))),
+    try_expression: $ => prec(6, seq($._expression, '?')),
 
     operator: $ => choice(
       '+', '-', '*', '/', '%', '++', '==', '!=', '<', '>', '<=', '>=',
@@ -144,9 +189,9 @@ module.exports = grammar({
     ),
 
     path: $ => prec(5, seq($.identifier, repeat(seq('::', $.identifier)))),
-    tuple_expression: $ => seq('(', sep(',', $._expression), ')'),
+    // `()` is the empty tuple, so there is no separate unit rule to conflict with.
+    tuple_expression: $ => seq('(', optional(sep(',', $._expression)), ')'),
     array_expression: $ => seq('[', sep(',', $._expression), ']'),
-    unit: $ => seq('(', ')'),
 
     identifier: $ => /[A-Za-z_][A-Za-z0-9_]*/,
     number: $ => /[0-9]+(\.[0-9]+)?([a-z0-9]+)?/,
