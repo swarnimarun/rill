@@ -511,3 +511,59 @@ fn builds_and_runs_trail_loop() {
     );
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_one_handler() {
+    let dir = workdir("one");
+    let out = dir.join("one");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/one.rill")
+        .canonicalize()
+        .expect("examples/one.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `one` takes the first successful arm (7), then a later one (9), and when
+    // every arm fails the enclosing `| 5` catches it.
+    assert!(stdout.contains("one: 7 9 5"), "unexpected stdout: {stdout}");
+    assert_eq!(output.status.code(), Some(0));
+}
+
+#[test]
+fn one_handler_with_no_success_exits_one() {
+    let dir = workdir("one_fail");
+    let out = dir.join("one_fail");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/one_fail.rill")
+        .canonicalize()
+        .expect("examples/one_fail.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    // Every arm fails, nothing handles it: no output, and a clean exit 1.
+    assert!(
+        output.stdout.is_empty(),
+        "the unreachable print ran: {:?}",
+        String::from_utf8_lossy(&output.stdout)
+    );
+    assert_eq!(output.status.code(), Some(1));
+}

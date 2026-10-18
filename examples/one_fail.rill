@@ -1,0 +1,15 @@
+use std::io;
+
+# `one { chain }` with no successful arm: the handler fails, `main` is `<decides>`
+# and nothing handles it, so the program exits 1 without printing.
+
+let first_positive (x: i32, y: i32) -> i32 <decides> =
+    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+
+let pick_one (x: i32, y: i32, z: i32) -> i32 <decides> =
+    one { first_positive[x, y] | first_positive[y, z] };
+
+let main () -> () <io | decides> = {
+    var n = pick_one[0, 0, 0];
+    io::println ("unreachable " ++ (n as String))
+};

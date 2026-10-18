@@ -2042,6 +2042,10 @@ impl<'a> Generator<'a> {
         let mut alternatives: Vec<&Expr> = Vec::new();
         flatten_choice(lhs, &mut alternatives);
         alternatives.push(rhs);
+        // `one { … }` requires success of *its own* chain: a `|` nested inside
+        // one of its arms is an ordinary choice again, and its trailing failure
+        // belongs to that arm's continuation, not to the function.
+        let outer_require = std::mem::take(&mut self.require_success);
 
         let failable: Vec<Option<(&Expr, &[rill_hir::Arg])>> = alternatives
             .iter()
@@ -2056,12 +2060,16 @@ impl<'a> Generator<'a> {
         // are rolled back before the next arm runs, and a total failure rolls
         // back to the checkpoint before continuing outward.
         let mark = format!("_cp{level}");
+        // The region opens in the function body, before the arms are lowered:
+        // lowering an arm hoists statements here, and writes performed while
+        // evaluating an arm must be recorded and rollback-able like any other.
+        self.body.push_str(&format!(
+            "  rill_txn_begin(); size_t {mark} = rill_txn_checkpoint();\n"
+        ));
         // Whether the *last* alternative can fail: a pure final arm always
         // produces a value, so no failure can reach the end of the chain.
         let mut last_can_fail = false;
-        let mut out = format!(
-            "({{ {cty} {slot} = {{0}}; bool {done} = false; rill_txn_begin(); size_t {mark} = rill_txn_checkpoint();"
-        );
+        let mut out = format!("({{ {cty} {slot} = {{0}}; bool {done} = false;");
         for (alt, call) in alternatives.iter().zip(failable.iter()) {
             match call {
                 Some((base, args)) => {
@@ -2141,12 +2149,17 @@ impl<'a> Generator<'a> {
         }
         out.push_str(" rill_txn_end();");
         out.push_str(&format!(" {slot}; }})"));
+        self.require_success = outer_require;
         out
     }
 
     /// Leaves the current function with a failure: the statement form of the
     /// failure continuation (`None` outside a `<decides>` function).
     fn fail_statement(&mut self) -> Option<String> {
+        if let Some((code, _)) = self.fail_targets.last() {
+            self.continuation_used = true;
+            return Some(code.clone());
+        }
         self.failable
             .clone()
             .map(|(out, cty)| format!("{cty} _z = {{0}}; *{out} = _z; return false;"))
