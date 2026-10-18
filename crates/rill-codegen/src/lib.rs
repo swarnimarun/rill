@@ -2195,27 +2195,27 @@ impl<'a> Generator<'a> {
                     let arm = self.temp;
                     let ok = format!("_ok{arm}");
                     let held = format!("_v{arm}");
-                    // The flag and the held value live in the function body:
-                    // lowering the arm may hoist statements there (an
-                    // `if`-expression's branch temporary), and those must be
-                    // able to see the flag the arm's `fail` writes.
-                    self.body
-                        .push_str(&format!("  bool {ok} = true; {cty} {held} = {{0}};\n"));
-                    // The reset must precede the arm's evaluation: lowering an
-                    // arm can hoist its statements to the function body, and a
-                    // reset emitted afterwards would erase the failure that
-                    // evaluation just recorded.
-                    self.body.push_str(&format!("  {ok} = true;\n"));
                     self.fail_targets
                         .push((format!("{ok} = false;"), format!("({cty}){{0}}")));
                     let used_before_arm = std::mem::take(&mut self.continuation_used);
+                    // Lowering the arm may emit statements into the function body
+                    // (an `if`-expression's branch temporary, a block's
+                    // statements). Those are *spliced back into the arm's own
+                    // position* in the chain instead of running at body level:
+                    // there they evaluate only when the arm is reached, in
+                    // sequence, inside the trail region, and an arm's own
+                    // declarations stay in scope for its value.
+                    let hoist_mark = self.body.len();
                     let value = self.expr(alt);
+                    let mut arm_body = self.body[hoist_mark..].to_string();
+                    self.body.truncate(hoist_mark);
+                    arm_body.push_str(&format!("{held} = ({value});\n"));
                     let arm_used = self.continuation_used;
                     self.continuation_used = used_before_arm || arm_used;
                     last_can_fail = arm_used;
                     self.fail_targets.pop();
                     out.push_str(&format!(
-                        " if (!{done}) {{ rill_txn_rollback({mark}); {held} = ({value}); if ({ok}) {{ {slot} = {held}; {done} = true; }} }}"
+                        " if (!{done}) {{ rill_txn_rollback({mark}); bool {ok} = true; {cty} {held} = {{0}};\n{arm_body}if ({ok}) {{ {slot} = {held}; {done} = true; }} }}"
                     ));
                 }
             }

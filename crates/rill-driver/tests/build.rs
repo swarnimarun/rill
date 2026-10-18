@@ -380,6 +380,17 @@ fn builds_and_runs_decides() {
         stdout.contains("inline_pick[5] = 5 inline_pick[-1] = 0"),
         "unexpected stdout: {stdout}"
     );
+    // An arm that is not taken must not perform its effects: the block arm's
+    // print happens only for the call that reaches it.
+    assert_eq!(
+        stdout.matches("untaken arm ran").count(),
+        1,
+        "the untaken arm's statement ran: {stdout}"
+    );
+    assert!(
+        stdout.contains("guarded[5] = 5 guarded[-1] = 99"),
+        "unexpected stdout: {stdout}"
+    );
     // `?` propagates the call's failure to the same fallback.
     assert!(
         stdout.contains("try_pick[5, 0] = 5 try_pick[0, 0] = 0"),
