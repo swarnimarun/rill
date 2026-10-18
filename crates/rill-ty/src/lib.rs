@@ -1587,14 +1587,15 @@ impl Checker<'_> {
             let right = self.expr(rhs);
             let right_added: Vec<Effect> = self.body_effects[after_left..].to_vec();
             if left_added.contains(&Effect::Decides) && !right_added.contains(&Effect::Decides) {
-                // A fallback that cannot fail discharges exactly the `decides`
-                // the left arm contributed.
-                let discharged = self.body_effects[before..]
-                    .iter()
-                    .rposition(|effect| *effect == Effect::Decides)
-                    .map(|index| index + before);
-                if let Some(index) = discharged {
-                    self.body_effects.remove(index);
+                // A fallback that cannot fail catches every failure inside the
+                // arm it governs, so all of the arm's own `decides` entries go.
+                let mut index = before;
+                while index < self.body_effects.len() {
+                    if self.body_effects[index] == Effect::Decides {
+                        self.body_effects.remove(index);
+                    } else {
+                        index += 1;
+                    }
                 }
             }
             self.unify(&left, &right, span, "checking `|` alternatives");

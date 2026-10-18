@@ -278,6 +278,13 @@ struct Generator<'a> {
     /// failing site runs the top entry's code and evaluates to its value. Empty
     /// outside any handler or speculative arm, where `fail` leaves the function.
     fail_targets: Vec<(String, String)>,
+    /// Set while lowering `one { … }`: its body must produce a value, so a chain
+    /// every arm of which can fail propagates the failure instead of yielding a
+    /// zeroed slot.
+    require_success: bool,
+    /// Whether the code emitted since this was last cleared consulted a
+    /// continuation, i.e. whether that region can fail at run time.
+    continuation_used: bool,
     emitted_types: HashSet<String>,
     diagnostics: Diagnostics,
     scopes: Vec<Vec<(LocalId, String)>>,
@@ -306,6 +313,8 @@ impl<'a> Generator<'a> {
             temp: 0,
             failable: None,
             fail_targets: Vec::new(),
+            require_success: false,
+            continuation_used: false,
             emitted_types: HashSet::new(),
             diagnostics: Diagnostics::new(),
             scopes: Vec::new(),
@@ -1257,7 +1266,10 @@ impl<'a> Generator<'a> {
                         // The failure of a `<decides>` expression: write the
                         // out-parameter's zero and leave with a false status.
                         "fail" => match self.fail_targets.last().cloned() {
-                            Some((code, value)) => format!("({{ {code} {value}; }})"),
+                            Some((code, value)) => {
+                                self.continuation_used = true;
+                                format!("({{ {code} {value}; }})")
+                            }
                             None => match &self.failable {
                                 Some((out, cty)) => format!(
                                     "({{ {cty} _z = {{0}}; *{out} = _z; return false; _z; }})"
@@ -1351,7 +1363,12 @@ impl<'a> Generator<'a> {
                             // propagates the failure: the status is checked and
                             // a false one leaves through the caller's own
                             // out-parameter.
-                            let Some((out, cty)) = self.failable.clone() else {
+                            let exit = if let Some((code, _)) = self.fail_targets.last() {
+                                self.continuation_used = true;
+                                code.clone()
+                            } else if let Some((out, cty)) = self.failable.clone() {
+                                format!("{cty} _z = {{0}}; *{out} = _z; return false;")
+                            } else {
                                 self.unsupported(
                                     expr.span,
                                     "an adjacent call to a `<decides>` function",
@@ -1372,8 +1389,12 @@ impl<'a> Generator<'a> {
                                 .collect();
                             self.temp += 1;
                             let slot = format!("_t{}", self.temp);
+                            // The failure goes to the innermost continuation: inside
+                            // a choice's arm or a handler body it selects the next
+                            // alternative, and only at the outermost level does it
+                            // leave the function.
                             return format!(
-                                "({{ {value_ty} {slot} = {{0}}; if (!{base}({}, &{slot})) {{ {cty} _z = {{0}}; *{out} = _z; return false; }} {slot}; }})",
+                                "({{ {value_ty} {slot} = {{0}}; if (!{base}({}, &{slot})) {{ {exit} }} {slot}; }})",
                                 arguments.join(", ")
                             );
                         }
@@ -1522,7 +1543,34 @@ impl<'a> Generator<'a> {
                 }
             }
             ExprKind::Unsafe { body } => self.block(body),
-            ExprKind::Handler { kind, .. } => {
+            ExprKind::Handler { kind, body } => {
+                // `one { e }` picks a successful result and fails if there is
+                // none, which is exactly a `|` chain that must produce a value.
+                // `option { e }` would have to yield an `Option τ` value, and
+                // `all { e }` an array; both need their value construction
+                // first (PLAN.md §12), so they stay reported.
+                if matches!(kind, rill_ast::HandlerKind::One) {
+                    let is_choice = matches!(
+                        body.tail.as_ref().map(|tail| &tail.kind),
+                        Some(ExprKind::Binary {
+                            op: BinaryOp::Choice,
+                            ..
+                        })
+                    );
+                    let Some(tail) = body.tail.as_ref().filter(|_| is_choice) else {
+                        self.unsupported(
+                            expr.span,
+                            "a `one { … }` body that is not a `|` chain",
+                            "M4 (handlers)",
+                        );
+                        return "0".into();
+                    };
+                    let previous = self.require_success;
+                    self.require_success = true;
+                    let value = self.expr(tail);
+                    self.require_success = previous;
+                    return value;
+                }
                 let name = match kind {
                     rill_ast::HandlerKind::Option => "option",
                     rill_ast::HandlerKind::One => "one",
@@ -2008,12 +2056,16 @@ impl<'a> Generator<'a> {
         // are rolled back before the next arm runs, and a total failure rolls
         // back to the checkpoint before continuing outward.
         let mark = format!("_cp{level}");
+        // Whether the *last* alternative can fail: a pure final arm always
+        // produces a value, so no failure can reach the end of the chain.
+        let mut last_can_fail = false;
         let mut out = format!(
             "({{ {cty} {slot} = {{0}}; bool {done} = false; rill_txn_begin(); size_t {mark} = rill_txn_checkpoint();"
         );
         for (alt, call) in alternatives.iter().zip(failable.iter()) {
             match call {
                 Some((base, args)) => {
+                    last_can_fail = true;
                     let callee = self.expr(base);
                     let arguments: Vec<String> = args
                         .iter()
@@ -2047,12 +2099,21 @@ impl<'a> Generator<'a> {
                     // able to see the flag the arm's `fail` writes.
                     self.body
                         .push_str(&format!("  bool {ok} = true; {cty} {held} = {{0}};\n"));
+                    // The reset must precede the arm's evaluation: lowering an
+                    // arm can hoist its statements to the function body, and a
+                    // reset emitted afterwards would erase the failure that
+                    // evaluation just recorded.
+                    self.body.push_str(&format!("  {ok} = true;\n"));
                     self.fail_targets
                         .push((format!("{ok} = false;"), format!("({cty}){{0}}")));
+                    let used_before_arm = std::mem::take(&mut self.continuation_used);
                     let value = self.expr(alt);
+                    let arm_used = self.continuation_used;
+                    self.continuation_used = used_before_arm || arm_used;
+                    last_can_fail = arm_used;
                     self.fail_targets.pop();
                     out.push_str(&format!(
-                        " if (!{done}) {{ rill_txn_rollback({mark}); {ok} = true; {held} = ({value}); if ({ok}) {{ {slot} = {held}; {done} = true; }} }}"
+                        " if (!{done}) {{ rill_txn_rollback({mark}); {held} = ({value}); if ({ok}) {{ {slot} = {held}; {done} = true; }} }}"
                     ));
                 }
             }
@@ -2062,8 +2123,11 @@ impl<'a> Generator<'a> {
         // silently returned as a success.
         // Only a chain whose every arm can fail can fail as a whole; a pure
         // last arm always produces a value.
-        if failable.iter().all(|call| call.is_some()) {
+        if self.require_success || last_can_fail {
             if let Some(exit) = self.fail_statement() {
+                if self.fail_targets.last().is_some() {
+                    self.continuation_used = true;
+                }
                 out.push_str(&format!(
                     " if (!{done}) {{ rill_txn_rollback({mark}); rill_txn_end(); {exit} }}"
                 ));
