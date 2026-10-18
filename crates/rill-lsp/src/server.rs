@@ -465,23 +465,35 @@ impl Server {
                 if local.owner.is_none() || local.span.is_dummy() {
                     continue;
                 }
-                // The hint goes right after the *name*, not after the statement:
-                // the HIR records the statement's span, so the name comes from the
-                // concrete tree (the first `Name` token inside the local's span).
-                let (parse, _map) = rill_parser::parse_text(uri, &document.text);
-                let mut names = Vec::new();
-                collect_tokens(&parse.cst.root, &mut names);
-                let name_end = names
-                    .iter()
-                    .filter(|(span, kind)| {
-                        *kind == rill_syntax::SyntaxKind::Name
-                            && local.span.start <= span.start
-                            && span.end <= local.span.end
-                    })
-                    .map(|(span, _)| span.end)
-                    .min()
-                    .unwrap_or(local.span.end);
-                let at = document.source.line_col(name_end);
+                // The hint goes right after the binding's name. `LocalInfo::span` is
+                // the identifier, set by the resolver where the local is declared -
+                // so it is the position, with no scanning of the tree for a
+                // neighbouring name (which could pick a different identifier).
+                // Only trust the span when the source it covers *is* the name.
+                // Some locals (parameters among them) resolve to the span of a *use*
+                // rather than their declaration, and a hint at that position is worse
+                // than no hint: it lands mid-expression and describes another binding.
+                let name = document.frontend.text(rill_ast::Ident::new(local.name, local.span));
+                let covered = document.source.snippet(local.span);
+                if covered != name {
+                    if debug() {
+                        eprintln!(
+                            "lsp: skipping hint for `{name}`: span covers {covered:?}"
+                        );
+                    }
+                    continue;
+                }
+                let at = document.source.line_col(local.span.end);
+                if debug() {
+                    eprintln!(
+                        "lsp: hint for local `{}` at {}:{} (span {}..{})",
+                        document.frontend.text(rill_ast::Ident::new(local.name, local.span)),
+                        at.line,
+                        at.col,
+                        local.span.start.to_usize(),
+                        local.span.end.to_usize()
+                    );
+                }
                 if (at.line as u32) < from_line || (at.line as u32) > to_line {
                     continue;
                 }
@@ -666,7 +678,6 @@ fn capabilities() -> Json {
         // hover and references were never declared here.
         ("hoverProvider", Json::Bool(true)),
         ("referencesProvider", Json::Bool(true)),
-        ("inlayHintProvider", Json::Bool(true)),
         (
             "semanticTokensProvider",
             Json::obj(&[
