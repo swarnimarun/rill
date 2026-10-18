@@ -176,6 +176,10 @@ pub struct NominalDef {
     pub name: Symbol,
     pub kind: NominalKind,
     pub span: Span,
+    /// The C type this nominal already is, when it came from an `@include`d
+    /// header: code generation emits `typedef SDL_FRect st_SDL_FRect;` rather
+    /// than a struct of its own.
+    pub c_name: Option<Symbol>,
 }
 
 /// The checked signature of an item.
@@ -186,6 +190,8 @@ pub enum ItemTy {
         ret: Ty,
         effects: Vec<Effect>,
     },
+    /// A constant imported from a C header, with the type of its literal.
+    Constant(Ty),
     Nominal(NominalId),
     Incomplete,
 }
@@ -819,6 +825,7 @@ impl<'a> Checker<'a> {
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
+            c_name: None,
         });
         // `Buf` is the growable byte buffer behind `<alloc>`: `buf_new`,
         // `buf_push`, `buf_len`, `buf_get` and `buf_text`.
@@ -828,6 +835,7 @@ impl<'a> Checker<'a> {
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
+            c_name: None,
         });
         // `Arena` is the scoped bump allocator: `arena_new`, `arena_mark`,
         // `arena_reset`, `arena_used`, `arena_alloc`.
@@ -837,6 +845,7 @@ impl<'a> Checker<'a> {
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
+            c_name: None,
         });
         // `dyn` is a `{ data, vtable }` pair: an opaque nominal whose C shape is
         // written by the backend, like a function value's pair.
@@ -846,6 +855,7 @@ impl<'a> Checker<'a> {
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
+            c_name: None,
         });
         // Every `impl Trait Type` in the module, so a `dyn` coercion can require
         // that one exists for the concrete type involved.
@@ -862,6 +872,7 @@ impl<'a> Checker<'a> {
             name: Symbol::EMPTY,
             kind: NominalKind::Opaque,
             span: Span::DUMMY,
+            c_name: None,
         });
         // Nominal types and signatures first, so order does not matter.
         for item in self.hir.items() {
@@ -905,6 +916,12 @@ impl<'a> Checker<'a> {
                         ret,
                         effects,
                     };
+                }
+                // A C `#define`: a value, not a call, so it types as its own
+                // type and code generation emits the literal.
+                ItemKind::Constant(def) => {
+                    let ty = self.ast_ty(&def.ty);
+                    self.item_types[item.id.0 as usize] = ItemTy::Constant(ty);
                 }
                 _ => {}
             }
@@ -950,6 +967,7 @@ impl<'a> Checker<'a> {
             name: item.name.unwrap_or(Symbol::EMPTY),
             kind: NominalKind::Opaque,
             span: item.span,
+            c_name: def.c_name,
         });
         self.nominal_by_item.insert(item.id, id);
         self.item_types[item.id.0 as usize] = ItemTy::Nominal(id);
@@ -1074,6 +1092,22 @@ impl<'a> Checker<'a> {
     }
 
     fn path_ty(&mut self, segments: &[rill_ast::Ident], span: Span) -> Ty {
+        // `SDL3::SDL_FRect` — a type an `@include`d module declares.
+        if segments.len() > 1 {
+            if let Some(id) = self.hir.module_item(segments[0].sym, segments[1].sym) {
+                return match self.nominal_by_item.get(&id).copied() {
+                    Some(id) => match &self.nominals[id.0 as usize].kind {
+                        NominalKind::Alias(ty) => ty.clone(),
+                        _ => Ty::Nominal(id),
+                    },
+                    None => {
+                        let name = self.text(segments[1].sym).to_string();
+                        self.err(span, format!("`{name}` is not a type"));
+                        Ty::Error
+                    }
+                };
+            }
+        }
         let name = self.text(segments[0].sym).to_string();
         match name.as_str() {
             "i8" => Ty::Int {
@@ -1149,6 +1183,11 @@ impl<'a> Checker<'a> {
             AstType::Path { segments, .. } => segments,
             _ => return None,
         };
+        if segments.len() > 1 {
+            if let Some(id) = self.hir.module_item(segments[0].sym, segments[1].sym) {
+                return self.nominal_by_item.get(&id).copied();
+            }
+        }
         self.hir
             .named_items(segments[0].sym)
             .into_iter()
@@ -1365,6 +1404,7 @@ impl Checker<'_> {
                     .and_then(|t| t.clone())
                     .unwrap_or(Ty::Error),
                 Res::Item(id) => match self.item_types.get(id.0 as usize).cloned() {
+                    Some(ItemTy::Constant(ty)) => ty,
                     Some(ItemTy::Fn {
                         params,
                         ret,
