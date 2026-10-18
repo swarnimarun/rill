@@ -69,6 +69,45 @@ typedef struct { int32_t unused; } r_unit;
 
 static r_unit rill_unit(void) { r_unit u; u.unused = 0; return u; }
 
+/* `<transacts>` undo trail (PLAN §3): every write performed while a trail is
+   active records the bytes it overwrites, so a failed speculative region can be
+   rolled back. Recording is unconditional at the call site and gated here, which
+   is what lets a callee whose effects include <writes> record even though the
+   speculation lives in its caller. */
+#define RILL_TRAIL_ENTRIES 4096
+#define RILL_TRAIL_BYTES (1u << 20)
+typedef struct { void *addr; size_t size; size_t offset; } rill_trail_entry;
+static rill_trail_entry rill_trail[RILL_TRAIL_ENTRIES];
+static unsigned char rill_trail_bytes[RILL_TRAIL_BYTES];
+static size_t rill_trail_count;
+static size_t rill_trail_used;
+static int rill_trail_depth;
+
+static void rill_txn_begin(void) { rill_trail_depth += 1; }
+static void rill_txn_end(void) { if (rill_trail_depth > 0) rill_trail_depth -= 1; }
+static size_t rill_txn_checkpoint(void) { return rill_trail_count; }
+static void rill_txn_record(void *addr, size_t size) {
+  if (rill_trail_depth == 0) return;
+  if (rill_trail_count >= RILL_TRAIL_ENTRIES || rill_trail_used + size > RILL_TRAIL_BYTES) {
+    fputs("rill: undo trail overflow\n", stderr);
+    abort();
+  }
+  rill_trail[rill_trail_count].addr = addr;
+  rill_trail[rill_trail_count].size = size;
+  rill_trail[rill_trail_count].offset = rill_trail_used;
+  memcpy(rill_trail_bytes + rill_trail_used, addr, size);
+  rill_trail_used += size;
+  rill_trail_count += 1;
+}
+static void rill_txn_rollback(size_t mark) {
+  while (rill_trail_count > mark) {
+    rill_trail_count -= 1;
+    rill_trail_entry entry = rill_trail[rill_trail_count];
+    memcpy(entry.addr, rill_trail_bytes + entry.offset, entry.size);
+    rill_trail_used = entry.offset;
+  }
+}
+
 // Text is a heap string; the arena keeps concat/formatting allocation-free per
 // call, which is fine for bootstrap-scale programs.
 static char rill_text_arena[1 << 20];
@@ -1791,6 +1830,12 @@ impl<'a> Generator<'a> {
             Stmt::Set { place, value, .. } => {
                 let target = self.place(place);
                 let value_code = self.expr(value);
+                // A writing function records the bytes it is about to
+                // overwrite; the runtime ignores this unless a reading of the
+                // trail is active.
+                self.body.push_str(&format!(
+                    "  rill_txn_record((void *)&({target}), sizeof({target}));\n"
+                ));
                 self.body.push_str(&format!("  {target} = {value_code};\n"));
             }
             Stmt::Yield { span, .. } => {
@@ -1941,7 +1986,13 @@ impl<'a> Generator<'a> {
         let level = self.temp;
         let slot = format!("_t{level}");
         let done = format!("_ok{level}");
-        let mut out = format!("({{ {cty} {slot} = {{0}}; bool {done} = false;");
+        // The choice is a speculative region: writes made by an arm that fails
+        // are rolled back before the next arm runs, and a total failure rolls
+        // back to the checkpoint before continuing outward.
+        let mark = format!("_cp{level}");
+        let mut out = format!(
+            "({{ {cty} {slot} = {{0}}; bool {done} = false; rill_txn_begin(); size_t {mark} = rill_txn_checkpoint();"
+        );
         for (alt, call) in alternatives.iter().zip(failable.iter()) {
             match call {
                 Some((base, args)) => {
@@ -1959,14 +2010,14 @@ impl<'a> Generator<'a> {
                     self.temp += 1;
                     let hand = format!("_a{}", self.temp);
                     out.push_str(&format!(
-                        " if (!{done}) {{ {cty} {hand} = {{0}}; if ({callee}({}, &{hand})) {{ {slot} = {hand}; {done} = true; }} }}",
+                        " if (!{done}) {{ rill_txn_rollback({mark}); {cty} {hand} = {{0}}; if ({callee}({}, &{hand})) {{ {slot} = {hand}; {done} = true; }} }}",
                         arguments.join(", ")
                     ));
                 }
                 None => {
                     let value = self.expr(alt);
                     out.push_str(&format!(
-                        " if (!{done}) {{ {slot} = ({value}); {done} = true; }}"
+                        " if (!{done}) {{ rill_txn_rollback({mark}); {slot} = ({value}); {done} = true; }}"
                     ));
                 }
             }
@@ -1978,7 +2029,9 @@ impl<'a> Generator<'a> {
         // last arm always produces a value.
         if failable.iter().all(|call| call.is_some()) {
             if let Some(exit) = self.fail_statement() {
-                out.push_str(&format!(" if (!{done}) {{ {exit} }}"));
+                out.push_str(&format!(
+                    " if (!{done}) {{ rill_txn_rollback({mark}); rill_txn_end(); {exit} }}"
+                ));
             } else {
                 self.unsupported(
                     whole.span,
@@ -1987,6 +2040,7 @@ impl<'a> Generator<'a> {
                 );
             }
         }
+        out.push_str(" rill_txn_end();");
         out.push_str(&format!(" {slot}; }})"));
         out
     }

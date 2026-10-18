@@ -437,3 +437,34 @@ fn a_total_choice_failure_exits_one() {
     );
     assert_eq!(output.status.code(), Some(1));
 }
+
+#[test]
+fn builds_and_runs_transacts() {
+    let dir = workdir("transacts");
+    let out = dir.join("transacts");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/transacts.rill")
+        .canonicalize()
+        .expect("examples/transacts.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // The 200 arm debits alice (500 -> 300) and then fails on bob's guard, so
+    // the undo trail must restore her before the fallback's 50 is applied:
+    // 500 - 50 = 450. Without rollback this reads 250.
+    assert!(
+        stdout.contains("alice = 450 bob = 150"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}
