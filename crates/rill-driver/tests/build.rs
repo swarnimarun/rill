@@ -963,6 +963,26 @@ fn builds_and_runs_executor() {
     assert!(stdout.contains("task one"), "{stdout}");
     assert!(stdout.contains("task three spawns another"), "{stdout}");
     assert!(stdout.contains("task four"), "{stdout}");
-    assert!(stdout.contains("ran 4"), "{stdout}");
+    // The `sync` block queues its arms and drains in place, so it consumed the
+    // queue: the later `io_run` finds nothing left. Work spawned before the sync
+    // ran first, which is the observable difference from sequential arms.
+    assert!(stdout.contains("ran 0"), "{stdout}");
+    let order: Vec<&str> = stdout
+        .lines()
+        .filter(|line| line.starts_with("task") || line.starts_with("ran"))
+        .collect();
+    assert_eq!(
+        order,
+        vec![
+            "task one",
+            "task two",
+            "task three spawns another",
+            "task four",
+            "task four",
+            "task four",
+            "ran 0",
+        ],
+        "unexpected order: {stdout}"
+    );
     assert_eq!(output.status.code(), Some(0));
 }

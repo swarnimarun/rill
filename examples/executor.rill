@@ -17,11 +17,17 @@ let task_four () -> () <io> = io::println ("task four");
 
 let task_two () -> () <io> = io::println ("task two");
 
+# With a kernel bound, a `sync` block's arms are queued and drained in place, so
+# work spawned earlier runs first. Without a kernel they run immediately, in order.
 let main () -> i32 <io | suspends | writes> = {
     io_bind ();
     io_spawn (task_one);
     io_spawn (task_two);
     io_spawn (task_three);
+    sync {
+        task_four ();
+        task_four ()
+    };
     var ran = io_run ();
     io::println ("ran " ++ (ran as String));
     io_unbind ();

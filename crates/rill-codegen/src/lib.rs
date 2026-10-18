@@ -2187,6 +2187,44 @@ impl<'a> Generator<'a> {
                 // sequential evaluation is observationally identical to real
                 // concurrency, and it is the composition the executors will drive.
                 // `race`/`rush`/`branch` need cancellation and stay reported.
+                // With a task kernel bound, `sync`'s arms become tasks: they are
+                // queued and then drained in place, so they interleave with work
+                // spawned earlier and the join still happens before the sync's value
+                // is used. Without a layer - or when an arm would need a captured
+                // environment, which tasks do not carry yet - the arms run
+                // sequentially, which is observationally identical for work with no
+                // suspension point.
+                if matches!(kind, rill_ast::ConcurrentKind::Sync)
+                    && arms.iter().all(|arm| matches!(self.expr_ty(arm), Ty::Unit))
+                    && arms.iter().all(|arm| {
+                        let mut refs = Vec::new();
+                        collect_local_refs_expr(arm, &mut refs);
+                        refs.is_empty()
+                    })
+                {
+                    let mut thunks = Vec::new();
+                    for arm in arms {
+                        let name = format!("sync_task{}", self.lambdas);
+                        self.lambdas += 1;
+                        let code = self.expr(arm);
+                        self.defs.push_str(&format!(
+                            "static void {name}(void *env) {{ (void)env; (void)({code}); }}\n"
+                        ));
+                        thunks.push(name);
+                    }
+                    let mut out = String::from("({ if (rill_io_layers > 0) {");
+                    for name in &thunks {
+                        out.push_str(&format!(
+                            " rill_io_spawn((rill_fn){{ .code = (void *)&{name}, .env = NULL }});"
+                        ));
+                    }
+                    out.push_str(" (void)rill_io_run(); } else {");
+                    for name in &thunks {
+                        out.push_str(&format!(" {name}(NULL);"));
+                    }
+                    out.push_str(" } rill_unit(); })");
+                    return out;
+                }
                 if matches!(kind, rill_ast::ConcurrentKind::Sync) {
                     // The arms' values form the tuple the checker promises; unit
                     // arms just run. Either way they evaluate in order and join.
