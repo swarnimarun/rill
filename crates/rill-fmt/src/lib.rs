@@ -81,7 +81,10 @@ impl Writer<'_> {
                 needs_space(prev_kind, kind) && !adjacent(self.src, prev_end, start)
             }
         };
-        if space && !self.out.ends_with(' ') && !self.out.ends_with('\n') {
+        // At the start of a line the indent is the only whitespace: a token must not
+        // be pushed right by a stray space after the tab.
+        let at_line_start = self.out.ends_with('\n') || self.out.ends_with('\t');
+        if space && !at_line_start && !self.out.ends_with(' ') {
             self.out.push(' ');
         }
         match kind {
