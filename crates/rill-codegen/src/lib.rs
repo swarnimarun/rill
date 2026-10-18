@@ -243,6 +243,10 @@ static rill_fn rill_io_wrap(rill_fn inner) {
 static void rill_io_bind(void) { rill_io_layers += 1; }
 static void rill_io_unbind(void) { if (rill_io_layers > 0) rill_io_layers -= 1; }
 
+/* SIMD: four `f64` lanes. Arithmetic, comparison and indexing come from the
+   compiler's vector extension, so the same operators a scalar uses work here. */
+typedef double r_f64x4 __attribute__((vector_size(32)));
+
 /* A `dyn Trait` value: the concrete value and its vtable. Boxing copies the value
    into storage from the ambient arena when one is bound, and the heap otherwise -
    the same rule closures use for their environments. */
@@ -919,6 +923,7 @@ impl<'a> Generator<'a> {
             Ty::Record(id) | Ty::Nominal(id) if *id == self.checked.dyn_id => {
                 "rill_dyn".to_string()
             }
+            Ty::Record(id) | Ty::Nominal(id) if *id == self.checked.vec_id => "r_f64x4".to_string(),
             Ty::Record(id) | Ty::Nominal(id) if *id == self.checked.arena_id() => {
                 "rill_arena *".to_string()
             }
@@ -1541,6 +1546,19 @@ impl<'a> Generator<'a> {
             }
             // A hand-written runtime helper: no environment at all.
             Some(Res::Builtin) | Some(Res::Import(_)) => {
+                // `f64x4 a b c d` is a vector literal, not a call to a helper.
+                if joined.split(',').count() == 4
+                    && matches!(
+                        callee.path_res(),
+                        Some((segments, _))
+                            if segments
+                                .last()
+                                .map(|sym| self.text(*sym) == "f64x4")
+                                .unwrap_or(false)
+                    )
+                {
+                    return format!("((r_f64x4){{ {joined} }})");
+                }
                 let code = self.expr(callee);
                 return format!("{code}({joined})");
             }
@@ -1882,6 +1900,7 @@ impl<'a> Generator<'a> {
                         "io_bind" => "rill_io_bind".into(),
                         "io_unbind" => "rill_io_unbind".into(),
                         "io_spawn" => "rill_io_spawn".into(),
+                        "f64x4" => "r_f64x4".into(),
                         "io_run" => "rill_io_run".into(),
                         "arena_unbind" => "rill_arena_unbind".into(),
                         "buf_new" => "rill_buf_new".into(),
@@ -2018,6 +2037,8 @@ impl<'a> Generator<'a> {
                             .collect();
                         self.call_through(callee_expr, &arguments)
                     }
+                    // A SIMD lane indexes the vector directly.
+                    Ty::Nominal(id) if id == self.checked.vec_id => format!("({base})[{index}]"),
                     Ty::Array { len: Some(_), .. } => format!("({base}).v[{index}]"),
                     Ty::Array { len: None, .. } => format!("({base}).ptr[{index}]"),
                     Ty::Text => {

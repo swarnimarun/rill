@@ -200,6 +200,9 @@ pub struct Checked {
     /// function value's `{ code, env }`. Which trait it carries is recorded per
     /// expression, as `Option`'s element type is.
     pub dyn_id: NominalId,
+    /// The builtin SIMD nominal: four `f64` lanes. Element-wise arithmetic and
+    /// indexing come from the backend's vector extension.
+    pub vec_id: NominalId,
     /// The element type each `option { … }` expression carries. `Ty` has no
     /// parameterised variant, so the payload is recorded here and read by
     /// `?` and by code generation.
@@ -283,6 +286,7 @@ struct Checker<'a> {
     type_params: Vec<Symbol>,
     /// The nominal standing in for `Option` results.
     option_id: NominalId,
+    vec_id: NominalId,
     dyn_id: NominalId,
     /// The nominal standing in for growable byte buffers (`<alloc>`).
     buf_id: NominalId,
@@ -319,6 +323,7 @@ impl<'a> Checker<'a> {
             buf_id: NominalId(1),
             arena_id: NominalId(2),
             dyn_id: NominalId(3),
+            vec_id: NominalId(4),
             int_literals: Vec::new(),
             float_literals: Vec::new(),
         }
@@ -347,6 +352,7 @@ impl<'a> Checker<'a> {
             arena_id: self.arena_id,
             option_id: self.option_id,
             dyn_id: self.dyn_id,
+            vec_id: self.vec_id,
             option_elems: self.option_elems,
             local_types: self.local_types,
             item_types: self.item_types,
@@ -715,6 +721,9 @@ impl<'a> Checker<'a> {
         if id == self.dyn_id {
             return "dyn".to_string();
         }
+        if id == self.vec_id {
+            return "f64x4".to_string();
+        }
         match self.nominals.get(id.0 as usize) {
             Some(def) => self.text(def.name).to_string(),
             None => format!("<nominal {}>", id.0),
@@ -769,6 +778,13 @@ impl<'a> Checker<'a> {
                 }
             }
         }
+        debug_assert_eq!(self.vec_id, NominalId(4));
+        self.nominals.push(NominalDef {
+            id: NominalId(4),
+            name: Symbol::EMPTY,
+            kind: NominalKind::Opaque,
+            span: Span::DUMMY,
+        });
         // Nominal types and signatures first, so order does not matter.
         for item in self.hir.items() {
             if let ItemKind::Type(def) = &item.kind {
@@ -974,6 +990,14 @@ impl<'a> Checker<'a> {
             // `dyn Trait` is a `{ data, vtable }` pair; the trait itself is
             // recorded where the value is coerced.
             AstType::Dyn { .. } => Ty::Nominal(self.dyn_id),
+            AstType::Path { segments, .. }
+                if segments
+                    .last()
+                    .map(|id| self.text(id.sym) == "f64x4")
+                    .unwrap_or(false) =>
+            {
+                Ty::Nominal(self.vec_id)
+            }
             AstType::Error(_) => Ty::Error,
         }
     }
@@ -1404,6 +1428,16 @@ impl Checker<'_> {
             ExprKind::Index { base, args } => {
                 let base_ty = self.expr(base);
                 match self.resolve_deep(&base_ty) {
+                    Ty::Nominal(id) if id == self.vec_id => {
+                        if args.len() != 1 {
+                            self.err(expr.span, "indexing takes exactly one index");
+                        }
+                        for arg in args {
+                            let index = self.expr(&arg.value);
+                            self.unify(&Ty::usize_(), &index, arg.span, "checking an index");
+                        }
+                        return Ty::Float { bits: 64 };
+                    }
                     Ty::Array { elem, len } => {
                         if args.len() != 1 {
                             self.err(expr.span, "indexing takes exactly one index");
@@ -1809,6 +1843,11 @@ impl Checker<'_> {
         let right = self.expr(rhs);
         match op {
             BinaryOp::Add | BinaryOp::Sub | BinaryOp::Mul | BinaryOp::Div | BinaryOp::Rem => {
+                if matches!(left, Ty::Nominal(id) if id == self.vec_id)
+                    && matches!(right, Ty::Nominal(id) if id == self.vec_id)
+                {
+                    return Ty::Nominal(self.vec_id);
+                }
                 self.numeric(&left, span, "arithmetic");
                 self.unify(&left, &right, span, "checking an arithmetic operator");
                 left
@@ -1885,6 +1924,16 @@ impl Checker<'_> {
         Some(match name {
             // The ambient arena: bound at the top scope, consulted in layers by whatever
             // needs storage (PLAN §11). `unbind` returns to the previous binding.
+            "f64x4" => (
+                vec![
+                    Ty::Float { bits: 64 },
+                    Ty::Float { bits: 64 },
+                    Ty::Float { bits: 64 },
+                    Ty::Float { bits: 64 },
+                ],
+                Ty::Nominal(self.vec_id),
+                Vec::new(),
+            ),
             "arena_bind" => (vec![arena.clone()], Ty::Unit, vec![Effect::Writes]),
             // The `Io` layer: bind a task kernel, spawn work, run the loop.
             "io_bind" => (Vec::new(), Ty::Unit, vec![Effect::Writes]),

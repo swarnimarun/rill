@@ -1019,3 +1019,32 @@ fn builds_and_runs_coroutines() {
     assert!(stdout.contains("steps 4"), "{stdout}");
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_simd() {
+    let dir = workdir("simd");
+    let out = dir.join("simd");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/simd.rill")
+        .canonicalize()
+        .expect("examples/simd.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Element-wise: `a + b` adds lane by lane, and `a * c` scales each lane.
+    assert!(
+        stdout.contains("sum 11 44 doubled 6"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}
