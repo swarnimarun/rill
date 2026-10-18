@@ -1329,6 +1329,34 @@ Typing an impl member's parameter (`show (p: Point)`) still reports
 the same fallback arm in `rill_ty::Checker::path_ty`. Next diagnostic: print the
 reference's span alongside `type_ids` in that arm to find which occurrence fails.
 
+### Design note: currying / partial application (next item)
+
+`add 1` where `add (x: i32, y: i32)` must become a closure, and the clean way to
+do it in the current backend is:
+
+1. **Represent callables as pairs.** Today a function-typed value lowers to a
+   bare C function pointer (lambdas rely on this). Closures need `{ fn, env }`,
+   so the representation of `Ty::Fn` values has to become a struct
+   `{ ret (*fn)(args..., void *env); void *env; }` — or a per-shape struct —
+   which means updating: lambda emission, local/param declarations of function
+   type (`c_decl`), and every call site (a call through a value becomes
+   `v.fn(args, v.env)`).
+2. **Partial application at a call site.** When fewer arguments are supplied
+   than the callee's parameter count, emit a static trampoline per (callee,
+   arity) pair and a stack-allocated environment struct holding the supplied
+   arguments; the value is `{ trampoline, &env }`.
+3. **Checker.** `apply` already has both counts: fewer arguments must unify the
+   supplied ones with the leading parameters and return the *remaining* arity
+   as the result type, instead of today's arity error. More arguments stay an
+   error.
+4. **Escape rule.** A partial application may not outlive its frame; the borrow
+   pass (M2) owns that check, so until then the environment is stack-allocated
+   and escaping closures are reported rather than miscompiled.
+
+Coupled work: the same pair representation is what `dyn` fat pointers need
+(`{ data, vtable }`), so doing currying first means `dyn` reuses the call shape
+rather than inventing a second one.
+
 ### Directives for the remaining work (in priority order)
 
 1. **FFI — done.** `extern "c"` declarations keep their declared C names (no
