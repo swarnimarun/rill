@@ -434,6 +434,38 @@ impl<'a> Desugar<'a> {
             Expr::Binary { op, lhs, rhs, span } => {
                 let lhs = self.expr(*lhs);
                 let rhs = self.expr(*rhs);
+                // `recv . method (args)` is one shape everywhere: the receiver is
+                // the first argument. Otherwise every consumer - the checker's call
+                // path and code generation's dispatch, which reads the receiver from
+                // `args.first()` - has to understand a flow whose right-hand side is
+                // a whole call.
+                if op == BinaryOp::Flow {
+                    if let Expr::Call {
+                        callee,
+                        args,
+                        span: call_span,
+                    } = rhs
+                    {
+                        let mut all = Vec::with_capacity(args.len() + 1);
+                        all.push(Arg {
+                            convention: None,
+                            value: lhs,
+                            span,
+                        });
+                        all.extend(args);
+                        return Expr::Call {
+                            callee,
+                            args: all,
+                            span: call_span,
+                        };
+                    }
+                    return Expr::Binary {
+                        op,
+                        lhs: Box::new(lhs),
+                        rhs: Box::new(rhs),
+                        span,
+                    };
+                }
                 match op {
                     // `and` / `or` -> `if` (§7.2).
                     BinaryOp::And => Expr::If {

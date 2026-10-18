@@ -1671,7 +1671,7 @@ impl Checker<'_> {
             if let Ty::Nominal(id) = self.resolve_deep(&base_ty) {
                 if id == self.dyn_id {
                     if let Some(trait_sym) = lhs.path_res().and_then(|(_, res)| match res {
-                        Res::Local(local) => self.dyn_locals.get(&local).copied(),
+                        Res::Local(local) => self.dyn_locals.get(local).copied(),
                         _ => None,
                     }) {
                         let method = rhs
