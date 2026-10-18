@@ -189,3 +189,36 @@ fn builds_and_runs_static_trait_dispatch() {
     );
     assert_eq!(output.status.code(), Some(42));
 }
+
+#[test]
+fn builds_and_calls_libc_through_ffi() {
+    let dir = workdir("ffi");
+    let out = dir.join("ffi");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/ffi.rill")
+        .canonicalize()
+        .expect("examples/ffi.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `puts` writes its own line; `strlen` measures the greeting.
+    assert!(
+        stdout.contains("hello from libc"),
+        "unexpected stdout: {stdout}"
+    );
+    assert!(
+        stdout.contains("strlen = 15"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(15));
+}

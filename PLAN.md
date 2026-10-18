@@ -1331,8 +1331,11 @@ reference's span alongside `type_ids` in that arm to find which occurrence fails
 
 ### Directives for the remaining work (in priority order)
 
-1. **FFI** — `extern "c"` declarations become real C prototypes; `&raw`/`&raw mut`
-   pointers; link flags for extra libraries.
+1. **FFI — done.** `extern "c"` declarations keep their declared C names (no
+   prefix), `&raw`/`&raw mut T` are real pointer types in the checker, and
+   `rillc build --link <lib>` passes `-l<lib>` to the toolchain.
+   `examples/ffi.rill` calls libc `puts`, `strlen`, `malloc` and `free` (the
+   latter two through `&raw mut u8`) and is verified by a driver test.
 2. **Arenas** — `StackArena::run`-style scoped `<alloc>` handlers; a bind-at-top-
    scope arena that the whole lexical context can allocate from, in layers.
 3. **Projections** — `project`/`yield inout` inlined as prologue/body/epilog, and

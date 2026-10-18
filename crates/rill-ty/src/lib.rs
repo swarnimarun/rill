@@ -101,6 +101,11 @@ pub enum Ty {
     Record(NominalId),
     /// A nominal type by name (enum payloads, opaque `view`/`dyn` types).
     Nominal(NominalId),
+    /// `&raw T` / `&raw mut T` — the unsafe FFI/pointer types of §2.3.
+    RawPtr {
+        mutable: bool,
+        pointee: Box<Ty>,
+    },
     Fn {
         params: Vec<Ty>,
         ret: Box<Ty>,
@@ -362,6 +367,10 @@ impl<'a> Checker<'a> {
                 len: *len,
             },
             Ty::Range(elem) => Ty::Range(Box::new(self.resolve_deep(elem))),
+            Ty::RawPtr { mutable, pointee } => Ty::RawPtr {
+                mutable: *mutable,
+                pointee: Box::new(self.resolve_deep(pointee)),
+            },
             Ty::Fn {
                 params,
                 ret,
@@ -389,6 +398,10 @@ impl<'a> Checker<'a> {
                 len,
             },
             Ty::Range(elem) => Ty::Range(Box::new(self.zonk(&elem))),
+            Ty::RawPtr { mutable, pointee } => Ty::RawPtr {
+                mutable,
+                pointee: Box::new(self.zonk(&pointee)),
+            },
             Ty::Fn {
                 params,
                 ret,
@@ -483,6 +496,22 @@ impl<'a> Checker<'a> {
                 self.unify(a, b, span, context)
             }
             (Ty::Range(a), Ty::Range(b)) => self.unify(a, b, span, context),
+            (
+                Ty::RawPtr {
+                    mutable: am,
+                    pointee: ap,
+                },
+                Ty::RawPtr {
+                    mutable: bm,
+                    pointee: bp,
+                },
+            ) => {
+                if am != bm {
+                    self.err(span, format!("pointer mutability mismatch ({context})"));
+                    return false;
+                }
+                self.unify(ap, bp, span, context)
+            }
             (
                 Ty::Fn {
                     params: ap,
@@ -616,6 +645,13 @@ impl<'a> Checker<'a> {
                 None => format!("[{}]", self.display(&elem)),
             },
             Ty::Range(elem) => format!("{}..{}", self.display(&elem), self.display(&elem)),
+            Ty::RawPtr { mutable, pointee } => {
+                format!(
+                    "&raw{} {}",
+                    if mutable { " mut" } else { "" },
+                    self.display(&pointee)
+                )
+            }
             Ty::Record(id) | Ty::Nominal(id) => self.nominal_name(id),
             Ty::Fn { params, ret, .. } => {
                 let parts: Vec<String> = params.iter().map(|p| self.display(p)).collect();
@@ -856,7 +892,12 @@ impl<'a> Checker<'a> {
                 ret: Box::new(ret.as_ref().map(|r| self.ast_ty(r)).unwrap_or(Ty::Unit)),
                 effects: self.row_effects(effects),
             },
-            AstType::Ptr { pointee, .. } => self.ast_ty(pointee),
+            AstType::Ptr {
+                mutable, pointee, ..
+            } => Ty::RawPtr {
+                mutable: *mutable,
+                pointee: Box::new(self.ast_ty(pointee)),
+            },
             AstType::Dyn { .. } => Ty::Text,
             AstType::Error(_) => Ty::Error,
         }
@@ -2140,6 +2181,7 @@ fn collect_vars(ty: &Ty, out: &mut Vec<u32>) {
         Ty::Tuple(elems) => elems.iter().for_each(|e| collect_vars(e, out)),
         Ty::Array { elem, .. } => collect_vars(elem, out),
         Ty::Range(elem) => collect_vars(elem, out),
+        Ty::RawPtr { pointee, .. } => collect_vars(pointee, out),
         Ty::Fn { params, ret, .. } => {
             params.iter().for_each(|p| collect_vars(p, out));
             collect_vars(ret, out);
@@ -2159,6 +2201,10 @@ fn substitute_vars(ty: &Ty, mapping: &HashMap<u32, Ty>) -> Ty {
             len: *len,
         },
         Ty::Range(elem) => Ty::Range(Box::new(substitute_vars(elem, mapping))),
+        Ty::RawPtr { mutable, pointee } => Ty::RawPtr {
+            mutable: *mutable,
+            pointee: Box::new(substitute_vars(pointee, mapping)),
+        },
         Ty::Fn {
             params,
             ret,

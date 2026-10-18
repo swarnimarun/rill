@@ -26,6 +26,7 @@ BUILD OPTIONS:
     --target linux-musl
                        zig cc -target <arch>-linux-musl -static — static ELF
     --emit-c           also print the generated C file's path
+    --link LIB         link an extra library (`-lLIB`)
 
 FRONT-END OPTIONS:
     --dump=<cst|ast|hir>
@@ -141,6 +142,7 @@ fn build(args: &[String]) -> ExitCode {
     let mut out = None;
     let mut target = "native".to_string();
     let mut emit_c_only = false;
+    let mut link_libs: Vec<String> = Vec::new();
     let mut index = 0;
     while index < args.len() {
         match args[index].as_str() {
@@ -159,6 +161,16 @@ fn build(args: &[String]) -> ExitCode {
                 }
             }
             "--emit-c" => emit_c_only = true,
+            "--link" => {
+                index += 1;
+                match args.get(index) {
+                    Some(lib) => link_libs.push(lib.clone()),
+                    None => {
+                        eprintln!("error: --link needs a library name");
+                        return ExitCode::from(2);
+                    }
+                }
+            }
             other => path = Some(other.to_string()),
         }
         index += 1;
@@ -217,14 +229,16 @@ fn build(args: &[String]) -> ExitCode {
         print_line(&c_path);
     }
 
+    let links: String = link_libs.iter().map(|l| format!(" -l{l}")).collect();
     let cc = match target.as_str() {
         "linux-musl" => format!(
-            "zig cc -target {}-linux-musl -static -O2 -o {} {}",
+            "zig cc -target {}-linux-musl -static -O2 -o {} {}{}",
             std::env::consts::ARCH,
             out,
-            c_path
+            c_path,
+            links
         ),
-        _ => format!("cc -O2 -o {out} {c_path}"),
+        _ => format!("cc -O2 -o {out} {c_path}{links}"),
     };
     let status = std::process::Command::new("sh").arg("-c").arg(&cc).status();
     match status {

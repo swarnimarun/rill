@@ -433,6 +433,11 @@ impl<'a> Generator<'a> {
             Ty::Bool => "Bool".into(),
             Ty::Unit => "()".into(),
             Ty::Text => "String".into(),
+            Ty::RawPtr { mutable, pointee } => format!(
+                "&raw{} {}",
+                if *mutable { " mut" } else { "" },
+                self.display_ty(pointee)
+            ),
             Ty::Record(id) | Ty::Nominal(id) => self.nominal_name(*id),
             Ty::Tuple(elems) => format!("({} fields)", elems.len()),
             Ty::Array { .. } => "array".into(),
@@ -497,6 +502,7 @@ impl<'a> Generator<'a> {
             Ty::Bool => "r_bool".into(),
             Ty::Unit => "r_unit".into(),
             Ty::Text => "r_text".into(),
+            Ty::RawPtr { pointee, .. } => format!("{} *", self.c_type(pointee)),
             Ty::Tuple(elems) => {
                 let name = self.mangled_tuple(elems);
                 if self.emitted_types.insert(name.clone()) {
@@ -625,6 +631,7 @@ impl<'a> Generator<'a> {
             Ty::Range(elem) => format!("r{}", self.mangle(elem)),
             Ty::Record(id) | Ty::Nominal(id) => self.nominal_name(*id),
             Ty::Fn { .. } => "fn".into(),
+            Ty::RawPtr { pointee, .. } => format!("ptr_{}", self.mangle(pointee)),
             Ty::Choice(inner) => self.mangle(inner),
             Ty::Var(_) | Ty::Error => "e".into(),
         }
@@ -897,6 +904,17 @@ impl<'a> Generator<'a> {
     }
 
     fn item_c_name(&self, id: ItemId) -> String {
+        // An `extern "c"` declaration is a C symbol: the link name is exactly
+        // the declared name, with no prefix of ours.
+        if let Some(item) = self.hir.try_item(id) {
+            if let ItemKind::Fn(def) = &item.kind {
+                if def.abi.is_some() {
+                    if let Some(name) = item.name {
+                        return self.text(name).to_string();
+                    }
+                }
+            }
+        }
         match self.hir.item(id).name {
             Some(name) => format!("rill_{}", self.text(name)),
             None => format!("rill_item{}", id.0),
