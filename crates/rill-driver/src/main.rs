@@ -54,6 +54,14 @@ fn main() -> ExitCode {
     }
     // `rillc fmt FILE` prints the canonical form of a file. `--write` edits it in
     // place, which is what an editor integration wants.
+    // `rill lsp` is the interface an editor config is most likely to declare, so
+    // the compiler offers it directly rather than requiring a second binary name.
+    if args.first().map(|a| a.as_str()) == Some("lsp") {
+        return match rill_lsp::run_stdio() {
+            Ok(()) => ExitCode::SUCCESS,
+            Err(_) => ExitCode::FAILURE,
+        };
+    }
     if args.first().map(|a| a.as_str()) == Some("fmt") {
         args.remove(0);
         let write = args.iter().any(|a| a == "--write");

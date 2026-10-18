@@ -39,6 +39,7 @@ dependencies = [
  "rill-diagnostics",
  "rill-fmt",
  "rill-hir",
+ "rill-lsp",
  "rill-parser",
  "rill-span",
  "rill-syntax",

@@ -9,6 +9,7 @@ path = "src/main.rs"
 
 [dependencies]
 rill-fmt = { path = "../rill-fmt" }
+rill-lsp = { path = "../rill-lsp" }
 rill-span.workspace = true
 rill-syntax.workspace = true
 rill-parser.workspace = true
