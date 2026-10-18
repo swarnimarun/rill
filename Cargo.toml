@@ -13,6 +13,7 @@ members = [
     "crates/rill-ty",
     "crates/rill-codegen",
     "crates/rill-driver",
+    "crates/rill-cimport",
 ]
 
 [workspace.package]
@@ -32,3 +33,4 @@ rill-hir = { path = "crates/rill-hir" }
 rill-ty = { path = "crates/rill-ty" }
 rill-codegen = { path = "crates/rill-codegen" }
 rill-driver = { path = "crates/rill-driver" }
+rill-cimport = { path = "crates/rill-cimport" }

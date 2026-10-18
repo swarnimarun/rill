@@ -13,6 +13,10 @@ dependencies = [
 ]
 
 [[package]]
+name = "rill-cimport"
+version = "0.1.0"
+
+[[package]]
 name = "rill-codegen"
 version = "0.1.0"
 dependencies = [

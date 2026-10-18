@@ -1,0 +1,6 @@
+[package]
+name = "rill-cimport"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
