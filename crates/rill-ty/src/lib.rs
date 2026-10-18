@@ -1905,6 +1905,39 @@ impl Checker<'_> {
     }
 
     fn call(&mut self, whole: &Expr, callee: &Expr, args: &[rill_hir::Arg]) -> Ty {
+        // A deciding callee is called with the adjacent form (`f[x]`), which is
+        // what carries its failure to a continuation (PLAN §2.5/§5.1). The rule is
+        // syntactic - the bracket is the failable call form wherever it sits - and
+        // a parenthesised call would reach code generation without the status
+        // out-parameter. The check continues rather than returning an error, so the
+        // callee is still typed normally and only this diagnostic reports.
+        if matches!(
+            &callee.kind,
+            ExprKind::Path {
+                res: Res::Item(_),
+                ..
+            }
+        ) {
+            let name = callee
+                .path_res()
+                .map(|(segments, _)| self.text(segments[0]).to_string())
+                .unwrap_or_default();
+            let callee_ty = self.expr(callee);
+            if let Ty::Fn { effects, .. } = self.resolve_deep(&callee_ty) {
+                if effects.contains(&Effect::Decides) {
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            whole.span,
+                            format!("`{name}` can fail, so it is called as `{name}[…]`"),
+                        )
+                        .note(
+                            "the adjacent form hands the failure to the enclosing `|`, handler or function"
+                                .to_string(),
+                        ),
+                    );
+                }
+            }
+        }
         // `items.fold 0 { … }` — a `.`-selected method applied to `items`.
         if let ExprKind::Binary {
             op: BinaryOp::Flow,
