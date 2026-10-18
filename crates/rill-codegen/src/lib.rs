@@ -597,7 +597,7 @@ impl<'a> Generator<'a> {
         .chars()
         .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
         .collect::<String>();
-        let mut body = format!("typedef struct {{\n");
+        let mut body = String::from("typedef struct {\n");
         for (method, _) in &slots {
             let member = def
                 .members
