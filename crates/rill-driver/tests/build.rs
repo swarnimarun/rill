@@ -967,6 +967,14 @@ fn builds_and_runs_executor() {
     // queue: the later `io_run` finds nothing left. Work spawned before the sync
     // ran first, which is the observable difference from sequential arms.
     assert!(stdout.contains("ran 0"), "{stdout}");
+    // `race` runs its arms as tasks and stops at the first completion: `quick`
+    // finishes in two steps, so `slow`'s second phase is dropped rather than run.
+    assert!(stdout.contains("quick yields"), "{stdout}");
+    assert!(stdout.contains("slow yields once"), "{stdout}");
+    assert!(
+        !stdout.contains("slow yields twice"),
+        "the losing arm was not cancelled: {stdout}"
+    );
     let order: Vec<&str> = stdout
         .lines()
         .filter(|line| line.starts_with("task") || line.starts_with("ran"))

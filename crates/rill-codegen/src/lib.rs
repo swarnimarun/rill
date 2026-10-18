@@ -206,6 +206,27 @@ static void rill_io_spawn(rill_fn task) {
     rill_io_tail += 1;
   }
 }
+/* `race`: run the queued tasks until the *first* one completes, then drop the rest.
+   Cancellation is cooperative - a task that has already started runs to its next
+   yield - which is what an executor without preemption can honestly promise. */
+static int rill_io_race(void) {
+  int steps = 0;
+  while (rill_io_head < rill_io_tail && steps < 1000000) {
+    rill_task task = rill_io_queue[rill_io_head];
+    rill_io_head += 1;
+    steps += 1;
+    if (((int (*)(void *))task.code)(task.env)) {
+      /* Winner: the rest are abandoned, not run. */
+      rill_io_head = 0;
+      rill_io_tail = 0;
+      return 1;
+    }
+  }
+  rill_io_head = 0;
+  rill_io_tail = 0;
+  return 0;
+}
+
 static int rill_io_run(void) {
   int ran = 0;
   while (rill_io_head < rill_io_tail && ran < 100000) {
@@ -1171,6 +1192,21 @@ impl<'a> Generator<'a> {
         self.emit_fn_named(id, def, name, true);
     }
 
+    /// The task a `call` to a coroutine *is*: its value - the step with a fresh
+    /// frame - rather than a call, since a coroutine has no ordinary C function.
+    fn coroutine_task(&mut self, arm: &Expr) -> Option<String> {
+        let ExprKind::Call { callee, .. } = &arm.kind else {
+            return None;
+        };
+        let Some((_, Res::Item(id))) = callee.path_res() else {
+            return None;
+        };
+        if !self.coroutines.contains_key(id) {
+            return None;
+        }
+        Some(self.expr(callee))
+    }
+
     /// Whether a function is a coroutine: it declares `<suspends>` and yields.
     fn is_coroutine(&self, def: &rill_hir::FnDef) -> bool {
         if !def
@@ -2030,6 +2066,7 @@ impl<'a> Generator<'a> {
                         "threads_count" => "rill_threads_count".into(),
                         "f64x4" => "r_f64x4".into(),
                         "io_run" => "rill_io_run".into(),
+                        "io_race" => "rill_io_race".into(),
                         "arena_unbind" => "rill_arena_unbind".into(),
                         "buf_new" => "rill_buf_new".into(),
                         "buf_push" => "rill_buf_push".into(),
@@ -2550,6 +2587,40 @@ impl<'a> Generator<'a> {
                         }
                     };
                     out.push_str(&format!(" {value}; }})"));
+                    return out;
+                }
+                if matches!(kind, rill_ast::ConcurrentKind::Race)
+                    && arms.iter().all(|arm| matches!(self.expr_ty(arm), Ty::Unit))
+                {
+                    // Each arm is queued as a task; the kernel runs them until the
+                    // first completes and drops the rest, which is a race whose
+                    // cancellation is cooperative.
+                    let mut tasks = Vec::new();
+                    for arm in arms {
+                        if let Some(task) = self.coroutine_task(arm) {
+                            // A coroutine *is* a task: enqueue it, don't call it.
+                            tasks.push(task);
+                            continue;
+                        }
+                        let name = format!("race_task{}", self.lambdas);
+                        self.lambdas += 1;
+                        let code = self.expr(arm);
+                        self.defs.push_str(&format!(
+                            "static int {name}(void *env) {{ (void)env; (void)({code}); return 1; }}\n"
+                        ));
+                        tasks.push(format!(
+                            "((rill_fn){{ .code = (void *)&{name}, .env = NULL }})"
+                        ));
+                    }
+                    let mut out = String::from("({ if (rill_io_layers > 0) {");
+                    for task in &tasks {
+                        out.push_str(&format!(" rill_io_spawn({task});"));
+                    }
+                    out.push_str(" rill_io_race(); } else {");
+                    for task in &tasks {
+                        out.push_str(&format!(" (void)({task});"));
+                    }
+                    out.push_str(" } rill_unit(); })");
                     return out;
                 }
                 let name = match kind {
