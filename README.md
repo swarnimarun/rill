@@ -34,6 +34,7 @@ crates/
 ├── rill-ast/          AST nodes, CST -> AST lowering, builder desugaring
 ├── rill-hir/          name resolution: Res/LocalId/ExprId tables + HIR
 ├── rill-ty/           type & effect checking over the HIR
+├── rill-cimport/      C header scanner: declarations from an `@include`
 └── rill-driver/       `rillc`, the front-end driver binary
 examples/showcase.rill  the PLAN.md §11 program, parsed by the test suite
 ```
@@ -70,7 +71,48 @@ examples/showcase.rill: 7 items (7 declarations), 567 tokens, 0 errors, 0 warnin
 
 $ cargo run -p rill-driver -- --dump=cst examples/showcase.rill   # lossless CST
 $ cargo run -p rill-driver -- --dump=ast examples/showcase.rill   # desugared AST
+
+$ cargo run -p rill-driver -- exec examples/fib.rill              # compile + run
+fib(10) = 55
 ```
+
+`exec` caches the binary and the C source it was generated from under
+`~/.rill/cache`, keyed by a checksum of the script, so an unchanged script runs
+without invoking the C toolchain again; the process exit code is the program's.
+
+## C headers: `@link` and `@include`
+
+A script talks to an installed C library by naming its header and its library;
+there is no build file and no binding generator:
+
+```rill
+@link("SDL3");
+
+type SDL3 = @include("SDL3/SDL.h");
+use SDL3::*;
+
+let main () -> i32 <io> = {
+    SDL_Init (SDL_INIT_VIDEO);
+    var win = SDL_CreateWindow ("hello", 640, 360, 0);
+    SDL_DestroyWindow (win);
+    SDL_Quit ();
+    0
+};
+```
+
+`@include` scans the header (and the headers it includes) and imports its
+prototypes as `extern "c"` functions with an `<io>` row, its `typedef`s as
+records whose C names are kept, its enums as `i32`, and its `#define`
+literals as constants; `use M::*;` preludes their names, and `M::name` reaches
+one without a `use`. `@link("NAME")` makes `exec` and `build` search the
+loader's own paths (`LIBRARY_PATH`, `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`,
+then the system prefixes) for `libNAME`, link it, and record an `rpath` so the
+binary finds it at run time.
+
+The demos under `examples/sdl3/` are three programs written this way - a
+bouncing rectangle, a plasma drawn point by point, and a small side-scrolling
+game - and `crates/rill-driver/tests/c_import.rs` builds and runs them headless
+against a system SDL3.
 
 `rillc` exits non-zero when any phase reports an error, printing the rendered
 diagnostic with its source line and caret:

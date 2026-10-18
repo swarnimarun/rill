@@ -6,8 +6,8 @@ use std::io;
 let encode (n: i64) -> Buf <alloc> = {
     var out = buf_new ();
     for (i := 0..<n) {
-        buf_push (out, 65u8 + (i as u8));
-        buf_push (out, 44u8)
+        out.buf_push (65u8 + (i as u8));
+        out.buf_push 44u8;
     };
     out
 };

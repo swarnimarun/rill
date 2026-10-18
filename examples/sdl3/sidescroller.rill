@@ -1,0 +1,187 @@
+use std::io;
+
+# A small side-scrolling platformer: gravity, a jump, a scrolling camera and
+# coins to collect. Everything on screen is SDL3 through the C header; the game
+# logic is ordinary Rill.
+#
+#   rill exec examples/sdl3/sidescroller.rill
+#
+# `SPACE`/`UP` jumps, the arrow keys walk, `ESC` or the close button quits.
+# With `RILL_SDL3_DEMO=1` it walks itself for a fixed number of frames and
+# prints a summary - what the test suite runs headless under
+# `SDL_VIDEODRIVER=dummy`.
+
+@link("SDL3");
+
+type SDL3 = @include("SDL3/SDL.h");
+use SDL3::*;
+
+# A filled rectangle in window coordinates. `inout rect` passes the *place* to
+# SDL, which is what a `const SDL_FRect *` parameter wants.
+let fill (ren: &raw mut SDL_Renderer, x: f32, y: f32, w: f32, h: f32) -> () <io> = {
+    var rect = SDL_FRect (x, y, w, h);
+    SDL_RenderFillRect (ren, inout rect);
+    ()
+};
+
+let set_color (ren: &raw mut SDL_Renderer, r: u8, g: u8, b: u8) -> () <io> = {
+    SDL_SetRenderDrawColor (ren, r, g, b, 255u8);
+    ()
+};
+
+# Axis-aligned overlap of two rectangles.
+let overlaps (a: SDL_FRect, b: SDL_FRect) -> Bool <computes> =
+    a.x < b.x + b.w and b.x < a.x + a.w and a.y < b.y + b.h and b.y < a.y + a.h;
+
+let platforms () -> i32 <computes> = 7;
+let coin_count () -> i32 <computes> = 5;
+let gravity () -> f32 <computes> = 0.55f32;
+let walk_speed () -> f32 <computes> = 3.4f32;
+let jump_speed () -> f32 <computes> = 8.6f32;
+
+let main () -> i32 <io> = {
+    SDL_Init (SDL_INIT_VIDEO);
+    var win = SDL_CreateWindow ("rill sidescroller", 800, 450, 0);
+    var ren = SDL_CreateRenderer (win, "");
+    var ev: SDL_Event = comptime { zeroed () };
+
+    # The level, in world coordinates: a ground strip and six ledges.
+    var plats = [
+        SDL_FRect (0.0f32, 386.0f32, 1900.0f32, 64.0f32),
+        SDL_FRect (300.0f32, 312.0f32, 120.0f32, 18.0f32),
+        SDL_FRect (520.0f32, 264.0f32, 96.0f32, 18.0f32),
+        SDL_FRect (760.0f32, 220.0f32, 120.0f32, 18.0f32),
+        SDL_FRect (1040.0f32, 300.0f32, 140.0f32, 18.0f32),
+        SDL_FRect (1320.0f32, 250.0f32, 170.0f32, 18.0f32),
+        SDL_FRect (1600.0f32, 340.0f32, 260.0f32, 18.0f32)
+    ];
+    # Coins sit just above the ground, so the demo's walk picks them up.
+    var coins = [
+        SDL_FRect (170.0f32, 340.0f32, 16.0f32, 16.0f32),
+        SDL_FRect (260.0f32, 300.0f32, 16.0f32, 16.0f32),
+        SDL_FRect (380.0f32, 340.0f32, 16.0f32, 16.0f32),
+        SDL_FRect (560.0f32, 300.0f32, 16.0f32, 16.0f32),
+        SDL_FRect (800.0f32, 340.0f32, 16.0f32, 16.0f32)
+    ];
+    var taken = [false, false, false, false, false];
+
+    var player = SDL_FRect (60.0f32, 300.0f32, 26.0f32, 38.0f32);
+    var vy = 0.0f32;
+    var left = false;
+    var right = false;
+    var jump = false;
+    var camera = 0.0f32;
+    var score = 0;
+    var quit = false;
+    var demo = SDL_GetHintBoolean ("RILL_SDL3_DEMO", false);
+    var frame = 0;
+
+    while (quit == false) {
+        while (SDL_PollEvent (inout ev)) {
+            if (ev.type == (SDL_EVENT_QUIT as u32)) { set quit = true };
+            if (ev.type == (SDL_EVENT_KEY_DOWN as u32)) {
+                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) { set quit = true };
+                if (ev.key.scancode == SDL_SCANCODE_LEFT) { set left = true };
+                if (ev.key.scancode == SDL_SCANCODE_RIGHT) { set right = true };
+                if (ev.key.scancode == SDL_SCANCODE_SPACE) { set jump = true };
+                if (ev.key.scancode == SDL_SCANCODE_UP) { set jump = true }
+            };
+            if (ev.type == (SDL_EVENT_KEY_UP as u32)) {
+                if (ev.key.scancode == SDL_SCANCODE_LEFT) { set left = false };
+                if (ev.key.scancode == SDL_SCANCODE_RIGHT) { set right = false }
+            }
+        };
+        # The headless demo mode drives itself rightwards.
+        if (demo) { set right = true };
+
+        # --- update -------------------------------------------------------
+        var step = 0.0f32;
+        if (left) { set step = step - walk_speed () };
+        if (right) { set step = step + walk_speed () };
+        set player.x = player.x + step;
+        if (player.x < 0.0f32) { set player.x = 0.0f32 };
+
+        set vy = vy + gravity ();
+        if (vy > 14.0f32) { set vy = 14.0f32 };
+        var next_y = player.y + vy;
+        var grounded = false;
+        var i = 0u64;
+        while (i < (platforms () as u64)) {
+            var p = plats[i];
+            if (player.x + player.w > p.x and player.x < p.x + p.w) {
+                # Falling onto the top of a platform: stop there.
+                if (vy >= 0.0f32 and player.y + player.h <= p.y and next_y + player.h >= p.y) {
+                    set next_y = p.y - player.h;
+                    set vy = 0.0f32;
+                    set grounded = true
+                }
+            };
+            set i = i + 1u64
+        };
+        set player.y = next_y;
+        if (jump) {
+            if (grounded) { set vy = 0.0f32 - jump_speed () };
+            set jump = false
+        };
+
+        var c = 0u64;
+        while (c < (coin_count () as u64)) {
+            if (taken[c] == false and overlaps (player, coins[c])) {
+                set taken[c] = true;
+                set score = score + 1;
+                io::println ("score " ++ (score as String))
+            };
+            set c = c + 1u64
+        };
+
+        set camera = player.x - 240.0f32;
+        if (camera < 0.0f32) { set camera = 0.0f32 };
+
+        # --- render -------------------------------------------------------
+        set_color (ren, 24u8, 26u8, 38u8);
+        SDL_RenderClear (ren);
+
+        set_color (ren, 40u8, 44u8, 60u8);
+        var f = 0u64;
+        while (f < 40u64) {
+            # A parallax stripe background, so the scrolling is visible.
+            var stripe = (f as f32) * 60.0f32 - camera * 0.4f32;
+            fill (ren, stripe, 0.0f32, 24.0f32, 450.0f32);
+            set f = f + 1u64
+        };
+
+        set_color (ren, 120u8, 180u8, 110u8);
+        var i2 = 0u64;
+        while (i2 < (platforms () as u64)) {
+            var p = plats[i2];
+            fill (ren, p.x - camera, p.y, p.w, p.h);
+            set i2 = i2 + 1u64
+        };
+
+        set_color (ren, 230u8, 200u8, 90u8);
+        var c2 = 0u64;
+        while (c2 < (coin_count () as u64)) {
+            if (taken[c2] == false) {
+                var q = coins[c2];
+                fill (ren, q.x - camera, q.y, q.w, q.h)
+            };
+            set c2 = c2 + 1u64
+        };
+
+        set_color (ren, 220u8, 120u8, 110u8);
+        fill (ren, player.x - camera, player.y, player.w, player.h);
+
+        SDL_RenderPresent (ren);
+        SDL_Delay (16);
+        set frame = frame + 1;
+        if (demo) { if (frame >= 240) { set quit = true } }
+    };
+
+    SDL_DestroyRenderer (ren);
+    SDL_DestroyWindow (win);
+    SDL_Quit ();
+    if (demo) {
+        io::println ("demo frames " ++ (frame as String) ++ " score " ++ (score as String))
+    };
+    score
+};

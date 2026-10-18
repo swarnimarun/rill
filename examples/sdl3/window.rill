@@ -1,0 +1,65 @@
+use std::io;
+
+# A window with a bouncing rectangle: the smallest program that needs SDL3's
+# video, renderer and event loop, and the shape every larger one keeps.
+#
+#   rill exec examples/sdl3/window.rill
+#
+# With `RILL_SDL3_DEMO=1` (and `SDL_VIDEODRIVER=dummy` for no display at all)
+# it runs a fixed burst of frames and exits, which is how the test suite drives
+# the same binary headless.
+
+# `@link` names the library to link and search for in the loader's own
+# directories; `@include` reads the header and turns its functions, types and
+# constants into declarations under the module name. `use SDL3::*;` preludes
+# their bare names.
+@link("SDL3");
+
+type SDL3 = @include("SDL3/SDL.h");
+use SDL3::*;
+
+let main () -> i32 <io> = {
+    SDL_Init (SDL_INIT_VIDEO);
+    var win = SDL_CreateWindow ("rill + SDL3", 640, 360, 0);
+    var ren = SDL_CreateRenderer (win, "");
+    # The event union is a C type from the header; `comptime { zeroed () }` is
+    # the C zero initialiser for whatever the annotation asks for.
+    var ev: SDL_Event = comptime { zeroed () };
+
+    var box = SDL_FRect (40.0f32, 60.0f32, 80.0f32, 60.0f32);
+    var dx = 1.6f32;
+    var dy = 1.1f32;
+    var quit = false;
+    var demo = SDL_GetHintBoolean ("RILL_SDL3_DEMO", false);
+    var frame = 0;
+
+    while (quit == false) {
+        while (SDL_PollEvent (inout ev)) {
+            if (ev.type == (SDL_EVENT_QUIT as u32)) { set quit = true };
+            if (ev.type == (SDL_EVENT_KEY_DOWN as u32)) {
+                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) { set quit = true }
+            }
+        };
+
+        set box.x = box.x + dx;
+        set box.y = box.y + dy;
+        if (box.x < 0.0f32 or box.x > 560.0f32) { set dx = 0.0f32 - dx };
+        if (box.y < 0.0f32 or box.y > 300.0f32) { set dy = 0.0f32 - dy };
+
+        SDL_SetRenderDrawColor (ren, 18u8, 20u8, 28u8, 255u8);
+        SDL_RenderClear (ren);
+        SDL_SetRenderDrawColor (ren, 90u8, 200u8, 120u8, 255u8);
+        SDL_RenderFillRect (ren, inout box);
+        SDL_RenderPresent (ren);
+
+        SDL_Delay (16);
+        set frame = frame + 1;
+        if (demo) { if (frame >= 120) { set quit = true } }
+    };
+
+    SDL_DestroyRenderer (ren);
+    SDL_DestroyWindow (win);
+    SDL_Quit ();
+    if (demo) { io::println ("demo frames " ++ (frame as String)) };
+    0
+};
