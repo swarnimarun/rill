@@ -349,6 +349,9 @@ struct Generator<'a> {
     /// Static trait dispatch: (trait, method) -> impls keyed by first-parameter
     /// type, with the C function implementing each.
     trait_impls: std::collections::HashMap<(String, String), Vec<(Ty, String)>>,
+    /// `(trait, implementing C type) -> vtable static`, so a `dyn` value can point
+    /// at the right one.
+    dyn_vtables: std::collections::HashMap<(String, String), String>,
     /// Projections of the form `project p (x: inout T) = { yield inout x.f }`:
     /// the name maps to the field they project, so uses inline as an alias.
     projections: std::collections::HashMap<String, String>,
@@ -376,6 +379,7 @@ impl<'a> Generator<'a> {
             scopes: Vec::new(),
             inout_locals: std::collections::HashMap::new(),
             trait_impls: std::collections::HashMap::new(),
+            dyn_vtables: std::collections::HashMap::new(),
             projections: std::collections::HashMap::new(),
         }
     }
@@ -535,6 +539,11 @@ impl<'a> Generator<'a> {
             .first()
             .map(|sym| self.text(*sym).to_string())
             .unwrap_or_default();
+        // One vtable per (trait, implementing type): the slots are collected
+        // while the members are emitted, then written as a single static, which is
+        // what a `dyn` value points at.
+        let mut slots: Vec<(String, String)> = Vec::new();
+        let mut receiver = Ty::Error;
         for member in &def.members {
             let Some(inner) = self.hir.try_item(*member) else {
                 continue;
@@ -565,9 +574,69 @@ impl<'a> Generator<'a> {
             self.trait_impls
                 .entry((trait_name.clone(), method.clone()))
                 .or_default()
-                .push((first_param, c_name.clone()));
+                .push((first_param.clone(), c_name.clone()));
+            if matches!(receiver, Ty::Error) {
+                receiver = first_param.clone();
+            }
+            slots.push((method.clone(), c_name.clone()));
             self.emit_fn_named(*member, member_def, c_name, false);
         }
+        if slots.is_empty() || matches!(receiver, Ty::Error) {
+            return;
+        }
+        // Each slot takes the receiver as a `void *` and the rest of the method's
+        // parameters, so a vtable has one shape regardless of the trait.
+        let receiver_c = self.c_type(&receiver);
+        let vt_name = format!(
+            "vt_{}_{receiver_c}",
+            trait_name
+                .chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect::<String>()
+        )
+        .chars()
+        .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+        .collect::<String>();
+        let mut body = format!("typedef struct {{\n");
+        for (method, _) in &slots {
+            let member = def
+                .members
+                .iter()
+                .find(|id| {
+                    self.hir
+                        .try_item(**id)
+                        .and_then(|item| item.name.map(|n| self.text(n) == method))
+                        .unwrap_or(false)
+                })
+                .copied();
+            let (params, ret) = match member.and_then(|member| self.checked.item_ty(member)) {
+                Some(ItemTy::Fn { params, ret, .. }) => (params.clone(), ret.clone()),
+                _ => (Vec::new(), Ty::Unit),
+            };
+            let ret_c = self.c_type(&ret);
+            let rest: Vec<String> = params
+                .iter()
+                .skip(1)
+                .map(|param| {
+                    let param = param.clone();
+                    self.c_decl(&param, "")
+                })
+                .collect();
+            let rest = rest
+                .into_iter()
+                .map(|decl| decl.trim().to_string())
+                .collect::<Vec<_>>();
+            let tail = if rest.is_empty() {
+                String::new()
+            } else {
+                format!(", {}", rest.join(", "))
+            };
+            body.push_str(&format!("  {ret_c} (*{method})(void *{tail});\n"));
+        }
+        body.push_str("} ");
+        self.types.push_str(&format!("{body}{vt_name};\n"));
+        self.dyn_vtables
+            .insert((trait_name.clone(), receiver_c), vt_name);
     }
 
     /// Module-level `var` / `x := …` declarations become file-scope statics:
