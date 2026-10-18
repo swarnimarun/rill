@@ -1713,8 +1713,7 @@ impl<'a> Generator<'a> {
                     for alt in &alternatives {
                         match self.failable_call(alt) {
                             Some((base, args)) => {
-                                let callee = self.expr(base);
-                                let arguments: Vec<String> = args
+                                            let arguments: Vec<String> = args
                                     .iter()
                                     .map(|arg| {
                                         let value = self.expr(&arg.value);
@@ -2408,7 +2407,6 @@ impl<'a> Generator<'a> {
             match call {
                 Some((base, args)) => {
                     last_can_fail = true;
-                    let callee = self.expr(base);
                     let arguments: Vec<String> = args
                         .iter()
                         .map(|arg| {
