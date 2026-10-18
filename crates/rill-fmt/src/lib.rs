@@ -68,7 +68,7 @@ impl Writer<'_> {
                 }
                 self.out.push_str(text.trim_end());
                 self.out.push('\n');
-                let indent = "  ".repeat(*self.depth);
+                let indent = "\t".repeat(*self.depth);
                 self.out.push_str(&indent);
                 self.prev = Some((kind, end, true));
                 return;
@@ -107,14 +107,14 @@ impl Writer<'_> {
                 self.out.pop();
             }
             self.out.push('\n');
-            let indent = "  ".repeat(*self.depth);
+            let indent = "\t".repeat(*self.depth);
             self.out.push_str(&indent);
         }
         self.out.push_str(text);
         if kind == SyntaxKind::LBrace {
             *self.depth += 1;
             self.out.push('\n');
-            let indent = "  ".repeat(*self.depth);
+            let indent = "\t".repeat(*self.depth);
             self.out.push_str(&indent);
         }
         if kind == SyntaxKind::Semi && self.nested == 0 {
@@ -124,7 +124,7 @@ impl Writer<'_> {
             if *self.depth == 0 {
                 self.out.push('\n');
             }
-            let indent = "  ".repeat(*self.depth);
+            let indent = "\t".repeat(*self.depth);
             self.out.push_str(&indent);
         }
         self.prev = Some((kind, end, false));
@@ -134,7 +134,7 @@ impl Writer<'_> {
         // The original had a newline before this comment; keep the break.
         let _ = start;
         self.out.push('\n');
-        let indent = "  ".repeat(*self.depth);
+        let indent = "\t".repeat(*self.depth);
         self.out.push_str(&indent);
     }
 }

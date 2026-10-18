@@ -1,18 +1,24 @@
 use std::io;
+
 # `all { chain }` collects every successful arm into a slice: unlike `one`, no arm
 # is skipped, and the length is observable through `size`.
-let first_positive (x: i32, y: i32)-> i32 <decides> = if (x > 0) {
-  x 
-} else {
-  if (y > 0) {
-    y 
-  } else {
-    fail 
-  } 
-}; let main ()-> () <io | decides | alloc> = {
-  var found = all {
-    first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] 
-  }; var none = all {
-    first_positive[0, 0] | first_positive[0, 0] 
-  }; io::println ("found " ++ (size found as String) ++ " none " ++ (size none as String)) 
+
+let first_positive (x: i32, y: i32)-> i32 <decides> =
+    if (x > 0) {
+        x 
+    } else {
+        if (y > 0) {
+          y 
+        } else {
+          fail 
+        } 
+    };
+
+let main ()-> () <io | decides | alloc> = {
+    var found = all {
+      first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] 
+    };
+    var none = all {
+      first_positive[0, 0] | first_positive[0, 0] 
+    }; io::println ("found " ++ (size found as String) ++ " none " ++ (size none as String)) 
 }; 

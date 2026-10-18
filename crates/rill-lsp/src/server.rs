@@ -145,6 +145,27 @@ impl Server {
                     .to_string();
                 self.semantic_tokens(id, &uri);
             }
+            "textDocument/inlayHint" => {
+                let uri = params
+                    .get("textDocument")
+                    .and_then(|doc| doc.get("uri"))
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                let start = params
+                    .get("range")
+                    .and_then(|r| r.get("start"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0);
+                let end = params
+                    .get("range")
+                    .and_then(|r| r.get("end"))
+                    .and_then(|s| s.get("line"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(i64::MAX);
+                self.inlay_hints(id, &uri, start as u32, end as u32);
+            }
             "textDocument/references" => {
                 let line = params
                     .get("position")
@@ -236,6 +257,26 @@ impl Server {
             return self.respond(id, Json::Null);
         };
         let offset = position_to_offset(&document.source, line, character);
+        // A local's name is not an expression, so containment would fall through to
+        // the enclosing block and answer `()` - the bug this replaces. Names are
+        // answered from the locals table, which is where `var x = 1;` keeps `x: i32`.
+        if let Some(local) = document.hir.locals().iter().find(|local| {
+            local.owner.is_some() && local.span.start <= offset && offset <= local.span.end
+        }) {
+            if let Some(ty) = document.checked.local_ty(local.id) {
+                let text = document.checked.display_ty(&document.frontend, ty);
+                return self.respond(
+                    id,
+                    Json::obj(&[(
+                        "contents",
+                        Json::obj(&[
+                            ("kind", Json::Str("plaintext".into())),
+                            ("value", Json::Str(text)),
+                        ]),
+                    )]),
+                );
+            }
+        }
         if debug() {
             let items = document.hir.items().len();
             let bodies = document
@@ -408,6 +449,48 @@ impl Server {
             )]),
         )
         .ok();
+    }
+
+    /// Inlay hints: the type of every local at its declaration.
+    ///
+    /// Not advertised yet, and that is deliberate: `LocalInfo::span` is the whole
+    /// statement rather than the name, so the hints land at the end of a declaration
+    /// instead of after the binding it describes. A cross-check against hover on all
+    /// 30 examples is what showed it. The position has to come from the name token in
+    /// the concrete tree before a client should see these.
+    fn inlay_hints(&mut self, id: Option<Json>, uri: &str, from_line: u32, to_line: u32) {
+        let mut hints = Vec::new();
+        if let Some(document) = self.documents.get(uri) {
+            for local in document.hir.locals() {
+                if local.owner.is_none() || local.span.is_dummy() {
+                    continue;
+                }
+                let at = document.source.line_col(local.span.end);
+                if (at.line as u32) < from_line || (at.line as u32) > to_line {
+                    continue;
+                }
+                let Some(ty) = document.checked.local_ty(local.id) else {
+                    continue;
+                };
+                if matches!(ty, rill_ty::Ty::Unit | rill_ty::Ty::Error) {
+                    continue;
+                }
+                let text = document.checked.display_ty(&document.frontend, ty);
+                hints.push(Json::obj(&[
+                    (
+                        "position",
+                        Json::obj(&[
+                            ("line", Json::Num(at.line as f64)),
+                            ("character", Json::Num(at.col as f64)),
+                        ]),
+                    ),
+                    ("label", Json::Str(format!(": {text}"))),
+                    ("kind", Json::Num(1.0)),
+                    ("paddingLeft", Json::Bool(true)),
+                ]));
+            }
+        }
+        let _ = self.respond(id, Json::Arr(hints));
     }
 
     fn publish(&mut self, uri: &str) -> std::io::Result<()> {
@@ -696,6 +779,15 @@ fn collect_expr(expr: &rill_hir::Expr, out: &mut Vec<rill_hir::Expr>) {
         }
         rill_hir::ExprKind::Unary { operand, .. } => collect_expr(operand, out),
         rill_hir::ExprKind::Try { base } => collect_expr(base, out),
+        rill_hir::ExprKind::Cast { expr, .. } | rill_hir::ExprKind::Is { expr, .. } => {
+            collect_expr(expr, out)
+        }
+        rill_hir::ExprKind::Match { scrutinee, arms } => {
+            collect_expr(scrutinee, out);
+            for arm in arms {
+                collect_expr(&arm.body, out);
+            }
+        }
         rill_hir::ExprKind::If {
             then_branch,
             else_branch,
