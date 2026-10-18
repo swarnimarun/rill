@@ -196,6 +196,10 @@ pub struct Checked {
     pub arena_id: NominalId,
     /// The builtin `Option` nominal (`option { … }` results).
     pub option_id: NominalId,
+    /// The element type each `option { … }` expression carries. `Ty` has no
+    /// parameterised variant, so the payload is recorded here and read by
+    /// `?` and by code generation.
+    pub option_elems: HashMap<ExprId, Ty>,
     local_types: Vec<Option<Ty>>,
     item_types: Vec<ItemTy>,
     nominals: Vec<NominalDef>,
@@ -250,6 +254,7 @@ struct Checker<'a> {
     next_var: u32,
     nominals: Vec<NominalDef>,
     nominal_by_item: HashMap<ItemId, NominalId>,
+    option_elems: HashMap<ExprId, Ty>,
     item_types: Vec<ItemTy>,
     local_types: Vec<Option<Ty>>,
     expr_types: HashMap<ExprId, Ty>,
@@ -281,6 +286,7 @@ struct Checker<'a> {
 impl<'a> Checker<'a> {
     fn new(frontend: &'a rill_ast::Frontend, hir: &'a Hir) -> Self {
         Checker {
+            option_elems: HashMap::new(),
             frontend,
             hir,
             subst: HashMap::new(),
@@ -326,6 +332,7 @@ impl<'a> Checker<'a> {
             buf_id: self.buf_id,
             arena_id: self.arena_id,
             option_id: self.option_id,
+            option_elems: self.option_elems,
             local_types: self.local_types,
             item_types: self.item_types,
             nominals: self.nominals,
@@ -1421,7 +1428,15 @@ impl Checker<'_> {
             }
             ExprKind::Try { base } => {
                 self.add_effects(&[Effect::Decides]);
-                self.expr(base)
+                let base_ty = self.expr(base);
+                // `e?` on an `Option τ` is the `τ`; on anything else (a deciding
+                // call) it is the value itself and the failure propagates.
+                if matches!(self.resolve_deep(&base_ty), Ty::Nominal(id) if id == self.option_id) {
+                    if let Some(elem) = self.option_elems.get(&base.id).cloned() {
+                        return elem;
+                    }
+                }
+                base_ty
             }
             ExprKind::Unary { op, operand } => {
                 let operand_ty = self.expr(operand);
@@ -1537,7 +1552,10 @@ impl Checker<'_> {
                 let inner = self.block(body);
                 self.handler = previous;
                 match kind {
-                    rill_ast::HandlerKind::Option => Ty::Nominal(self.option_id),
+                    rill_ast::HandlerKind::Option => {
+                        self.option_elems.insert(expr.id, inner.clone());
+                        Ty::Nominal(self.option_id)
+                    }
                     rill_ast::HandlerKind::One => inner,
                     rill_ast::HandlerKind::All => Ty::Array {
                         elem: Box::new(inner),

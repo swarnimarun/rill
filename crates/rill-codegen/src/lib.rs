@@ -1422,10 +1422,40 @@ impl<'a> Generator<'a> {
                 }
             }
             ExprKind::Try { base } => {
-                // `e?` propagates failure (PLAN §3): the base is lowered right
-                // here, so a deciding call's failure leaves through whichever
-                // continuation is innermost - the enclosing fallback, a handler,
-                // or the function.
+                // `e?` propagates failure (PLAN §3) and unwraps an `Option`: a
+                // deciding call's failure leaves through whichever continuation
+                // is innermost; an `Option`'s absence does the same.
+                if let Some(elem) = self.checked.option_elems.get(&base.id).cloned() {
+                    let repr = self.option_repr(&elem);
+                    let cty = self.c_type(&elem);
+                    let exit = match self.fail_targets.last() {
+                        Some((code, _)) => {
+                            self.continuation_used = true;
+                            code.clone()
+                        }
+                        None => match self.failable.clone() {
+                            Some((out, octy)) => {
+                                format!("{octy} _z = {{0}}; *{out} = _z; return false;")
+                            }
+                            None => {
+                                self.unsupported(
+                                    expr.span,
+                                    "`?` on an `Option` outside a `<decides>` function",
+                                    "M4 (handlers)",
+                                );
+                                return "0".into();
+                            }
+                        },
+                    };
+                    self.temp += 1;
+                    let slot = format!("_o{}", self.temp);
+                    let base_code = self.expr(base);
+                    self.body
+                        .push_str(&format!("  {repr} {slot} = {base_code};\n"));
+                    self.body
+                        .push_str(&format!("  if (!{slot}.some) {{ {exit} }}\n"));
+                    return format!("({cty})({slot}.value)");
+                }
                 self.expr(base)
             }
             ExprKind::Unary { op, operand } => {
@@ -1552,6 +1582,42 @@ impl<'a> Generator<'a> {
                 // `option { e }` would have to yield an `Option τ` value, and
                 // `all { e }` an array; both need their value construction
                 // first (PLAN.md §12), so they stay reported.
+                if matches!(kind, rill_ast::HandlerKind::Option) {
+                    let Some(elem) = self.checked.option_elems.get(&expr.id).cloned() else {
+                        self.unsupported(expr.span, "`option { … }`", "M4 (handlers)");
+                        return "0".into();
+                    };
+                    // The payload must be a single expression: a body with
+                    // statements would need each statement guarded by the
+                    // failure flag, which is not lowered yet.
+                    let block = body;
+                    if !block.stmts.is_empty() {
+                        self.unsupported(
+                            expr.span,
+                            "an `option { … }` body with statements before its value",
+                            "M4 (handlers)",
+                        );
+                        return "0".into();
+                    }
+                    let Some(tail) = block.tail.as_ref() else {
+                        self.unsupported(expr.span, "`option { }` without a value", "M4");
+                        return "0".into();
+                    };
+                    let repr = self.option_repr(&elem);
+                    let cty = self.c_type(&elem);
+                    self.temp += 1;
+                    let level = self.temp;
+                    let ok = format!("_ok{level}");
+                    let held = format!("_v{level}");
+                    self.body
+                        .push_str(&format!("  bool {ok} = true; {cty} {held} = {{0}};\n"));
+                    self.fail_targets
+                        .push((format!("{ok} = false;"), format!("({cty}){{0}}")));
+                    let value = self.expr(tail);
+                    self.fail_targets.pop();
+                    self.body.push_str(&format!("  {held} = ({value});\n"));
+                    return format!("(({repr}){{ .some = {ok}, .value = {held} }})");
+                }
                 if matches!(kind, rill_ast::HandlerKind::One) {
                     let is_choice = matches!(
                         body.tail.as_ref().map(|tail| &tail.kind),
@@ -2166,6 +2232,23 @@ impl<'a> Generator<'a> {
 
     /// Leaves the current function with a failure: the statement form of the
     /// failure continuation (`None` outside a `<decides>` function).
+    /// The C representation of `Option τ`: a tag plus the payload, one typedef
+    /// per element type.
+    fn option_repr(&mut self, elem: &Ty) -> String {
+        let cty = self.c_type(elem);
+        let name: String = format!(
+            "rill_opt_{}",
+            cty.chars()
+                .map(|c| if c.is_ascii_alphanumeric() { c } else { '_' })
+                .collect::<String>()
+        );
+        let decl = format!("typedef struct {{ bool some; {cty} value; }} {name};\n");
+        if !self.types.contains(&decl) {
+            self.types.push_str(&decl);
+        }
+        name
+    }
+
     fn fail_statement(&mut self) -> Option<String> {
         if let Some((code, _)) = self.fail_targets.last() {
             self.continuation_used = true;

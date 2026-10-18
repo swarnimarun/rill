@@ -1,0 +1,17 @@
+use std::io;
+
+# `option { e }` yields an `Option τ`: the value when `e` succeeds, "no value"
+# when it fails. `?` unwraps it and propagates absence, so the fallback below
+# catches both the failed call and the absent value.
+
+type Account = record { var balance: i64; };
+
+let first_positive (x: i32, y: i32) -> i32 <decides> =
+    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+
+let maybe (x: i32, y: i32) -> i32 <computes> =
+    (option { first_positive[x, y] })? | 0;
+
+let main () -> () <io | decides> = {
+    io::println ("maybe[5, 0] = " ++ (maybe[5, 0] as String) ++ " maybe[0, 0] = " ++ (maybe[0, 0] as String))
+};

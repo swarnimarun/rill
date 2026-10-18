@@ -572,3 +572,33 @@ fn one_handler_with_no_success_exits_one() {
     );
     assert_eq!(output.status.code(), Some(1));
 }
+
+#[test]
+fn builds_and_runs_option_handler() {
+    let dir = workdir("option");
+    let out = dir.join("option");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/option.rill")
+        .canonicalize()
+        .expect("examples/option.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // `option { first_positive[x, y] }? | 0`: a present value, then an absent one
+    // that the fallback catches.
+    assert!(
+        stdout.contains("maybe[5, 0] = 5 maybe[0, 0] = 0"),
+        "unexpected stdout: {stdout}"
+    );
+    assert_eq!(output.status.code(), Some(0));
+}

@@ -66,7 +66,9 @@ fn loops_and_arrays_lower() {
 fn unsupported_constructs_are_reported_not_miscompiled() {
     let (frontend, sm) = parse_and_lower_text(
         "u.rill",
-        "let main () -> i32 <decides> = {\n    option { 1 };\n    0\n};\n",
+        // `all { … }` still needs its array-valued result; the handler must be
+        // *reported*, never silently mis-compiled.
+        "let main () -> i32 <decides> = {\n    all { 1 };\n    0\n};\n",
     );
     let hir = lower(&frontend);
     let checked = check(&frontend, &hir);
