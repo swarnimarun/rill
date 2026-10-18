@@ -19,7 +19,10 @@ let main () -> () <io | decides | writes> = {
     var bob = Account 1000000i64;
     var i = 0;
     while (i < 5000) {
-        transfer[inout alice, inout bob, 1] | transfer[inout alice, inout bob, 0];
+        # The second arm is a nested chain that is never taken (the first arm
+        # always succeeds). Its region must still be ended, or the depth leaks
+        # and the trail never releases.
+        transfer[inout alice, inout bob, 1] | (transfer[inout alice, inout bob, 1] | transfer[inout alice, inout bob, 1]);
         set i = i + 1;
     };
     io::println ("alice = " ++ (alice.balance as String) ++ " bob = " ++ (bob.balance as String))

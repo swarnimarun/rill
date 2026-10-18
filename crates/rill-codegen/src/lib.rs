@@ -2147,10 +2147,18 @@ impl<'a> Generator<'a> {
                 );
             }
         }
-        out.push_str(" rill_txn_end();");
+        // `end` is *not* emitted here: it is hoisted with `begin`, so the pair
+        // cannot be split by an arm that never runs.
+
         out.push_str(&format!(" {slot}; }})"));
+        // The whole region (begin, arms, selection, end) is emitted as one body
+        // statement, so the value is captured in a temporary the caller reads.
+        self.temp += 1;
+        let result = format!("_r{}", self.temp);
+        self.body
+            .push_str(&format!("  {cty} {result} = {out}; rill_txn_end();\n"));
         self.require_success = outer_require;
-        out
+        format!("({result})")
     }
 
     /// Leaves the current function with a failure: the statement form of the
