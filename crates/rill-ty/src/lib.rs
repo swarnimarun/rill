@@ -1886,6 +1886,19 @@ impl Checker<'_> {
             // The ambient arena: bound at the top scope, consulted in layers by whatever
             // needs storage (PLAN §11). `unbind` returns to the previous binding.
             "arena_bind" => (vec![arena.clone()], Ty::Unit, vec![Effect::Writes]),
+            // The `Io` layer: bind a task kernel, spawn work, run the loop.
+            "io_bind" => (Vec::new(), Ty::Unit, vec![Effect::Writes]),
+            "io_unbind" => (Vec::new(), Ty::Unit, vec![Effect::Writes]),
+            "io_spawn" => (
+                vec![Ty::Fn {
+                    params: Vec::new(),
+                    ret: Box::new(Ty::Unit),
+                    effects: vec![Effect::Io, Effect::Suspends],
+                }],
+                Ty::Unit,
+                vec![Effect::Suspends],
+            ),
+            "io_run" => (Vec::new(), Ty::usize_(), vec![Effect::Suspends]),
             "arena_unbind" => (Vec::new(), Ty::Unit, vec![Effect::Writes]),
             "buf_new" => (Vec::new(), buf, vec![Effect::Alloc]),
             "buf_push" => (

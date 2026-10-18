@@ -931,3 +931,33 @@ fn builds_and_runs_dyn() {
     assert!(stdout.contains("point rect"), "unexpected stdout: {stdout}");
     assert_eq!(output.status.code(), Some(0));
 }
+
+#[test]
+fn builds_and_runs_executor() {
+    let dir = workdir("executor");
+    let out = dir.join("executor");
+    let example = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+        .join("../../examples/executor.rill")
+        .canonicalize()
+        .expect("examples/executor.rill")
+        .to_string_lossy()
+        .to_string();
+    let status = Command::new(env!("CARGO_BIN_EXE_rillc"))
+        .args(["build", &example, "-o"])
+        .arg(&out)
+        .status()
+        .expect("run rillc build");
+    assert!(status.success(), "build failed: {status}");
+
+    let output = Command::new(&out)
+        .output()
+        .expect("run the produced binary");
+    let stdout = String::from_utf8_lossy(&output.stdout);
+    // Four tasks: the third spawns the fourth *during* the run, so the loop picks
+    // it up - that is what makes this a scheduler rather than a sequence of calls.
+    assert!(stdout.contains("task one"), "{stdout}");
+    assert!(stdout.contains("task three spawns another"), "{stdout}");
+    assert!(stdout.contains("task four"), "{stdout}");
+    assert!(stdout.contains("ran 4"), "{stdout}");
+    assert_eq!(output.status.code(), Some(0));
+}

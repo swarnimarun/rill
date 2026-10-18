@@ -187,6 +187,39 @@ static void rill_println(r_text s) { printf("%s\n", s); }
    helpers and `extern` declarations do not. */
 typedef struct { void *code; void *env; } rill_fn;
 
+/* The `Io` layer (PLAN §11): a bound task kernel, read in layers like the arena.
+   Tasks are `{code, env}` values - the pair every function value already has - and
+   the loop runs them round-robin, so a task that spawns another is picked up in the
+   same run. Nothing runs in parallel: concurrency needs the data guarantees that
+   make sharing sound, and until those are enforced a trampoline is the honest
+   kernel. */
+typedef struct { void *code; void *env; } rill_task;
+static rill_task rill_io_queue[1024];
+static int rill_io_head;
+static int rill_io_tail;
+static int rill_io_layers;
+static void rill_io_spawn(rill_fn task) {
+  if (rill_io_tail < 1024) {
+    rill_io_queue[rill_io_tail].code = task.code;
+    rill_io_queue[rill_io_tail].env = task.env;
+    rill_io_tail += 1;
+  }
+}
+static int rill_io_run(void) {
+  int ran = 0;
+  while (rill_io_head < rill_io_tail && ran < 100000) {
+    rill_task task = rill_io_queue[rill_io_head];
+    rill_io_head += 1;
+    ((void (*)(void *))task.code)(task.env);
+    ran += 1;
+  }
+  rill_io_head = 0;
+  rill_io_tail = 0;
+  return ran;
+}
+static void rill_io_bind(void) { rill_io_layers += 1; }
+static void rill_io_unbind(void) { if (rill_io_layers > 0) rill_io_layers -= 1; }
+
 /* A `dyn Trait` value: the concrete value and its vtable. Boxing copies the value
    into storage from the ambient arena when one is bound, and the heap otherwise -
    the same rule closures use for their environments. */
@@ -1695,6 +1728,10 @@ impl<'a> Generator<'a> {
                             },
                         },
                         "arena_bind" => "rill_arena_bind".into(),
+                        "io_bind" => "rill_io_bind".into(),
+                        "io_unbind" => "rill_io_unbind".into(),
+                        "io_spawn" => "rill_io_spawn".into(),
+                        "io_run" => "rill_io_run".into(),
                         "arena_unbind" => "rill_arena_unbind".into(),
                         "buf_new" => "rill_buf_new".into(),
                         "buf_push" => "rill_buf_push".into(),
