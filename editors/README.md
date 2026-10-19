@@ -5,9 +5,20 @@ packages it as a Zed dev extension.
 
 ## Helix
 
-`~/.config/helix/languages.toml` points Helix at the grammar source:
+Helix stores the grammar path verbatim, so it must be the checkout's absolute
+path. From the repository root, this writes the language, server and grammar
+entries with the path it computes, then links the queries next to where Helix
+loads them:
 
-```toml
+```console
+$ root=$(pwd)
+$ mkdir -p ~/.config/helix
+$ cat >> ~/.config/helix/languages.toml <<EOF
+
+[language-server.rill]
+command = "rill"
+args = ["lsp"]
+
 [[language]]
 name = "rill"
 scope = "source.rill"
@@ -18,25 +29,25 @@ language-servers = ["rill"]
 
 [[grammar]]
 name = "rill"
-source = { path = "/path/to/rill/editors/tree-sitter-rill" }
+source = { path = "$root/editors/tree-sitter-rill" }
+EOF
+
+$ mkdir -p ~/.config/helix/runtime/queries
+$ rm -rf ~/.config/helix/runtime/queries/rill
+$ ln -s "$root/editors/tree-sitter-rill/queries" \
+    ~/.config/helix/runtime/queries/rill
+
+$ mkdir -p ~/.config/helix/runtime/grammars
+$ hx --grammar build rill
 ```
 
-Then:
-
-```console
-$ hx --grammar build
-```
+If `languages.toml` already has entries for `rill`, update the `source` path
+instead of appending a second block.
 
 `hx --grammar build` compiles the parser but does **not** copy the grammar's
 `queries/` directory into `~/.config/helix/runtime/queries/rill/`, and Helix
-loads highlight queries from there. Keep them in sync with a symlink so a
-grammar change and its query land in the same edit:
-
-```console
-$ rmdir ~/.config/helix/runtime/queries/rill
-$ ln -s /path/to/rill/editors/tree-sitter-rill/queries \
-    ~/.config/helix/runtime/queries/rill
-```
+loads highlight queries from there. The symlink above is what keeps a grammar
+change and its query in the same edit.
 
 A stale query copy fails at buffer load with
 `Failed to compile highlights for 'rill': invalid node type …` and silently

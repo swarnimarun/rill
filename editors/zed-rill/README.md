@@ -9,18 +9,26 @@ Two manual steps, neither of which can be done from a script:
 
 2. **Attach the language server.** This extension ships a grammar, queries and a
    language config, but *not* a WebAssembly server adapter - so Zed will not start
-   `rill lsp` from it. Point Zed at the installed binary directly in
-   `~/.config/zed/settings.json`:
+   `rill lsp` from it. Point Zed at the installed binary in
+   `~/.config/zed/settings.json`; a bare name is resolved from Zed's process PATH:
 
    ```json
    {
      "lsp": {
        "rill-lsp": {
-         "binary": { "path": "/absolute/path/to/rill-lsp", "arguments": [] },
+         "binary": { "path": "rill-lsp", "arguments": [] },
          "languages": ["Rill"]
        }
      }
    }
+   ```
+
+   A GUI-launched Zed on macOS does not inherit your shell's PATH. If the server
+   does not start, use the absolute path `command -v rill-lsp` prints in place of
+   the bare name:
+
+   ```console
+   $ command -v rill-lsp
    ```
 
    This is the part I could not verify: Zed cannot be driven headlessly, and whether
