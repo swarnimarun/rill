@@ -10,13 +10,6 @@
           "type": "REPEAT",
           "content": {
             "type": "SYMBOL",
-            "name": "use_declaration"
-          }
-        },
-        {
-          "type": "REPEAT",
-          "content": {
-            "type": "SYMBOL",
             "name": "_item"
           }
         },
@@ -243,6 +236,10 @@
     "_item": {
       "type": "CHOICE",
       "members": [
+        {
+          "type": "SYMBOL",
+          "name": "use_declaration"
+        },
         {
           "type": "SYMBOL",
           "name": "function_definition"
@@ -704,7 +701,48 @@
         },
         {
           "type": "SYMBOL",
+          "name": "include_body"
+        },
+        {
+          "type": "SYMBOL",
           "name": "_type"
+        }
+      ]
+    },
+    "include_body": {
+      "type": "SEQ",
+      "members": [
+        {
+          "type": "STRING",
+          "value": "@"
+        },
+        {
+          "type": "FIELD",
+          "name": "name",
+          "content": {
+            "type": "SYMBOL",
+            "name": "identifier"
+          }
+        },
+        {
+          "type": "STRING",
+          "value": "("
+        },
+        {
+          "type": "CHOICE",
+          "members": [
+            {
+              "type": "SYMBOL",
+              "name": "text"
+            },
+            {
+              "type": "BLANK"
+            }
+          ]
+        },
+        {
+          "type": "STRING",
+          "value": ")"
         }
       ]
     },

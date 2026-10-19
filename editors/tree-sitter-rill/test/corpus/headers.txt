@@ -1,0 +1,21 @@
+================================================================================
+A header import is a type body, and the use that preludes it may follow it
+================================================================================
+
+type M = @include("SDL3/SDL.h");
+
+use M::*;
+
+---
+
+(source_file
+  (type_definition
+    name: (identifier)
+    (type_body
+      (include_body
+        name: (identifier)
+        (text))))
+  (use_declaration
+    (use_path
+      (identifier)
+      (use_tail))))

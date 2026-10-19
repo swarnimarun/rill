@@ -22,9 +22,10 @@ module.exports = grammar({
 
   rules: {
     // A module is declarations and statements; like a block, it may end with a
-    // bare tail expression (the reference parser leaves it unwrapped).
+    // bare tail expression (the reference parser leaves it unwrapped). A `use`
+    // may follow other declarations (`type M = @include(…); use M::*;`), which
+    // is how every header-importing program is written.
     source_file: $ => seq(
-      repeat($.use_declaration),
       repeat($._item),
       optional($._statement_kind),
     ),
@@ -61,6 +62,7 @@ module.exports = grammar({
     ),
 
     _item: $ => choice(
+      $.use_declaration,
       $.function_definition,
       $.type_definition,
       $.trait_definition,
@@ -125,8 +127,18 @@ module.exports = grammar({
       seq('(', 'comptime', field('name', $.identifier), ':', $._type, ')'),
     ),
 
-    // A type body is a record, an algebraic variant list, or an alias.
-    type_body: $ => choice($.record_body, $.view_body, $.variant_list, $._type),
+    // A type body is a record, an algebraic variant list, an alias, or a C
+    // header to import (`type M = @include("SDL3/SDL.h");`).
+    type_body: $ => choice(
+      $.record_body, $.view_body, $.variant_list, $.include_body, $._type,
+    ),
+
+    // `@include("path")` — the external source in a type body. The name is an
+    // identifier, like every other directive's, so `include` stays usable as a
+    // plain name.
+    include_body: $ => seq(
+      '@', field('name', $.identifier), '(', optional($.text), ')',
+    ),
 
     record_body: $ => seq('record', '{', repeat(choice($.member, $.deinit_clause)), '}'),
 

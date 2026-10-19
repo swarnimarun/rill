@@ -1739,6 +1739,32 @@
     }
   },
   {
+    "type": "include_body",
+    "named": true,
+    "fields": {
+      "name": {
+        "multiple": false,
+        "required": true,
+        "types": [
+          {
+            "type": "identifier",
+            "named": true
+          }
+        ]
+      }
+    },
+    "children": {
+      "multiple": false,
+      "required": false,
+      "types": [
+        {
+          "type": "text",
+          "named": true
+        }
+      ]
+    }
+  },
+  {
     "type": "index_expression",
     "named": true,
     "fields": {},
@@ -3389,6 +3415,10 @@
         },
         {
           "type": "function_type",
+          "named": true
+        },
+        {
+          "type": "include_body",
           "named": true
         },
         {
