@@ -31,7 +31,7 @@ let capacity () -> usize <computes> = 262144u64;
 
 # The pool lives in the data segment: 262,144 nodes x 48 bytes would not fit on
 # the stack, and a static is what an arena-style program wants anyway.
-var pool: Pool = comptime { zeroed () };
+static var pool: Pool = comptime { zeroed () };
 
 let push (p: inout Pool, kind: u8, start: usize, end: usize) -> usize <computes> = {
     var idx: usize = 0u64;

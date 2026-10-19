@@ -1,0 +1,27 @@
+# `.rill-fmt` — the formatter settings for every `.rill` file below this
+# directory. `rillc fmt` and `rill lsp` both pick it up from the nearest
+# ancestor of the file they format, so a subdirectory may override it with its
+# own copy.
+#
+# Every key is optional; the value shown is the default.
+
+# Longest line the formatter aims for. Argument lists, parameter lists,
+# arrays, tuples and `match` arms break one element per line when the flat
+# form would exceed it.
+max_width = 100
+
+# Columns a tab counts as when measuring a line. Indentation itself is tabs.
+tab_width = 4
+
+# An `if`/`else` chain whose one-line form is wider than this breaks into one
+# block per line. `if (x) { 0 } else { 1 }` stays on one line.
+single_line_if_width = 80
+
+# A block whose contents are wider than this is laid out over several lines.
+single_line_block_width = 48
+
+# Blank lines between top-level declarations and between trait/impl members.
+blank_lines_between_items = 1
+
+# Keep up to one blank line the source had between statements.
+preserve_blank_lines = true

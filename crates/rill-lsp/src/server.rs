@@ -194,6 +194,28 @@ impl Server {
                     .unwrap_or(i64::MAX);
                 self.inlay_hints(id, &uri, start as u32, end as u32);
             }
+            "textDocument/definition" => {
+                let line = params
+                    .get("position")
+                    .and_then(|p| p.get("line"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let character = params
+                    .get("position")
+                    .and_then(|p| p.get("character"))
+                    .and_then(Json::as_i64)
+                    .unwrap_or(0) as u32;
+                let uri = params
+                    .get("textDocument")
+                    .and_then(|doc| doc.get("uri"))
+                    .and_then(Json::as_str)
+                    .unwrap_or("")
+                    .to_string();
+                if debug() {
+                    eprintln!("lsp: definition {uri} at {line}:{character}");
+                }
+                self.definition(id, &uri, line, character);
+            }
             "textDocument/references" => {
                 let line = params
                     .get("position")
@@ -267,7 +289,14 @@ impl Server {
         let Some(document) = self.documents.get(uri) else {
             return self.respond(id, Json::Null);
         };
-        let formatted = rill_fmt::format_text(&document.text);
+        // The `.rill-fmt` nearest the document applies, exactly as `rillc fmt`
+        // resolves it.
+        let config = uri
+            .strip_prefix("file://")
+            .map(std::path::Path::new)
+            .and_then(|path| rill_fmt::Config::load_for(path).ok())
+            .unwrap_or_default();
+        let formatted = rill_fmt::format_text_with(&document.text, &config);
         // LSP wants edits; replacing the whole document with one edit is valid and
         // is what a formatter that rewrites line breaks should do.
         let end_line = document.text.lines().count() as i64;
@@ -310,13 +339,21 @@ impl Server {
         let items: Vec<Json> = candidates
             .into_iter()
             .map(|candidate| {
-                let Candidate { name, kind, detail } = candidate;
+                let Candidate {
+                    name,
+                    kind,
+                    detail,
+                    documentation,
+                } = candidate;
                 let mut fields = vec![
                     ("label", Json::Str(name.clone())),
                     ("kind", Json::Num(kind)),
                 ];
                 if let Some(detail) = detail {
                     fields.push(("detail", Json::Str(detail)));
+                }
+                if let Some(documentation) = documentation {
+                    fields.push(("documentation", markdown(&documentation)));
                 }
                 fields.push((
                     "textEdit",
@@ -378,6 +415,36 @@ impl Server {
                 )]),
             );
         }
+        if let Some(item) = document.hir.items().iter().find(|item| {
+            item.name_span
+                .is_some_and(|span| span.start <= offset && offset <= span.end)
+        }) {
+            // The cursor is on a declaration's own name: answer from the item,
+            // which is where the docs and the checked signature live.
+            let detail = item_detail(document, item.id);
+            let docs = item_documentation(&item.docs);
+            return match (detail, docs) {
+                (Some(detail), Some(docs)) => self.respond(
+                    id,
+                    Json::obj(&[(
+                        "contents",
+                        markdown(&format!("```rill\n{detail}\n```\n\n{docs}")),
+                    )]),
+                ),
+                (Some(detail), None) => self.respond(
+                    id,
+                    Json::obj(&[(
+                        "contents",
+                        Json::obj(&[
+                            ("kind", Json::Str("plaintext".into())),
+                            ("value", Json::Str(detail)),
+                        ]),
+                    )]),
+                ),
+                (None, Some(docs)) => self.respond(id, Json::obj(&[("contents", markdown(&docs))])),
+                (None, None) => self.respond(id, Json::Null),
+            };
+        }
         if debug() {
             let items = document.hir.items().len();
             let bodies = document
@@ -392,7 +459,7 @@ impl Server {
                 document.source.files().len()
             );
         }
-        let mut best: Option<(u32, String)> = None;
+        let mut best: Option<(u32, String, Option<String>)> = None;
         let mut considered = 0usize;
         for item in document.hir.items() {
             let mut exprs = Vec::new();
@@ -412,9 +479,18 @@ impl Server {
                     let performed = document.checked.expr_effects(expr.id);
                     let text =
                         type_with_effects(&document.checked, &document.frontend, ty, performed);
+                    // A call answers the callable's documentation: hovering the
+                    // name and hovering the parens should say the same thing.
+                    let docs = item_id_for_expr(&expr)
+                        .and_then(|id| document.hir.try_item(id))
+                        .and_then(|item| item_documentation(&item.docs));
                     let width = span.end.to_usize().saturating_sub(span.start.to_usize()) as u32;
-                    if best.as_ref().map(|(best, _)| width < *best).unwrap_or(true) {
-                        best = Some((width, text));
+                    if best
+                        .as_ref()
+                        .map(|(best, _, _)| width < *best)
+                        .unwrap_or(true)
+                    {
+                        best = Some((width, text, docs));
                     }
                 }
             }
@@ -423,7 +499,14 @@ impl Server {
             eprintln!("lsp: hover considered {considered} expressions, answer: {best:?}");
         }
         match best {
-            Some((_, text)) => self.respond(
+            Some((_, text, Some(docs))) => self.respond(
+                id,
+                Json::obj(&[(
+                    "contents",
+                    markdown(&format!("```rill\n{text}\n```\n\n{docs}")),
+                )]),
+            ),
+            Some((_, text, None)) => self.respond(
                 id,
                 Json::obj(&[(
                     "contents",
@@ -437,64 +520,114 @@ impl Server {
         }
     }
 
-    /// References: every expression that resolves to the same thing as the one
-    /// under the cursor. Resolution is the linker's answer, so this is exact rather
-    /// than a name match - a shadowed local does not collect the outer one's uses.
+    /// References: every name that resolves to the same thing as the one
+    /// under the cursor, plus the declaration itself. Resolution is the
+    /// linker's answer, so this is exact rather than a name match - a shadowed
+    /// local does not collect the outer one's uses, and a type name finds its
+    /// annotations because they are recorded as references too.
     fn references(&mut self, id: Option<Json>, uri: &str, line: u32, character: u32) {
         let mut locations = Vec::new();
         if let Some(document) = self.documents.get(uri) {
             let offset = position_to_offset(&document.source, line, character);
-            let at = expr_at(document, offset);
-            let wanted = at.as_ref().and_then(|expr| match &expr.kind {
-                rill_hir::ExprKind::Path { res, .. } => Some(res.clone()),
-                // A call's callee often carries an empty span, so the resolution is
-                // taken from the call when that is the innermost expression.
-                rill_hir::ExprKind::Call { callee, .. } => {
-                    callee.path_res().map(|(_, res)| res.clone())
+            let wanted = reference_target(document, offset);
+            if let Some((wanted, wanted_name)) = wanted
+                .clone()
+                .filter(|(res, _)| !matches!(res, rill_hir::Res::Error | rill_hir::Res::Field))
+            {
+                for reference in document.hir.refs() {
+                    if reference.res != wanted || reference.span.is_dummy() {
+                        continue;
+                    }
+                    // The compiler's builtins all share one `Res`, so their
+                    // names are what tells two of them apart.
+                    if matches!(wanted, rill_hir::Res::Builtin) && reference.name != wanted_name {
+                        continue;
+                    }
+                    push_location(
+                        &mut locations,
+                        location_object(
+                            uri,
+                            span_range(&document.source, reference.span.start, reference.span.end),
+                        ),
+                    );
                 }
-                _ => None,
-            });
+                match &wanted {
+                    rill_hir::Res::Item(item_id) => {
+                        let location = document
+                            .hir
+                            .try_item(*item_id)
+                            .and_then(|item| item_location(document, uri, item));
+                        if let Some(location) = location {
+                            push_location(&mut locations, location);
+                        }
+                    }
+                    // A local's declaration is not a reference, so the table
+                    // has no entry for it; the binding's own name span is the
+                    // declaration. `snippet` guards the recorded span, which
+                    // for a generated binding can cover something else.
+                    rill_hir::Res::Local(local_id) => {
+                        let info = document.hir.local(*local_id);
+                        let name = document
+                            .frontend
+                            .text(rill_ast::Ident::new(info.name, info.span));
+                        if !name.is_empty() && document.source.snippet(info.span) == name {
+                            push_location(
+                                &mut locations,
+                                location_object(
+                                    uri,
+                                    span_range(&document.source, info.span.start, info.span.end),
+                                ),
+                            );
+                        }
+                    }
+                    _ => {}
+                }
+            }
             if debug() {
                 eprintln!(
-                    "lsp: references at {}:{} -> {wanted:?} (expr span {:?})",
+                    "lsp: references at {}:{} -> {wanted:?} ({} locations)",
                     line,
                     character,
-                    at.as_ref()
-                        .map(|expr| (expr.span.start.to_usize(), expr.span.end.to_usize()))
+                    locations.len()
                 );
-            }
-            if let Some(wanted) = wanted {
-                for item in document.hir.items() {
-                    let mut exprs = Vec::new();
-                    if let Some(body) = item_body(item) {
-                        collect_expr(body, &mut exprs);
-                    }
-                    for expr in exprs {
-                        let rill_hir::ExprKind::Path { res, .. } = &expr.kind else {
-                            continue;
-                        };
-                        if *res != wanted || expr.span.is_dummy() {
-                            continue;
-                        }
-                        let start = document.source.line_col(expr.span.start);
-                        let end = document.source.line_col(expr.span.end);
-                        locations.push(Json::obj(&[
-                            ("uri", Json::Str(uri.to_string())),
-                            (
-                                "range",
-                                range(
-                                    start.line as i64 - 1,
-                                    start.col as i64 - 1,
-                                    end.line as i64 - 1,
-                                    end.col as i64 - 1,
-                                ),
-                            ),
-                        ]));
-                    }
-                }
             }
         }
         let _ = self.respond(id, Json::Arr(locations));
+    }
+
+    /// Definition: where the name at the cursor is declared. A declaration
+    /// imported from a C header opens that header at the declaration's line;
+    /// a Rill item points at its name; a local at its binding.
+    fn definition(&mut self, id: Option<Json>, uri: &str, line: u32, character: u32) {
+        let mut location = Json::Null;
+        if let Some(document) = self.documents.get(uri) {
+            let offset = position_to_offset(&document.source, line, character);
+            match reference_target(document, offset).map(|(res, _)| res) {
+                Some(rill_hir::Res::Item(item_id)) => {
+                    location = document
+                        .hir
+                        .try_item(item_id)
+                        .and_then(|item| item_location(document, uri, item))
+                        .unwrap_or(Json::Null);
+                }
+                Some(rill_hir::Res::Local(local_id)) => {
+                    let info = document.hir.local(local_id);
+                    let name = document
+                        .frontend
+                        .text(rill_ast::Ident::new(info.name, info.span));
+                    // A parameter's recorded span can be a *use*; only a span
+                    // that covers the name itself is the binding.
+                    if document.source.snippet(info.span) == name {
+                        location = location_object(
+                            uri,
+                            span_range(&document.source, info.span.start, info.span.end),
+                        );
+                    }
+                }
+                _ => {}
+            }
+        }
+        let _ = self.respond(id, location);
     }
 
     /// Semantic tokens: what the token stream itself knows - keywords, literals,
@@ -756,7 +889,7 @@ fn token_type(kind: rill_syntax::SyntaxKind) -> Option<i64> {
     Some(match kind {
         SyntaxKind::IntLiteral | SyntaxKind::FloatLiteral => 1,
         SyntaxKind::Text | SyntaxKind::RawText | SyntaxKind::CharLiteral => 2,
-        SyntaxKind::LineComment | SyntaxKind::BlockComment => 3,
+        SyntaxKind::LineComment | SyntaxKind::BlockComment | SyntaxKind::DocComment => 3,
         SyntaxKind::Plus
         | SyntaxKind::Minus
         | SyntaxKind::Star
@@ -813,6 +946,7 @@ fn capabilities() -> Json {
         // handlers existed and were tested while no client could reach them, since
         // hover and references were never declared here.
         ("hoverProvider", Json::Bool(true)),
+        ("definitionProvider", Json::Bool(true)),
         ("referencesProvider", Json::Bool(true)),
         (
             "completionProvider",
@@ -908,6 +1042,192 @@ fn item_body(item: &rill_hir::Item) -> Option<&rill_hir::Expr> {
         rill_hir::ItemKind::Project(def) => Some(&def.body),
         _ => None,
     }
+}
+
+/// The item an expression names when it is (or is the callee of) a path that
+/// resolved to one. A call answers for its callee so hovering the parens shows
+/// the same documentation as hovering the name.
+fn item_id_for_expr(expr: &rill_hir::Expr) -> Option<rill_hir::ItemId> {
+    match &expr.kind {
+        rill_hir::ExprKind::Path {
+            res: rill_hir::Res::Item(id),
+            ..
+        } => Some(*id),
+        rill_hir::ExprKind::Call { callee, .. } => item_id_for_expr(callee),
+        _ => None,
+    }
+}
+
+/// What the cursor is on: a recorded reference (expression or type), an item's
+/// own name, or the innermost expression's resolution. The name rides along so
+/// builtins, which all share one `Res`, can be told apart.
+fn reference_target(
+    document: &Document,
+    offset: rill_span::BytePos,
+) -> Option<(rill_hir::Res, rill_span::Symbol)> {
+    if let Some(reference) = document
+        .hir
+        .refs()
+        .iter()
+        .find(|reference| contains(&reference.span, offset))
+    {
+        return Some((reference.res.clone(), reference.name));
+    }
+    if let Some(item) = document.hir.items().iter().find(|item| {
+        item.name_span
+            .is_some_and(|span| span.start <= offset && offset <= span.end)
+    }) {
+        return Some((
+            rill_hir::Res::Item(item.id),
+            item.name.unwrap_or(rill_span::Symbol::EMPTY),
+        ));
+    }
+    // A binding's own name is not a reference and not an item, so a cursor on
+    // `var x`, `let? x` or a parameter answers from the local table. The
+    // recorded span must spell the name itself: a generated binding can carry
+    // the span of the construct it came from instead.
+    if let Some(info) = document.hir.locals().iter().find(|info| {
+        contains(&info.span, offset)
+            && info.name != rill_span::Symbol::EMPTY
+            && document.source.snippet(info.span) == document.frontend.interner.get(info.name)
+    }) {
+        return Some((rill_hir::Res::Local(info.id), info.name));
+    }
+    let expression = expr_at(document, offset)?;
+    match &expression.kind {
+        rill_hir::ExprKind::Path { segments, res } => Some((
+            res.clone(),
+            segments
+                .first()
+                .copied()
+                .unwrap_or(rill_span::Symbol::EMPTY),
+        )),
+        rill_hir::ExprKind::Call { callee, .. } => callee.path_res().map(|(segments, res)| {
+            (
+                res.clone(),
+                segments
+                    .first()
+                    .copied()
+                    .unwrap_or(rill_span::Symbol::EMPTY),
+            )
+        }),
+        _ => None,
+    }
+}
+
+/// Where an item is declared: the header line for a C import, the name's own
+/// span for a Rill declaration.
+fn item_location(document: &Document, uri: &str, item: &rill_hir::Item) -> Option<Json> {
+    if let Some(source) = &item.c_source {
+        let name = item
+            .name
+            .map(|name| {
+                document
+                    .frontend
+                    .text(rill_ast::Ident::new(name, item.span))
+                    .to_string()
+            })
+            .unwrap_or_default();
+        return Some(c_source_location(source, &name));
+    }
+    let span = item.name_span?;
+    Some(location_object(
+        uri,
+        span_range(&document.source, span.start, span.end),
+    ))
+}
+
+fn location_object(uri: &str, range: Json) -> Json {
+    Json::obj(&[("uri", Json::Str(uri.to_string())), ("range", range)])
+}
+
+/// Adds a location once: a declaration can also be a recorded reference, and
+/// an editor shows one entry per place either way.
+fn push_location(locations: &mut Vec<Json>, location: Json) {
+    if !locations.contains(&location) {
+        locations.push(location);
+    }
+}
+
+/// A `Location` inside a C header. The declaration line is what the scanner
+/// recorded; the name is searched for on that line and the next few, which
+/// covers wrapped prototypes and puts the caret on the name rather than the
+/// line start.
+fn c_source_location(source: &rill_hir::CSource, name: &str) -> Json {
+    let file_uri = file_uri(&source.file);
+    let text = std::fs::read_to_string(&source.file).unwrap_or_default();
+    let lines: Vec<&str> = text.lines().collect();
+    if lines.is_empty() {
+        return Json::obj(&[("uri", Json::Str(file_uri)), ("range", range(0, 0, 0, 0))]);
+    }
+    let start = (source.line as usize).min(lines.len() - 1);
+    let mut found = None;
+    // A record or enum's members are declared inside the body, so the search
+    // walks forward from the recorded line; 256 lines covers SDL's largest
+    // enums without reaching unrelated declarations.
+    for (index, line) in lines.iter().enumerate().skip(start).take(256) {
+        if let Some(column) = find_word(line, name) {
+            found = Some((index, column));
+            break;
+        }
+    }
+    let (line, column, length) = match found {
+        Some((line, column)) => (line, column, name.chars().count()),
+        None => (start, 0, 0),
+    };
+    Json::obj(&[
+        ("uri", Json::Str(file_uri)),
+        (
+            "range",
+            range(
+                line as i64,
+                column as i64,
+                line as i64,
+                (column + length) as i64,
+            ),
+        ),
+    ])
+}
+
+/// The column of `word` in `line`, counting characters and requiring word
+/// boundaries on both sides.
+fn find_word(line: &str, word: &str) -> Option<usize> {
+    if word.is_empty() {
+        return None;
+    }
+    let bytes = line.as_bytes();
+    let mut from = 0;
+    while let Some(at) = line[from..].find(word) {
+        let start = from + at;
+        let end = start + word.len();
+        let before_ok = start == 0 || !is_word_byte(bytes[start - 1]);
+        let after_ok = end >= bytes.len() || !is_word_byte(bytes[end]);
+        if before_ok && after_ok {
+            return Some(line[..start].chars().count());
+        }
+        from = start + 1;
+    }
+    None
+}
+
+fn is_word_byte(byte: u8) -> bool {
+    byte.is_ascii_alphanumeric() || byte == b'_'
+}
+
+/// A path as a `file://` URI, with the characters a URI must escape.
+fn file_uri(path: &std::path::Path) -> String {
+    let text = path.to_string_lossy();
+    let mut out = String::from("file://");
+    for ch in text.chars() {
+        match ch {
+            '%' => out.push_str("%25"),
+            '#' => out.push_str("%23"),
+            '?' => out.push_str("%3F"),
+            ' ' => out.push_str("%20"),
+            other => out.push(other),
+        }
+    }
+    out
 }
 
 /// Every expression under `expr`, outermost first. Every shape is walked: an
@@ -1134,12 +1454,14 @@ fn position_to_offset(
 // Completion
 // ---------------------------------------------------------------------------
 
-/// One completion candidate: the name the client inserts, how it colours it, and
-/// the type or signature it shows next to it.
+/// One completion candidate: the name the client inserts, how it colours it,
+/// the type or signature it shows next to it, and the documentation an editor
+/// can expand.
 struct Candidate {
     name: String,
     kind: f64,
     detail: Option<String>,
+    documentation: Option<String>,
 }
 
 /// `CompletionItemKind` numbers, from the LSP specification.
@@ -1311,6 +1633,7 @@ fn field_candidates(document: &Document, ty: &rill_ty::Ty) -> Vec<Candidate> {
                 .to_string(),
             kind: COMPLETION_FIELD,
             detail: Some(document.checked.display_ty(&document.frontend, &field.ty)),
+            documentation: item_documentation(&field.docs),
         })
         .collect()
 }
@@ -1370,6 +1693,7 @@ fn method_candidates(
             name: (*name).to_string(),
             kind: COMPLETION_METHOD,
             detail: Some(document.checked.display_ty(&document.frontend, &signature)),
+            documentation: None,
         });
     }
     dedup(found)
@@ -1398,6 +1722,7 @@ fn scope_candidates(document: &Document, offset: rill_span::BytePos) -> Vec<Cand
             name,
             kind: COMPLETION_VARIABLE,
             detail,
+            documentation: None,
         });
     }
     for id in visible_items(document, &scope) {
@@ -1410,6 +1735,7 @@ fn scope_candidates(document: &Document, offset: rill_span::BytePos) -> Vec<Cand
             name: (*name).to_string(),
             kind: COMPLETION_FUNCTION,
             detail: builtin_detail(document, name),
+            documentation: None,
         });
     }
     dedup(candidates)
@@ -1555,7 +1881,25 @@ fn item_candidate(document: &Document, id: rill_hir::ItemId) -> Option<Candidate
             .to_string(),
         kind,
         detail: item_detail(document, id),
+        documentation: item_documentation(&item.docs),
     })
+}
+
+/// A doc-comment run as one Markdown block, or `None` when there is none.
+fn item_documentation(docs: &[String]) -> Option<String> {
+    if docs.is_empty() {
+        None
+    } else {
+        Some(docs.join("\n"))
+    }
+}
+
+/// LSP `MarkupContent` with `markdown` formatting.
+fn markdown(value: &str) -> Json {
+    Json::obj(&[
+        ("kind", Json::Str("markdown".into())),
+        ("value", Json::Str(value.to_string())),
+    ])
 }
 
 /// What an editor shows as an item's type: a function's signature, a constant's

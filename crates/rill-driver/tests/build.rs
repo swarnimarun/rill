@@ -1208,10 +1208,13 @@ fn formatting_every_example_preserves_its_program() {
         }
         let name = path.file_stem().unwrap().to_string_lossy().to_string();
         let source = std::fs::read_to_string(&path).expect("read example");
-        let formatted = rill_fmt::format_text(&source);
+        // The `.rill-fmt` at the repository root governs the examples, exactly
+        // as `rillc fmt` and the editor integration resolve it.
+        let config = rill_fmt::Config::load_for(&path).expect("formatter config");
+        let formatted = rill_fmt::format_text_with(&source, &config);
         assert_eq!(
             formatted,
-            rill_fmt::format_text(&formatted),
+            rill_fmt::format_text_with(&formatted, &config),
             "formatting {name} twice changed it"
         );
         let formatted_path = workdir(&format!("fmt_{name}")).join(format!("{name}.rill"));

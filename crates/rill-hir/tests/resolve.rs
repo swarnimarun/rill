@@ -4,7 +4,7 @@
 //! so resolution is exercised on the same programs as the M0 round-trip tests.
 
 use rill_ast::{parse_and_lower_text, Frontend};
-use rill_hir::{lower, Hir, ItemKind, LocalKind, RefInfo, Res};
+use rill_hir::{lower, Hir, ItemKind, LocalKind, RefInfo, RefKind, Res};
 use rill_span::{SourceMap, Symbol};
 
 /// Lowers without asserting that resolution was complete: the plan's examples
@@ -188,12 +188,31 @@ fn showcase_references_resolve_to_their_targets() {
     }
 
     // `Account 1u64 500i64` is a constructor call: a type name used as a value.
-    let account = refs(&frontend, &hir, "Account");
-    assert_eq!(account.len(), 2);
-    for reference in account {
+    // The same name in type position (`from: Account`) is recorded too, with
+    // the kind telling the two apart.
+    let account_exprs = refs(&frontend, &hir, "Account")
+        .into_iter()
+        .filter(|r| r.kind == RefKind::Expr)
+        .collect::<Vec<_>>();
+    assert_eq!(account_exprs.len(), 2);
+    for reference in account_exprs {
         match reference.res {
             Res::Item(id) => assert!(matches!(hir.item(id).kind, ItemKind::Type(_))),
             ref other => panic!("constructor resolved to {other:?}"),
+        }
+    }
+    let account_types = refs(&frontend, &hir, "Account")
+        .into_iter()
+        .filter(|r| r.kind == RefKind::Type)
+        .collect::<Vec<_>>();
+    assert!(
+        !account_types.is_empty(),
+        "`Account` is written in type position"
+    );
+    for reference in account_types {
+        match reference.res {
+            Res::Item(id) => assert!(matches!(hir.item(id).kind, ItemKind::Type(_))),
+            ref other => panic!("type reference resolved to {other:?}"),
         }
     }
 
@@ -454,4 +473,132 @@ fn malformed_input_still_resolves() {
     assert!(!parse_rendered.is_empty(), "the parse error is reported");
     let hir_rendered = rill_diagnostics::render_all(&sm, &hir.diagnostics);
     assert!(hir_rendered.contains("unknown name `y`"), "{hir_rendered}");
+}
+
+#[test]
+fn doc_comments_attach_to_the_declarations_they_precede() {
+    let src = "\
+/// Adds two numbers.
+///
+/// The second paragraph.
+let add (a: i32, b: i32) -> i32 <computes> = a + b;
+//// Four slashes are an ordinary comment.
+let plain () -> i32 <computes> = 1;
+/// A point.
+type Point = record {
+    /// The x coordinate.
+    var x: i32;
+    /// The y coordinate.
+    var y: i32;
+};
+/// A step.
+type Step =
+    /// One turn.
+    | Yield i32
+    /// The end.
+    | Done;
+";
+    let (frontend, hir, _sm) = resolve(src);
+    let item = |name: &str| {
+        hir.items()
+            .iter()
+            .find(|item| item.name.is_some_and(|n| name_of(&frontend, n) == name))
+            .unwrap_or_else(|| panic!("no item {name}"))
+    };
+    assert_eq!(
+        item("add").docs,
+        ["Adds two numbers.", "", "The second paragraph."]
+    );
+    assert!(item("plain").docs.is_empty());
+
+    // Field and variant docs are part of the AST that HIR reuses for type
+    // syntax, so they are checked on the lowered module.
+    let type_decl = |name: &str| {
+        frontend
+            .module
+            .items
+            .iter()
+            .find_map(|item| match item {
+                rill_ast::Item::Type(decl) if frontend.text(decl.name) == name => Some(decl),
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no type {name}"))
+    };
+    let point = type_decl("Point");
+    let rill_ast::TypeBody::Record(record) = &point.body else {
+        panic!("Point is not a record");
+    };
+    assert_eq!(record.fields[0].docs, ["The x coordinate."]);
+    assert_eq!(record.fields[1].docs, ["The y coordinate."]);
+    let step = type_decl("Step");
+    let rill_ast::TypeBody::Variants(variants) = &step.body else {
+        panic!("Step is not an enum");
+    };
+    assert_eq!(variants[0].docs, ["One turn."]);
+    assert_eq!(variants[1].docs, ["The end."]);
+}
+
+#[test]
+fn module_statics_resolve_as_locals_in_any_order() {
+    let src = "\
+let peek () -> i32 <computes> = counter;
+static var counter: i32 = 0;
+let bump () -> i32 <computes> = {
+    set counter = counter + 1;
+    counter
+};
+static threadlocal var scratch: i32 = 5;
+";
+    let (frontend, hir, _sm) = resolve(src);
+    let counter = hir
+        .locals()
+        .iter()
+        .find(|local| name_of(&frontend, local.name) == "counter")
+        .expect("the module binding is a local");
+    let uses = refs(&frontend, &hir, "counter");
+    assert_eq!(uses.len(), 4, "every use is recorded: {uses:?}");
+    assert!(
+        uses.iter()
+            .all(|reference| reference.res == Res::Local(counter.id)),
+        "a forward reference names the same local: {uses:?}"
+    );
+
+    let storage = |name: &str| {
+        let id = hir
+            .locals()
+            .iter()
+            .find(|local| name_of(&frontend, local.name) == name)
+            .unwrap_or_else(|| panic!("no local {name}"))
+            .id;
+        hir.items()
+            .iter()
+            .find_map(|item| match &item.kind {
+                ItemKind::Stmt(rill_hir::Stmt::Var { storage, local, .. }) if *local == id => {
+                    Some(*storage)
+                }
+                _ => None,
+            })
+            .unwrap_or_else(|| panic!("no statement for {name}"))
+    };
+    assert_eq!(storage("counter"), rill_ast::VarStorage::Static);
+    assert_eq!(storage("scratch"), rill_ast::VarStorage::ThreadLocal);
+}
+
+#[test]
+fn global_var_and_block_static_are_rejected() {
+    let (mut frontend, sm) = parse_and_lower_text(
+        "globals.rill",
+        "var counter: i32 = 0;\n\
+         let main () -> i32 <computes> = { static var local = 1; local };\n",
+    );
+    let hir = lower(&mut frontend);
+    let rendered = rill_diagnostics::render_all(&sm, &hir.diagnostics);
+    assert!(
+        rendered.contains("a module-level `var` must be declared `static var`"),
+        "{rendered}"
+    );
+    assert!(
+        rendered.contains("`static` storage is only allowed at module level"),
+        "{rendered}"
+    );
 }

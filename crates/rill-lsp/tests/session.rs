@@ -782,3 +782,388 @@ fn completion_after_a_module_path_lists_the_header_declarations() {
         "a module path lists the module's members, not the enclosing scope: {answer}"
     );
 }
+
+#[test]
+fn documentation_reaches_completion_and_hover() {
+    // `///` docs on a Rill declaration, and a header's Doxygen block on an
+    // imported prototype: both should reach the editor through the same
+    // `documentation` field completion carries and the Markdown hover.
+    let dir = std::env::temp_dir().join("rill-lsp-docs");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create workdir");
+    std::fs::write(
+        dir.join("h.h"),
+        "/**\n * Triple a number.\n *\n * \\param n the number.\n * \\returns three times `n`.\n */\nextern int triple(int n);\n",
+    )
+    .expect("write the header");
+    let source = "\
+/// Doubles a number.
+let double (x: i32) -> i32 <computes> = x * 2;
+type M = @include(\"h.h\");
+/// A point.
+type Point = record {
+    /// The x coordinate.
+    var x: i32;
+};
+let main () -> i32 <computes> = {
+    var p = Point (1);
+    double (M::triple (p.x));
+    p.;
+};
+";
+    let uri = format!("file://{}", dir.join("d.rill").display());
+    let (scope_line, scope_char) = at(
+        source,
+        source.find("    double (M::").expect("the body") + 4,
+    );
+    let (module_line, module_char) = at(
+        source,
+        source.find("M::triple").expect("the module path") + 3,
+    );
+    let (use_line, use_char) = at(source, source.find("    double (M::").expect("the use") + 6);
+    let triple_start = source.find("M::triple").expect("the callee") + 3;
+    let (triple_line, triple_char) = at(source, triple_start + 2);
+    let (decl_line, decl_char) = at(
+        source,
+        source.find("double (").expect("the declaration") + 2,
+    );
+    let (field_line, field_char) = at(
+        source,
+        source.find("    p.;").expect("the field access") + 6,
+    );
+    let messages = [
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", &uri), ("TEXT", &json_string(source))],
+        ),
+        completion_request(9, &uri, scope_line, scope_char),
+        completion_request(10, &uri, module_line, module_char),
+        completion_request(14, &uri, field_line, field_char),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":11,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("URI", &uri),
+                ("LINE", &use_line.to_string()),
+                ("CHAR", &use_char.to_string()),
+            ],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":12,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("URI", &uri),
+                ("LINE", &triple_line.to_string()),
+                ("CHAR", &triple_char.to_string()),
+            ],
+        ),
+        raw_message(
+            r#"{"jsonrpc":"2.0","id":13,"method":"textDocument/hover","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("URI", &uri),
+                ("LINE", &decl_line.to_string()),
+                ("CHAR", &decl_char.to_string()),
+            ],
+        ),
+        r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string(),
+        r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string(),
+    ];
+    let output = run_session(&messages);
+    let answer = |id: u32| -> String {
+        output
+            .iter()
+            .find(|body| body.contains(&format!(r#""id":{id}"#)))
+            .unwrap_or_else(|| panic!("no answer for {id}: {output:?}"))
+            .to_string()
+    };
+
+    let scope = answer(9);
+    assert!(
+        scope.contains(r#""label":"double""#)
+            && scope.contains(r#""documentation":{"kind":"markdown","value":"Doubles a number."}"#),
+        "the Rill doc comment should ride on the completion: {scope}"
+    );
+
+    let module = answer(10);
+    assert!(
+        module.contains(r#""label":"triple""#)
+            && module.contains(r#""documentation":{"kind":"markdown","value":"Triple a number.\n\n- **n**: the number.\n**Returns:** three times `n`.""#),
+        "the header's Doxygen block should ride on the module completion: {module}"
+    );
+
+    let fields = answer(14);
+    assert!(
+        fields.contains(r#""label":"x","kind":5,"detail":"i32","documentation":{"kind":"markdown","value":"The x coordinate."}"#),
+        "a field's `///` docs should ride on the completion after `.`: {fields}"
+    );
+
+    let use_hover = answer(11);
+    assert!(
+        use_hover.contains(r#""kind":"markdown""#)
+            && use_hover.contains("Doubles a number.")
+            && use_hover.contains("```rill"),
+        "hovering a documented call should show its docs: {use_hover}"
+    );
+
+    let triple_hover = answer(12);
+    assert!(
+        triple_hover.contains("Triple a number.")
+            && triple_hover.contains("- **n**: the number.")
+            && triple_hover.contains("three times `n`"),
+        "hovering an imported function should show the header docs: {triple_hover}"
+    );
+
+    let decl_hover = answer(13);
+    assert!(
+        decl_hover.contains("Doubles a number.") && decl_hover.contains("(i32) -> i32"),
+        "hovering the declaration name should show its docs and signature: {decl_hover}"
+    );
+}
+
+#[test]
+fn definition_opens_headers_and_finds_rill_declarations() {
+    // A C declaration's definition is the header line; a Rill item's is its
+    // name. References answer from the same table, so a type written in a
+    // `var` annotation is found too.
+    let dir = std::env::temp_dir().join("rill-lsp-definition");
+    let _ = std::fs::remove_dir_all(&dir);
+    std::fs::create_dir_all(&dir).expect("create workdir");
+    let header = "\
+#ifndef H_
+#define H_
+
+extern int triple(int n);
+
+#define TRIPLE 3
+
+#endif
+";
+    std::fs::write(dir.join("h.h"), header).expect("write the header");
+    let source = "\
+type M = @include(\"h.h\");
+use M::*;
+/// Doubles a number.
+let double (x: i32) -> i32 <computes> = x * 2;
+type Point = record { var x: i32; };
+let main () -> i32 <computes> = {
+    var p: Point = Point (1);
+    double (M::triple (TRIPLE))
+};
+";
+    let uri = format!("file://{}", dir.join("d.rill").display());
+    let (triple_line, triple_char) = at(source, source.find("M::triple").expect("the callee") + 3);
+    let (macro_line, macro_char) = at(source, source.find("TRIPLE)").expect("the macro") + 2);
+    let (call_line, call_char) = at(source, source.find("double (").expect("the call") + 3);
+    let (type_line, type_char) = at(source, source.find("p: Point").expect("the annotation") + 3);
+    let mut messages = vec![
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", &uri), ("TEXT", &json_string(source))],
+        ),
+    ];
+    for (id, line, character) in [
+        (9, triple_line, triple_char),
+        (10, macro_line, macro_char),
+        (11, call_line, call_char),
+        (12, type_line, type_char),
+    ] {
+        messages.push(raw_message(
+            r#"{"jsonrpc":"2.0","id":ID,"method":"textDocument/definition","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("ID", &id.to_string()),
+                ("URI", &uri),
+                ("LINE", &line.to_string()),
+                ("CHAR", &character.to_string()),
+            ],
+        ));
+    }
+    for (id, line, character) in [(13, macro_line, macro_char), (14, type_line, type_char)] {
+        messages.push(raw_message(
+            r#"{"jsonrpc":"2.0","id":ID,"method":"textDocument/references","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("ID", &id.to_string()),
+                ("URI", &uri),
+                ("LINE", &line.to_string()),
+                ("CHAR", &character.to_string()),
+            ],
+        ));
+    }
+    messages.push(r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string());
+    messages.push(r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string());
+
+    let output = run_session(&messages);
+    let answer = |id: u32| -> String {
+        output
+            .iter()
+            .find(|body| body.contains(&format!(r#""id":{id}"#)))
+            .unwrap_or_else(|| panic!("no answer for {id}: {output:?}"))
+            .to_string()
+    };
+
+    // `extern int triple` is line 3 (zero-based) of h.h; the name starts at
+    // column 11. The scanner canonicalizes header paths, so compare against
+    // the canonical directory.
+    let canonical = std::fs::canonicalize(&dir).expect("canonical workdir");
+    let triple = answer(9);
+    assert!(
+        triple.contains(&format!(
+            r#""uri":"file://{}/h.h","range":{{"start":{{"line":3,"character":11}},"end":{{"line":3,"character":17}}}}"#,
+            canonical.display()
+        )),
+        "triple should open the header at its name: {triple}"
+    );
+
+    // `#define TRIPLE 3` is line 5; the macro name starts at column 8.
+    let macro_definition = answer(10);
+    assert!(
+        macro_definition.contains(r#""line":5,"character":8"#) && macro_definition.contains("/h.h"),
+        "TRIPLE should open the header at its #define: {macro_definition}"
+    );
+
+    // The Rill function's definition is its name in this document (line 3).
+    let rill = answer(11);
+    assert!(
+        rill.contains(&format!(r#""uri":"{uri}""#)) && rill.contains(r#""line":3,"character":4"#),
+        "a Rill function's definition is its name: {rill}"
+    );
+
+    // `Point` in `var p: Point` is a type reference; its definition is the
+    // type declaration on line 3, and references collect the annotation.
+    let type_definition = answer(12);
+    assert!(
+        type_definition.contains(r#""line":4,"character":5"#),
+        "a type annotation should reach the type declaration: {type_definition}"
+    );
+
+    let macro_refs = answer(13);
+    assert!(
+        macro_refs.contains(r#""line":7"#) && macro_refs.contains("range"),
+        "references should collect the macro's use: {macro_refs}"
+    );
+    let type_refs = answer(14);
+    assert!(
+        type_refs.contains(r#""line":4"#) && type_refs.contains(r#""line":6"#),
+        "references for a type should include the annotation and the declaration: {type_refs}"
+    );
+}
+
+#[test]
+fn references_from_a_binding_and_from_a_use_agree() {
+    // A binding's name is not an expression, so the reference table alone has
+    // nothing under the cursor there. Both a parameter and a `var` must answer
+    // with their uses *and* their declaration, from either side, and a shadowed
+    // local must not collect the outer one.
+    let source = "\
+let double (x: i32) -> i32 <computes> = x + x;
+let main () -> i32 <computes> = {
+    var total = 0;
+    var inner = { var total = 3; total };
+    set total = total + double (inner);
+    total
+};
+";
+    let (param_line, param_char) = at(source, source.find("x: i32").expect("parameter"));
+    let first_use = source.find("= x + x").expect("parameter use") + 2;
+    let (param_use_line, param_use_char) = at(source, first_use);
+    let (param_second_line, param_second_char) = at(source, first_use + 4);
+    let (var_line, var_char) = at(source, source.find("total = 0").expect("binding"));
+    let (set_line, set_char) = at(source, source.find("set total").expect("set") + 4);
+    let (tail_line, tail_char) = at(source, source.rfind("    total\n").expect("tail") + 4);
+    let (inner_line, inner_char) = at(source, source.find("total = 3").expect("inner binding"));
+    let (inner_use_line, inner_use_char) =
+        at(source, source.find("3; total").expect("inner use") + 3);
+    let uri = "file:///refs.rill";
+    let mut messages = vec![
+        r#"{"jsonrpc":"2.0","id":1,"method":"initialize","params":{"capabilities":{}}}"#
+            .to_string(),
+        raw_message(
+            r#"{"jsonrpc":"2.0","method":"textDocument/didOpen","params":{"textDocument":{"uri":"URI","languageId":"rill","version":1,"text":TEXT}}}"#,
+            &[("URI", uri), ("TEXT", &json_string(source))],
+        ),
+    ];
+    for (id, line, character) in [
+        (9, param_line, param_char),
+        (10, param_use_line, param_use_char),
+        (11, var_line, var_char),
+        (12, set_line, set_char),
+        (13, inner_line, inner_char),
+    ] {
+        messages.push(raw_message(
+            r#"{"jsonrpc":"2.0","id":ID,"method":"textDocument/references","params":{"textDocument":{"uri":"URI"},"position":{"line":LINE,"character":CHAR}}}"#,
+            &[
+                ("ID", &id.to_string()),
+                ("URI", uri),
+                ("LINE", &line.to_string()),
+                ("CHAR", &character.to_string()),
+            ],
+        ));
+    }
+    messages.push(r#"{"jsonrpc":"2.0","id":2,"method":"shutdown"}"#.to_string());
+    messages.push(r#"{"jsonrpc":"2.0","method":"exit"}"#.to_string());
+
+    let output = run_session(&messages);
+    let answer = |id: u32| -> String {
+        output
+            .iter()
+            .find(|body| body.contains(&format!(r#""id":{id}"#)))
+            .unwrap_or_else(|| panic!("no answer for {id}: {output:?}"))
+            .to_string()
+    };
+    let count = |body: &str| body.matches("\"uri\"").count();
+
+    let from_param = answer(9);
+    assert_eq!(
+        count(&from_param),
+        3,
+        "parameter: declaration + two uses: {from_param}"
+    );
+    assert!(
+        from_param.contains(&format!(r#""line":{param_line},"character":{param_char}"#))
+            && from_param.contains(&format!(
+                r#""line":{param_use_line},"character":{param_use_char}"#
+            ))
+            && from_param.contains(&format!(
+                r#""line":{param_second_line},"character":{param_second_char}"#
+            )),
+        "the parameter's declaration and both uses: {from_param}"
+    );
+    assert_eq!(answer(10), from_param.replace(r#""id":9"#, r#""id":10"#));
+
+    let from_var = answer(11);
+    assert_eq!(
+        count(&from_var),
+        4,
+        "binding: declaration and three uses: {from_var}"
+    );
+    assert!(
+        from_var.contains(&format!(r#""line":{var_line},"character":{var_char}"#))
+            && from_var.contains(&format!(r#""line":{set_line},"character":{set_char}"#))
+            && from_var.contains(&format!(r#""line":{tail_line},"character":{tail_char}"#)),
+        "the binding's declaration and uses: {from_var}"
+    );
+    assert!(
+        !from_var.contains(&format!(r#""line":{inner_line},"#)),
+        "a shadowed local must not join the outer one: {from_var}"
+    );
+    assert_eq!(answer(12), from_var.replace(r#""id":11"#, r#""id":12"#));
+
+    let from_inner = answer(13);
+    assert_eq!(
+        count(&from_inner),
+        2,
+        "the inner binding: declaration and use only: {from_inner}"
+    );
+    assert!(
+        from_inner.contains(&format!(r#""line":{inner_line},"character":{inner_char}"#))
+            && from_inner.contains(&format!(
+                r#""line":{inner_use_line},"character":{inner_use_char}"#
+            )),
+        "the inner declaration and use: {from_inner}"
+    );
+    assert!(
+        !from_inner.contains(&format!(r#""line":{var_line},"#)),
+        "the inner name must not collect the outer one: {from_inner}"
+    );
+}

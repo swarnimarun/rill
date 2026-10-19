@@ -5,23 +5,29 @@ use std::io;
 # a function value uses for `{ code, env }`.
 
 type Point = record { var x: i32; };
-type Rect = record { var w: i32; var h: i32; };
 
-trait Show { let describe (self: Point) -> Text <computes>; };
+type Rect = record {
+	var w: i32;
+	var h: i32;
+};
+
+trait Show {
+	let describe (self: Point) -> Text <computes>;
+};
 
 impl Show Point = {
-    let describe (p: Point) -> Text <computes> = "point";
+	let describe (p: Point) -> Text <computes> = "point";
 };
 
 impl Show Rect = {
-    let describe (r: Rect) -> Text <computes> = "rect";
+	let describe (r: Rect) -> Text <computes> = "rect";
 };
 
 let main () -> i32 <io> = {
-    var p = Point 3i32;
-    var r = Rect 6i32 7i32;
-    var a: dyn Show = p;
-    var b: dyn Show = r;
-    io::println ((a.describe ()) ++ " " ++ (b.describe ()));
-    0
+	var p = Point 3i32;
+	var r = Rect 6i32 7i32;
+	var a: dyn Show = p;
+	var b: dyn Show = r;
+	io::println((a.describe()) ++ " " ++ (b.describe()));
+	0
 };

@@ -32,8 +32,11 @@ This grammar extends the baseline Rill specification to incorporate Hylo-style v
 document      = lexeme* EOF .
 lexeme        = whitespace | comment | token .
 whitespace    = " " | "\t" | "\n" | "\r" | Unicode_Space .
-comment       = ( "#" | "//" ) character* newline
+comment       = doc_comment
+              | ( "#" | "//" ) character* newline
               | "/*" ( character | comment )* "*/" . (* nestable block comments *)
+doc_comment   = "///" ( "/" - character )? character* newline .
+              (* documentation for the declaration that follows; `////` is an ordinary comment *)
 
 name          = ( letter | "_" ) ( letter | digit | "_" )* .
 number        = "0x" hex_digit+ ( "_" hex_digit+ )* suffix?
@@ -52,9 +55,14 @@ char          = "'" char_char "'" .
 type   trait  impl   dyn    where    is       match   record  when   if     else
 true   false  as     size   shapeof  reshape  let     use     for    var    set
 inout  sink   view   project yield   comptime builder extern  unsafe deinit
+static threadlocal
 ```
 
 *Contextual Identifiers*: `and`, `or`, `not`, `option`, `one`, `all`, `sync`, `race`, `rush`, `branch`, `spawn`, `computes`, `transacts`, `decides`, `suspends`, `alloc`, `reads`, `writes`, `io`, `fs`, `net`, `time`, `random` remain ordinary names in the lexer, interpreted by context in parser or type-resolution phases.
+
+*Documentation Comments*: a run of `///` lines directly above a declaration, record field or enum variant is that declaration's documentation - one line per comment, minus the marker and one following space, with a bare `///` standing for a blank line. The comments stay trivia for the language (a program's meaning does not change when they are removed); `rill lsp` serves them as Markdown in hover and completion, and lowering carries them into the HIR item table. `@include` carries the same information out of C headers: an SDL-style Doxygen block (`/** … */`, with `\param`/`\returns`/`\since`/`\sa`/`\threadsafety` rendered as Markdown) and a raylib-style trailing `//` comment both attach to the declaration they describe, as do the field and enumerator comments a record or enum carries.
+
+*Definitions and References*: every name lookup the resolver performs - expression paths, type annotations (`x: T`, `e as T`, a constraint's trait), and `M::name` into an `@include`d module - is recorded as a [`RefInfo`] with the name, its resolution and whether it was written in expression or type position. `rill lsp` answers `textDocument/definition` from that table: a Rill declaration points at its own name, an imported C declaration opens the exact header line the scanner recorded (`SDL_FRect` opens `SDL_rect.h`, `InitWindow` opens `raylib.h`), and a local points at its binding. `textDocument/references` returns every recorded reference plus the declaration, which is why a type name finds both its uses as a constructor and its annotations.
 
 ### 2.2 Module & Declaration Grammar
 
@@ -72,6 +80,8 @@ signature      = name ":" type constraints? effects? ";" .
 
 let_decl       = "let" name parameters? ( "->" convention? type )? constraints? effects? "=" expression ";" .
 
+var_stmt       = "static"? ( "threadlocal" )? "var" name ( ":" type )? "=" expression ";" .
+
 project_decl   = "project" name parameters ( "->" convention? type )? constraints? effects? "=" expression ";" .
 
 parameters     = "(" ( parameter ( "," parameter )* )? ")" .
@@ -86,6 +96,8 @@ convention     = "let" | "inout" | "sink" | "set" .
   * `set`: Uninitialized out-parameter. Callee *must* initialize the binding before returning; enables guaranteed RVO (Return Value Optimization) and in-place construction.
 * **`project` Declarations**:
   * Define a coroutine-backed projection (similar to Hylo subscripts) that `yield`s a `let` or `inout` view into an aggregate and resumes cleanup/invariants after the caller finishes using the projected value.
+* **Global storage is explicit**:
+  * A plain `var` is stack storage and may only appear inside a block. A module-level binding must be `static var` (one copy for the program, emitted in the data segment) or `static threadlocal var` (one copy per thread); a bare `var` at module level, or `static` inside a block, is an error. Immutable module-level bindings (`x := e`) stay as they are.
 
 ### 2.3 Types, Effects & Constraints
 
@@ -310,7 +322,7 @@ project redChannel (c: inout PackedColor) -> inout u8 <computes> = {
 
 When a user writes:
 ```rill
-var color = PackedColor 0x10203040u32;
+static var color = PackedColor 0x10203040u32;
 set (color . redChannel) = 0xFFu8;
 ```
 The compiler lowers `set (color . redChannel) = 0xFFu8` by inlining the `redChannel` projection around the mutation:

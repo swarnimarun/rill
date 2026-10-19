@@ -12,73 +12,73 @@ use std::io;
 @link("SDL3");
 
 type SDL3 = @include("SDL3/SDL.h");
+
 use SDL3::*;
 
 # A sine-like wave over [-1, 1]: the turn count is wrapped into [-0.5, 0.5] and
 # the parabola `4x(1-|x|)` does the rest. SDL's API has no sin(), and a demo
 # should not need libm for a wave.
 let wave (turns: f32) -> f32 <computes> = {
-    var x = turns - (turns as i32 as f32);
-    if (x < 0.0f32) { set x = x + 1.0f32 };
-    if (x > 0.5f32) { set x = x - 1.0f32 };
-    var y = 4.0f32 * x * (1.0f32 - x);
-    if (x < 0.0f32) { set y = 0.0f32 - y };
-    y * 8.0f32 * (0.25f32 - x * x)
+	var x = turns - (turns as i32 as f32);
+	if (x < 0.0f32) { set x = x + 1.0f32 };
+	if (x > 0.5f32) { set x = x - 1.0f32 };
+	var y = 4.0f32 * x * (1.0f32 - x);
+	if (x < 0.0f32) { set y = 0.0f32 - y };
+	y * 8.0f32 * (0.25f32 - x * x)
 };
 
 let main () -> i32 <io> = {
-    SDL_Init (SDL_INIT_VIDEO);
-    var win = SDL_CreateWindow ("rill plasma", 640, 360, 0);
-    var ren = SDL_CreateRenderer (win, "");
-    var ev: SDL_Event = comptime { zeroed () };
+	SDL_Init(SDL_INIT_VIDEO);
+	var win = SDL_CreateWindow("rill plasma", 640, 360, 0);
+	var ren = SDL_CreateRenderer(win, "");
+	var ev: SDL_Event = comptime { zeroed() };
+	var quit = false;
+	var demo = SDL_GetHintBoolean("RILL_SDL3_DEMO", false);
+	var frame = 0;
 
-    var quit = false;
-    var demo = SDL_GetHintBoolean ("RILL_SDL3_DEMO", false);
-    var frame = 0;
+	while (quit == false) {
+		while (SDL_PollEvent(inout ev)) {
+			if (ev.type == (SDL_EVENT_QUIT as u32)) { set quit = true };
+			if (ev.type == (SDL_EVENT_KEY_DOWN as u32)) {
+				if (ev.key.scancode == SDL_SCANCODE_ESCAPE) { set quit = true }
+			}
+		};
 
-    while (quit == false) {
-        while (SDL_PollEvent (inout ev)) {
-            if (ev.type == (SDL_EVENT_QUIT as u32)) { set quit = true };
-            if (ev.type == (SDL_EVENT_KEY_DOWN as u32)) {
-                if (ev.key.scancode == SDL_SCANCODE_ESCAPE) { set quit = true }
-            }
-        };
+		var t = (frame as f32) * 0.02f32;
+		SDL_SetRenderDrawColor(ren, 0u8, 0u8, 0u8, 255u8);
+		SDL_RenderClear(ren);
 
-        var t = (frame as f32) * 0.02f32;
-        SDL_SetRenderDrawColor (ren, 0u8, 0u8, 0u8, 255u8);
-        SDL_RenderClear (ren);
+		var y = 0;
+		while (y < 360) {
+			var x = 0;
+			while (x < 640) {
+				var px = x as f32;
+				var py = y as f32;
+				var v = wave(px * 0.004f32 + t) + wave(py * 0.007f32 - t * 0.7f32);
+				# Colour the point by the height of the wave at it.
+				var level = (v + 2.0f32) * 0.25f32;
+				SDL_SetRenderDrawColor(
+					ren,
+					(64.0f32 + 150.0f32 * level) as u8,
+					(40.0f32 + 120.0f32 * (1.0f32 - level)) as u8,
+					(90.0f32 + 120.0f32 * level) as u8,
+					255u8
+				);
+				SDL_RenderPoint(ren, px, py);
+				set x = x + 4
+			};
+			set y = y + 4
+		};
 
-        var y = 0;
-        while (y < 360) {
-            var x = 0;
-            while (x < 640) {
-                var px = x as f32;
-                var py = y as f32;
-                var v = wave (px * 0.004f32 + t) + wave (py * 0.007f32 - t * 0.7f32);
-                # Colour the point by the height of the wave at it.
-                var level = (v + 2.0f32) * 0.25f32;
-                SDL_SetRenderDrawColor (
-                    ren,
-                    (64.0f32 + 150.0f32 * level) as u8,
-                    (40.0f32 + 120.0f32 * (1.0f32 - level)) as u8,
-                    (90.0f32 + 120.0f32 * level) as u8,
-                    255u8
-                );
-                SDL_RenderPoint (ren, px, py);
-                set x = x + 4
-            };
-            set y = y + 4
-        };
+		SDL_RenderPresent(ren);
+		SDL_Delay(16);
+		set frame = frame + 1;
+		if (demo) { if (frame >= 60) { set quit = true } }
+	};
 
-        SDL_RenderPresent (ren);
-        SDL_Delay (16);
-        set frame = frame + 1;
-        if (demo) { if (frame >= 60) { set quit = true } }
-    };
-
-    SDL_DestroyRenderer (ren);
-    SDL_DestroyWindow (win);
-    SDL_Quit ();
-    if (demo) { io::println ("demo frames " ++ (frame as String)) };
-    0
+	SDL_DestroyRenderer(ren);
+	SDL_DestroyWindow(win);
+	SDL_Quit();
+	if (demo) { io::println("demo frames " ++ (frame as String)) };
+	0
 };

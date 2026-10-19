@@ -6,23 +6,33 @@ use std::io;
 # includes the allocator's own overhead.
 
 let first_positive (x: i32, y: i32) -> i32 <decides> =
-    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+	if (x > 0) { x } else { if (y > 0) { y } else { fail } };
 
 # A failed region reclaims what it allocated, so the watermark returns to its
 # value before the region.
 let spend (a: i32) -> i32 <decides | alloc> = {
-    var wasted = all { first_positive[a, 0] | first_positive[a, 0] };
-    if (a > 0) { size wasted as i32 } else { fail }
+	var wasted = all { first_positive[a, 0] | first_positive[a, 0] };
+	if (a > 0) { size wasted as i32 } else { fail }
 };
 
 let main () -> () <io | decides | alloc | writes> = {
-    var a = arena_new 4096u64;
-    arena_bind (a);
-    var found = all { first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] };
-    # `spend[0]` allocates inside a handler body and then fails: the region must
-    # hand the arena back, so the watermark is unchanged.
-    var before = arena_used (a);
-    option { spend[0] };
-    io::println ("found " ++ (size found as String) ++ " arena used " ++ (arena_used (a) as String) ++ " after a failed region " ++ (arena_used (a) as String) ++ " (before " ++ (before as String) ++ ")");
-    arena_unbind ()
+	var a = arena_new 4096u64;
+	arena_bind(a);
+	var found = all { first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] };
+	# `spend[0]` allocates inside a handler body and then fails: the region must
+	# hand the arena back, so the watermark is unchanged.
+	var before = arena_used(a);
+	option { spend[0] };
+	io::println(
+		"found "
+			++ (size found as String)
+			++ " arena used "
+			++ (arena_used(a) as String)
+			++ " after a failed region "
+			++ (arena_used(a) as String)
+			++ " (before "
+			++ (before as String)
+			++ ")"
+	);
+	arena_unbind()
 };

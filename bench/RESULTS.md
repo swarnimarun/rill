@@ -72,8 +72,8 @@ parse both emit C that clang optimises to the same shape as the Rust/Zig code.
 
 Same programs as v2 with the document grown to 576,943 bytes, the node pool
 grown to 262,144 records and 20 repetitions (≈11.5 MB parsed per program). The
-pool lives outside the stack in every language: a module-level `var` becomes a
-file-scope static in Rill (`var pool: Pool = comptime { zeroed () }`), a
+pool lives outside the stack in every language: a module-level `static var`
+becomes a file-scope static in Rill (`static var pool: Pool = comptime { zeroed () }`), a
 file-scope `var` in Zig, and a heap `Vec` in Rust.
 
 | Program | best of 3 | checksum |

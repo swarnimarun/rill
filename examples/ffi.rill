@@ -4,17 +4,19 @@ use std::io;
 # `&raw`/`&raw mut` are the pointer types for talking to C.
 
 extern "c" let puts (s: Text) -> i32 <io>;
+
 extern "c" let strlen (s: Text) -> usize <io>;
 
 extern "c" let malloc (n: usize) -> &raw mut u8 <io | alloc>;
+
 extern "c" let free (p: &raw mut u8) -> () <io | alloc>;
 
 let main () -> i32 <io | alloc> = {
-    var greeting = "hello from libc";
-    puts greeting;
-    var len = strlen(greeting);
-    var bytes = malloc len;
-    free bytes;
-    io::println ("strlen = " ++ (len as String));
-    len as i32
+	var greeting = "hello from libc";
+	puts greeting;
+	var len = strlen(greeting);
+	var bytes = malloc len;
+	free bytes;
+	io::println("strlen = " ++ (len as String));
+	len as i32
 };

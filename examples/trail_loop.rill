@@ -7,23 +7,24 @@ use std::io;
 type Account = record { var balance: i64; };
 
 let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | writes> = {
-    amount > 0;
-    from.balance >= amount;
-    set from.balance = from.balance - amount;
-    to.balance >= amount;
-    set to.balance = to.balance + amount;
+	amount > 0;
+	from.balance >= amount;
+	set from.balance = from.balance - amount;
+	to.balance >= amount;
+	set to.balance = to.balance + amount;
 };
 
 let main () -> () <io | decides | writes> = {
-    var alice = Account 1000000i64;
-    var bob = Account 1000000i64;
-    var i = 0;
-    while (i < 5000) {
-        # The second arm is a nested chain that is never taken (the first arm
-        # always succeeds). Its region must still be ended, or the depth leaks
-        # and the trail never releases.
-        transfer[inout alice, inout bob, 1] | (transfer[inout alice, inout bob, 1] | transfer[inout alice, inout bob, 1]);
-        set i = i + 1;
-    };
-    io::println ("alice = " ++ (alice.balance as String) ++ " bob = " ++ (bob.balance as String))
+	var alice = Account 1000000i64;
+	var bob = Account 1000000i64;
+	var i = 0;
+	while (i < 5000) {
+		# The second arm is a nested chain that is never taken (the first arm
+		# always succeeds). Its region must still be ended, or the depth leaks
+		# and the trail never releases.
+		transfer[inout alice, inout bob, 1]
+			| (transfer[inout alice, inout bob, 1] | transfer[inout alice, inout bob, 1]);
+		set i = i + 1;
+	};
+	io::println("alice = " ++ (alice.balance as String) ++ " bob = " ++ (bob.balance as String))
 };

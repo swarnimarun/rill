@@ -32,6 +32,11 @@ pub struct ImportedDecl {
     /// The C name, which is also the item's name.
     pub name: Symbol,
     pub kind: ItemKind,
+    /// Documentation carried over from the header, one entry per line.
+    pub docs: Vec<String>,
+    /// Where the declaration sits in the header, for goto definition.
+    pub file: PathBuf,
+    pub line: u32,
 }
 
 /// Everything one `@include` produced.
@@ -115,6 +120,9 @@ pub fn import(
         decls.push(ImportedDecl {
             name: mapper.symbol(&function.name),
             kind: ItemKind::Fn(def),
+            docs: function.docs.clone(),
+            file: function.header.clone(),
+            line: function.line,
         });
     }
     for ty in &scanned.types {
@@ -124,6 +132,9 @@ pub fn import(
         decls.push(ImportedDecl {
             name: mapper.symbol(&ty.name),
             kind: ItemKind::Type(def),
+            docs: ty.docs.clone(),
+            file: ty.header.clone(),
+            line: ty.line,
         });
     }
     for constant in &scanned.constants {
@@ -136,6 +147,9 @@ pub fn import(
                 value: constant.value.clone(),
                 ty,
             }),
+            docs: constant.docs.clone(),
+            file: constant.header.clone(),
+            line: constant.line,
         });
     }
     // A library named after its header is the common case (`SDL3/SDL.h` links
@@ -279,6 +293,7 @@ impl Mapper<'_> {
                         mutable: false,
                         name: Ident::new(name, self.span),
                         ty,
+                        docs: field.docs.clone(),
                         span: self.span,
                     });
                 }

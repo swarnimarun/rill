@@ -28,6 +28,19 @@ pub enum Convention {
     Set,
 }
 
+/// Where a `var` binding's storage lives. Module-level bindings are `static`
+/// (optionally per-thread); a plain `var` is stack storage inside a block.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum VarStorage {
+    /// `var x = e;` inside a block.
+    #[default]
+    Local,
+    /// `static var x = e;` — one copy for the program, in the data segment.
+    Static,
+    /// `static threadlocal var x = e;` — one copy per thread.
+    ThreadLocal,
+}
+
 /// A whole file.
 #[derive(Clone, Debug, Default)]
 pub struct Module {
@@ -66,6 +79,28 @@ impl Item {
             Item::Stmt(s) => s.span(),
             Item::Error(span) => *span,
             Item::Attribute(d) => d.span,
+        }
+    }
+
+    /// The `///` lines attached to this declaration. An `extern` block's docs
+    /// belong to the declaration inside it when the block wrote none of its own.
+    pub fn docs(&self) -> &[String] {
+        match self {
+            Item::Signature(d) => &d.docs,
+            Item::Fn(d) => &d.docs,
+            Item::Project(d) => &d.docs,
+            Item::Type(d) => &d.docs,
+            Item::Trait(d) => &d.docs,
+            Item::Impl(d) => &d.docs,
+            Item::Builder(d) => &d.docs,
+            Item::Extern(d) => {
+                if d.docs.is_empty() {
+                    d.inner.docs()
+                } else {
+                    &d.docs
+                }
+            }
+            Item::Use(_) | Item::Stmt(_) | Item::Error(_) | Item::Attribute(_) => &[],
         }
     }
 }
@@ -107,6 +142,8 @@ pub struct SignatureDecl {
     pub ty: Type,
     pub constraints: Vec<Constraint>,
     pub effects: EffectRow,
+    /// `///` lines immediately above the declaration, one entry per line.
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -120,6 +157,7 @@ pub struct FnDecl {
     pub constraints: Vec<Constraint>,
     pub effects: EffectRow,
     pub body: Option<Expr>,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -131,6 +169,7 @@ pub struct ProjectDecl {
     pub constraints: Vec<Constraint>,
     pub effects: EffectRow,
     pub body: Expr,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -139,6 +178,7 @@ pub struct TypeDecl {
     pub name: Ident,
     pub params: Vec<TypeParam>,
     pub body: TypeBody,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -168,6 +208,8 @@ pub struct FieldDef {
     pub mutable: bool,
     pub name: Ident,
     pub ty: Type,
+    /// `///` lines immediately above the field.
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -182,6 +224,8 @@ pub struct DeinitClause {
 pub struct Variant {
     pub name: Ident,
     pub payload: Vec<Type>,
+    /// `///` lines immediately above the variant.
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -191,6 +235,7 @@ pub struct TraitDecl {
     pub params: Vec<TypeParam>,
     pub constraints: Vec<Constraint>,
     pub members: Vec<Item>,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -200,6 +245,7 @@ pub struct ImplDecl {
     pub params: Vec<TypeParam>,
     pub constraints: Vec<Constraint>,
     pub members: Vec<Item>,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -208,6 +254,7 @@ pub struct BuilderDecl {
     pub name: Ident,
     pub params: Vec<TypeParam>,
     pub members: Vec<Item>,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -215,6 +262,7 @@ pub struct BuilderDecl {
 pub struct ExternDecl {
     pub abi: Option<String>,
     pub inner: Box<Item>,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -371,8 +419,9 @@ impl Type {
 
 #[derive(Clone, Debug)]
 pub enum Stmt {
-    /// `var x: T = e;`
+    /// `var x: T = e;` (or the `static` forms at module level).
     Var {
+        storage: VarStorage,
         name: Ident,
         ty: Option<Type>,
         init: Expr,

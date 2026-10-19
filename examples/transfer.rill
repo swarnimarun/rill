@@ -7,15 +7,15 @@ use std::io;
 type Account = record { var balance: i64; };
 
 let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | writes> = {
-    amount > 0;                      # guard: fails for a non-positive amount
-    from.balance >= amount;          # guard: fails when underfunded
-    set from.balance = from.balance - amount;
-    set to.balance = to.balance + amount;
+	amount > 0; # guard: fails for a non-positive amount
+	from.balance >= amount; # guard: fails when underfunded
+	set from.balance = from.balance - amount;
+	set to.balance = to.balance + amount;
 };
 
 let main () -> () <io | decides | writes> = {
-    var alice = Account 500i64;
-    var bob = Account 100i64;
-    transfer[inout alice, inout bob, 800] | transfer[inout alice, inout bob, 200];
-    io::println ("Alice: " ++ (alice.balance as String) ++ " Bob: " ++ (bob.balance as String))
+	var alice = Account 500i64;
+	var bob = Account 100i64;
+	transfer[inout alice, inout bob, 800] | transfer[inout alice, inout bob, 200];
+	io::println("Alice: " ++ (alice.balance as String) ++ " Bob: " ++ (bob.balance as String))
 };

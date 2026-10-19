@@ -70,6 +70,10 @@ pub struct CFunction {
     /// Some(reason) when the declaration was seen but is not callable from Rill
     /// (variadic, function-pointer parameter, array parameter, unknown type...).
     pub skipped: Option<String>,
+    /// Header documentation, rendered as Markdown lines.
+    pub docs: Vec<String>,
+    /// 0-based line of the declaration in its header, for goto definition.
+    pub line: u32,
     /// Header the declaration came from.
     pub header: std::path::PathBuf,
 }
@@ -96,6 +100,10 @@ pub enum CType {
 pub struct CTypeDecl {
     pub name: String, // the typedef name (`SDL_FRect`, `SDL_Window`)
     pub kind: CTypeKind,
+    /// Header documentation, rendered as Markdown lines.
+    pub docs: Vec<String>,
+    /// 0-based line of the declaration in its header, for goto definition.
+    pub line: u32,
     pub header: std::path::PathBuf,
 }
 
@@ -116,6 +124,8 @@ pub enum CTypeKind {
 pub struct CField {
     pub name: String,
     pub ty: CType,
+    /// Header documentation for the field, rendered as Markdown lines.
+    pub docs: Vec<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -124,6 +134,10 @@ pub struct CConstant {
     /// The literal text exactly as written after the macro name, e.g. `0x00000020u`.
     pub value: String,
     pub ty: CType,
+    /// Header documentation, rendered as Markdown lines.
+    pub docs: Vec<String>,
+    /// 0-based line of the declaration in its header, for goto definition.
+    pub line: u32,
     pub header: std::path::PathBuf,
 }
 
@@ -170,17 +184,31 @@ impl Scanner {
 
     /// Split a header into includes, `#define`d constants and declarations.
     fn scan_source(&mut self, src: &str, header: &Path) {
-        let cleaned = strip_comments(src);
+        let (cleaned, docs) = strip_comments(src);
         let mut code = String::new();
+        // Original line of each `code` line: `strip_comments` keeps newlines, so
+        // a cleaned line index is also the source line index.
+        let mut code_lines: Vec<u32> = Vec::new();
         // an odd number of lines are consumed by a multi-line macro
         let mut in_macro = false;
-        for line in cleaned.lines() {
+        // Doc-only lines waiting for the next declaration or `#define`.
+        let mut pending: Vec<usize> = Vec::new();
+        for (line_no, line) in cleaned.lines().enumerate() {
+            let (line, leading) = take_leading_markers(line);
+            let mut docs_for_line = std::mem::take(&mut pending);
+            docs_for_line.extend(leading);
             let line = line.trim();
             if in_macro {
                 in_macro = line.ends_with('\\');
                 continue;
             }
             if line.is_empty() {
+                if docs_for_line.is_empty() {
+                    continue;
+                }
+                // A line that held nothing but documentation: keep it for the
+                // next declaration or `#define`.
+                pending.extend(docs_for_line);
                 continue;
             }
             if line.ends_with('\\') {
@@ -192,16 +220,41 @@ impl Scanner {
                 continue;
             }
             if let Some(rest) = line.strip_prefix('#') {
-                self.directive(rest.trim_start(), header);
+                self.directive(
+                    rest.trim_start(),
+                    header,
+                    docs_for_line,
+                    &docs,
+                    line_no as u32,
+                );
                 continue;
             }
-            code.push_str(line);
+            // The markers ride along with the declaration text so the final
+            // pass sees each comment next to what it documents.
+            if !docs_for_line.is_empty() {
+                let mut with_docs = String::new();
+                for index in &docs_for_line {
+                    with_docs.push_str(&doc_marker(*index));
+                }
+                with_docs.push_str(line);
+                code.push_str(&with_docs);
+            } else {
+                code.push_str(line);
+            }
             code.push('\n');
+            code_lines.push(line_no as u32);
         }
-        self.declarations(&code, header);
+        self.declarations(&code, header, &docs, &code_lines);
     }
 
-    fn directive(&mut self, rest: &str, header: &Path) {
+    fn directive(
+        &mut self,
+        rest: &str,
+        header: &Path,
+        leading: Vec<usize>,
+        docs: &[RawDoc],
+        line: u32,
+    ) {
         if let Some(after) = strip_directive(rest, "include") {
             let after = after.trim_start();
             let target = if let Some(rest) = after.strip_prefix('<') {
@@ -218,11 +271,19 @@ impl Scanner {
                     let _ = self.visit(&found, false);
                 }
             }
+            // An include documents nothing.
             return;
         }
         if let Some(after) = strip_directive(rest, "define") {
-            self.define(after, header);
+            let (body, markers) = take_all_markers(after);
+            // A comment on the `#define` line itself is its documentation; a
+            // block directly above it counts too.
+            let selected = if markers.is_empty() { leading } else { markers };
+            let rendered = format_docs(&selected, docs);
+            self.define(&body, header, rendered, line);
         }
+        // Other directives carry no declaration; the docs that preceded them
+        // are dropped with `leading`.
     }
 
     /// `<SDL3/SDL_rect.h>` is looked up in the include dirs, `"SDL_rect.h"` next
@@ -250,14 +311,30 @@ impl Scanner {
     // -----------------------------------------------------------------------
 
     /// Walk the header body, cutting it into declarations.
-    fn declarations(&mut self, code: &str, header: &Path) {
+    fn declarations(&mut self, code: &str, header: &Path, docs: &[RawDoc], code_lines: &[u32]) {
+        let chars: Vec<char> = code.chars().collect();
+        // Char index where each line of `code` starts.
+        let mut line_starts = vec![0usize];
+        for (at, c) in chars.iter().enumerate() {
+            if *c == '\n' {
+                line_starts.push(at + 1);
+            }
+        }
+        // First non-whitespace char of the declaration being buffered, which is
+        // the line goto definition should point at.
+        let mut buf_start: Option<usize> = None;
         let mut buf = String::new();
         let mut paren = 0u32;
         let mut bracket = 0u32;
         let mut brace = 0u32;
         let mut skipping = false;
         let mut skip_depth = 0u32;
-        for c in code.chars() {
+        let mut index = 0;
+        while index < chars.len() {
+            let c = chars[index];
+            if !skipping && buf_start.is_none() && !c.is_whitespace() {
+                buf_start = Some(index);
+            }
             if skipping {
                 match c {
                     '{' => skip_depth += 1,
@@ -269,15 +346,16 @@ impl Scanner {
                     }
                     _ => {}
                 }
+                index += 1;
                 continue;
             }
             match c {
                 '{' if brace == 0 => {
-                    let head = buf.trim();
+                    let head = strip_markers(buf.trim());
                     if head.is_empty() {
                         // a stray brace (a macro tail that survived): nothing to
                         // attach it to, so ignore it
-                    } else if head.starts_with("typedef") || starts_record(head) {
+                    } else if head.starts_with("typedef") || starts_record(&head) {
                         brace += 1;
                         buf.push(c);
                     } else {
@@ -285,6 +363,7 @@ impl Scanner {
                         skipping = true;
                         skip_depth = 1;
                         buf.clear();
+                        buf_start = None;
                         paren = 0;
                         bracket = 0;
                     }
@@ -315,32 +394,93 @@ impl Scanner {
                     buf.push(c);
                 }
                 ';' if paren == 0 && bracket == 0 && brace == 0 => {
-                    self.declaration(buf.trim(), header);
+                    buf.push(';');
+                    // A raylib-style comment after the semicolon documents this
+                    // declaration, not the next one. Consume markers that are
+                    // the only thing left on the line.
+                    let mut cursor = index + 1;
+                    let mut tail = String::new();
+                    let mut found = false;
+                    while cursor < chars.len() && chars[cursor] != '\n' {
+                        if chars[cursor].is_whitespace() {
+                            tail.push(chars[cursor]);
+                            cursor += 1;
+                        } else if chars[cursor] == DOC_OPEN {
+                            let start = cursor;
+                            cursor += 1;
+                            while cursor < chars.len() && chars[cursor] != DOC_CLOSE {
+                                cursor += 1;
+                            }
+                            if cursor < chars.len() {
+                                cursor += 1;
+                            }
+                            for ch in &chars[start..cursor] {
+                                tail.push(*ch);
+                            }
+                            found = true;
+                        } else {
+                            break;
+                        }
+                    }
+                    if found && (cursor >= chars.len() || chars[cursor] == '\n') {
+                        buf.push_str(&tail);
+                        index = cursor;
+                    } else {
+                        index += 1;
+                    }
+                    let line = buf_start
+                        .map(|at| {
+                            let at = at.min(chars.len().saturating_sub(1));
+                            let code_line = line_starts.partition_point(|start| *start <= at) - 1;
+                            code_lines.get(code_line).copied().unwrap_or(0)
+                        })
+                        .unwrap_or(0);
+                    self.declaration(buf.trim(), header, docs, line);
                     buf.clear();
+                    buf_start = None;
+                    continue;
                 }
                 _ => buf.push(c),
             }
+            // A dropped stray token leaves nothing buffered, so the next line
+            // starts its own declaration span.
+            if buf.is_empty() && c == '\n' {
+                buf_start = None;
+            }
+            index += 1;
         }
         // a trailing partial declaration is not a declaration
     }
 
-    fn declaration(&mut self, unit: &str, header: &Path) {
-        let unit = normalize(unit);
+    fn declaration(&mut self, unit: &str, header: &Path, docs: &[RawDoc], line: u32) {
+        let (unit, leading, trailing) = split_unit_docs(unit);
+        // A comment on the declaration's own line is more specific than a
+        // section heading above it (raylib writes both).
+        let selected = if trailing.is_empty() {
+            leading
+        } else {
+            trailing
+        };
+        let rendered = format_docs(&selected, docs);
+        let unit = normalize(&unit);
+        // The scanner hands the declaration over with its terminating `;`.
+        let unit = unit.strip_suffix(';').unwrap_or(&unit).trim_end();
         if unit.is_empty() {
             return;
         }
         if unit.starts_with("typedef") {
-            self.typedef_decl(&unit, header);
+            self.typedef_decl(unit, header, rendered, docs, line);
         } else if PROTOTYPE_DECORATIONS
             .iter()
-            .any(|word| starts_with_word(&unit, word))
+            .any(|word| starts_with_word(unit, word))
         {
-            self.function_decl(&unit, header);
+            self.function_decl(unit, header, rendered, line);
         }
     }
 
-    fn function_decl(&mut self, unit: &str, header: &Path) {
-        let text = normalize(&strip_words(&strip_attributes(unit), FUNCTION_NOISE));
+    fn function_decl(&mut self, unit: &str, header: &Path, docs: Vec<String>, line: u32) {
+        let unit = strip_markers(unit);
+        let text = normalize(&strip_words(&strip_attributes(&unit), FUNCTION_NOISE));
         let Some(open) = text.find('(') else { return };
         let Some(close) = matching(&text, open) else {
             return;
@@ -405,20 +545,30 @@ impl Scanner {
             params,
             ret,
             skipped,
+            docs,
+            line,
             header: header.to_path_buf(),
         });
     }
 
-    fn typedef_decl(&mut self, unit: &str, header: &Path) {
+    fn typedef_decl(
+        &mut self,
+        unit: &str,
+        header: &Path,
+        docs: Vec<String>,
+        raw_docs: &[RawDoc],
+        line: u32,
+    ) {
         let text = normalize(unit.strip_prefix("typedef").unwrap_or(unit));
         if text.is_empty() {
             return;
         }
 
         if text.contains('{') {
-            self.record_or_enum(&text, header);
+            self.record_or_enum(&text, header, docs, raw_docs, line);
             return;
         }
+        let text = normalize(&strip_markers(&text));
 
         // `typedef <ret> (CALLBACK *Name)(...)` - a typedef'd function pointer is
         // not callable, and its C type has no Rill shape: report it unmapped so
@@ -431,6 +581,8 @@ impl Scanner {
                         self.push_type(CTypeDecl {
                             name: name.to_string(),
                             kind: CTypeKind::Alias(CType::Unmapped(format!("typedef {text}"))),
+                            docs,
+                            line,
                             header: header.to_path_buf(),
                         });
                     }
@@ -449,6 +601,8 @@ impl Scanner {
             self.push_type(CTypeDecl {
                 name: words[2].to_string(),
                 kind: CTypeKind::Opaque,
+                docs,
+                line,
                 header: header.to_path_buf(),
             });
             return;
@@ -470,6 +624,8 @@ impl Scanner {
             self.push_type(CTypeDecl {
                 name: name.to_string(),
                 kind: CTypeKind::Alias(CType::Unmapped(format!("typedef {text}"))),
+                docs,
+                line,
                 header: header.to_path_buf(),
             });
             return;
@@ -485,20 +641,29 @@ impl Scanner {
             self.module.types.push(CTypeDecl {
                 name: name.to_string(),
                 kind: CTypeKind::Alias(inner),
+                docs,
+                line,
                 header: header.to_path_buf(),
             });
         }
     }
 
     /// `typedef struct/union/enum ... { ... } Name;`
-    fn record_or_enum(&mut self, text: &str, header: &Path) {
+    fn record_or_enum(
+        &mut self,
+        text: &str,
+        header: &Path,
+        docs: Vec<String>,
+        raw_docs: &[RawDoc],
+        line: u32,
+    ) {
         let Some(open) = text.find('{') else { return };
         let Some(close) = matching(text, open) else {
             return;
         };
-        let head = normalize(&text[..open]);
+        let head = normalize(&strip_markers(&text[..open]));
         let keyword = head.split_whitespace().next().unwrap_or("");
-        let tail = normalize(&text[close + 1..]);
+        let tail = normalize(&strip_markers(&text[close + 1..]));
         let Some((_, name)) = last_ident(&tail) else {
             return;
         };
@@ -512,18 +677,22 @@ impl Scanner {
                 self.module.types.push(CTypeDecl {
                     name,
                     kind: CTypeKind::Enum,
+                    docs,
+                    line,
                     header: header.to_path_buf(),
                 });
-                self.enumerators(body, header);
+                self.enumerators(body, header, raw_docs, line);
             }
             "struct" | "union" => {
-                let fields = parse_fields(body);
+                let fields = parse_fields(body, raw_docs);
                 if !self.seen_types.insert(name.clone()) {
                     return;
                 }
                 self.module.types.push(CTypeDecl {
                     name,
                     kind: CTypeKind::Record(fields),
+                    docs,
+                    line,
                     header: header.to_path_buf(),
                 });
             }
@@ -533,12 +702,26 @@ impl Scanner {
 
     /// Every enumerator of `typedef enum ... { ... }`, with implicit values
     /// computed (+1) and every value as decimal text.
-    fn enumerators(&mut self, body: &str, header: &Path) {
+    fn enumerators(&mut self, body: &str, header: &Path, raw_docs: &[RawDoc], line: u32) {
         let mut values: HashMap<String, i64> = HashMap::new();
-        let mut previous: Option<i64> = None;
+        let mut previous_value: Option<i64> = None;
+        let mut previous_constant: Option<usize> = None;
         for item in split_top_level(body, ',') {
-            let item = normalize(&item);
+            let part = split_part_docs(&item, raw_docs);
+            if !part.previous.is_empty() {
+                // A comment on the enumerator's own line comes back with the
+                // next comma-separated part; it belongs to the enumerator just
+                // read.
+                let docs = format_docs(&part.previous, raw_docs);
+                if let Some(index) = previous_constant {
+                    if let Some(constant) = self.module.constants.get_mut(index) {
+                        constant.docs = docs;
+                    }
+                }
+            }
+            let item = normalize(&part.text);
             if item.is_empty() {
+                previous_constant = None;
                 continue;
             }
             let (name, expr) = match item.split_once('=') {
@@ -546,22 +729,28 @@ impl Scanner {
                 None => (item.clone(), None),
             };
             if !is_ident(&name) {
+                previous_constant = None;
                 continue;
             }
             let computed = match &expr {
                 Some(expr) => eval_int(expr, &values),
-                None => previous.map(|value| value + 1).or(Some(0)),
+                None => previous_value.map(|value| value + 1).or(Some(0)),
             };
             let value = match (computed, &expr) {
                 (Some(value), _) => value.to_string(),
                 // an enum value we cannot fold is kept as written
                 (None, Some(expr)) => expr.clone(),
-                (None, None) => continue,
+                (None, None) => {
+                    previous_constant = None;
+                    continue;
+                }
             };
             if let Some(value) = computed {
                 values.insert(name.clone(), value);
-                previous = Some(value);
+                previous_value = Some(value);
             }
+            let docs = format_docs(&part.leading, raw_docs);
+            let before = self.module.constants.len();
             self.push_constant(CConstant {
                 name,
                 value,
@@ -569,13 +758,24 @@ impl Scanner {
                     bits: 32,
                     signed: true,
                 },
+                docs,
+                line,
                 header: header.to_path_buf(),
             });
+            let index =
+                (self.module.constants.len() > before).then(|| self.module.constants.len() - 1);
+            if let (Some(index), false) = (index, part.trailing.is_empty()) {
+                let docs = format_docs(&part.trailing, raw_docs);
+                if let Some(constant) = self.module.constants.get_mut(index) {
+                    constant.docs = docs;
+                }
+            }
+            previous_constant = index;
         }
     }
 
     /// `#define NAME <literal>`, skipping function-like and non-literal macros.
-    fn define(&mut self, rest: &str, header: &Path) {
+    fn define(&mut self, rest: &str, header: &Path, docs: Vec<String>, line: u32) {
         let rest = rest.trim_start();
         let name_end = rest
             .bytes()
@@ -601,6 +801,8 @@ impl Scanner {
             name: name.to_string(),
             value: body,
             ty,
+            docs,
+            line,
             header: header.to_path_buf(),
         });
     }
@@ -726,7 +928,8 @@ const ATTRIBUTE_MACROS: &[&str] = &[
 /// Parse one type spelling. Pointer levels are wrapped outside-in, and
 /// `const char *` is the crate's [`CType::Text`] rather than a pointer to char.
 fn parse_type(text: &str) -> CType {
-    let spelled = normalize(&strip_attributes(text));
+    let text = strip_markers(text);
+    let spelled = normalize(&strip_attributes(&text));
     if spelled.is_empty() {
         return CType::Unmapped(spelled);
     }
@@ -823,66 +1026,95 @@ fn primitive(words: &[&str]) -> Option<CType> {
 // record fields
 // ---------------------------------------------------------------------------
 
-fn parse_fields(body: &str) -> Vec<CField> {
-    let mut fields = Vec::new();
+fn parse_fields(body: &str, raw_docs: &[RawDoc]) -> Vec<CField> {
+    let mut fields: Vec<CField> = Vec::new();
+    let mut previous: Vec<usize> = Vec::new();
     for unit in split_top_level(body, ';') {
-        let unit = normalize(&unit);
-        if unit.is_empty() {
-            continue;
-        }
-        let first_word = unit.split_whitespace().next().unwrap_or("");
-        if matches!(first_word, "struct" | "union" | "enum") {
-            nested_record(&unit, &mut fields);
-            continue;
-        }
-        // `int w, h;` declares several fields that share the type
-        let parts = split_top_level(&unit, ',');
-        let first = strip_bitfield(&normalize(&parts[0]));
-        // the array suffix is cut off first: its size may name an enumerator
-        let (declarator, suffix) = split_array(&first);
-        let Some((name_start, name)) = last_ident(declarator) else {
-            continue;
-        };
-        let spelled = normalize(&declarator[..name_start]);
-        if spelled.is_empty() {
-            // an unnamed declarator: `Uint32 : 4;` or `Uint32 [4];`
-            let mut anonymous = declarator.to_string();
-            anonymous.push_str(suffix);
-            fields.push(CField {
-                name: String::new(),
-                ty: parse_type(&anonymous),
-            });
-            continue;
-        }
-        let ty = if suffix.is_empty() {
-            parse_type(&spelled)
-        } else {
-            // arrays have no Rill shape; keep the spelling minus the field name
-            CType::Unmapped(normalize(&format!("{spelled} {suffix}")))
-        };
-        fields.push(CField {
-            name: name.to_string(),
-            ty: ty.clone(),
-        });
-        for part in &parts[1..] {
-            let part = strip_bitfield(&normalize(part));
-            if let Some((_, name)) = last_ident(&part) {
-                fields.push(CField {
-                    name: name.to_string(),
-                    ty: ty.clone(),
-                });
+        let part = split_part_docs(&unit, raw_docs);
+        if !part.previous.is_empty() {
+            // A comment after the `;` documents the fields that just ended.
+            let docs = format_docs(&part.previous, raw_docs);
+            for index in &previous {
+                if let Some(field) = fields.get_mut(*index) {
+                    field.docs = docs.clone();
+                }
             }
         }
+        let docs = format_docs(&part.leading, raw_docs);
+        let unit = normalize(&part.text);
+        if unit.is_empty() {
+            previous.clear();
+            continue;
+        }
+        let start = fields.len();
+        let first_word = unit.split_whitespace().next().unwrap_or("");
+        if matches!(first_word, "struct" | "union" | "enum") {
+            nested_record(&unit, &mut fields, raw_docs, &docs);
+        } else {
+            // `int w, h;` declares several fields that share the type
+            let parts = split_top_level(&unit, ',');
+            let first = strip_bitfield(&normalize(&parts[0]));
+            // the array suffix is cut off first: its size may name an enumerator
+            let (declarator, suffix) = split_array(&first);
+            let Some((name_start, name)) = last_ident(declarator) else {
+                previous.clear();
+                continue;
+            };
+            let spelled = normalize(&declarator[..name_start]);
+            if spelled.is_empty() {
+                // an unnamed declarator: `Uint32 : 4;` or `Uint32 [4];`
+                let mut anonymous = declarator.to_string();
+                anonymous.push_str(suffix);
+                fields.push(CField {
+                    name: String::new(),
+                    ty: parse_type(&anonymous),
+                    docs,
+                });
+                previous = (start..fields.len()).collect();
+                continue;
+            }
+            let ty = if suffix.is_empty() {
+                parse_type(&spelled)
+            } else {
+                // arrays have no Rill shape; keep the spelling minus the field name
+                CType::Unmapped(normalize(&format!("{spelled} {suffix}")))
+            };
+            fields.push(CField {
+                name: name.to_string(),
+                ty: ty.clone(),
+                docs: docs.clone(),
+            });
+            for part in &parts[1..] {
+                let part = strip_bitfield(&normalize(part));
+                if let Some((_, name)) = last_ident(&part) {
+                    fields.push(CField {
+                        name: name.to_string(),
+                        ty: ty.clone(),
+                        docs: docs.clone(),
+                    });
+                }
+            }
+        }
+        if !part.trailing.is_empty() {
+            // A comment after the field text (no separator yet) documents it.
+            let docs = format_docs(&part.trailing, raw_docs);
+            for field in fields.iter_mut().skip(start) {
+                field.docs = docs.clone();
+            }
+        }
+        previous = (start..fields.len()).collect();
     }
     fields
 }
 
 /// A field whose type is declared inline: `struct SDL_Foo { ... } foo;`,
 /// `struct SDL_Foo foo;` or an anonymous `union { ... } value;`.
-fn nested_record(unit: &str, fields: &mut Vec<CField>) {
+fn nested_record(unit: &str, fields: &mut Vec<CField>, raw_docs: &[RawDoc], docs: &[String]) {
+    let unit = normalize(unit);
     let Some(open) = unit.find('{') else {
         // `struct TAG name;`
-        let Some((name_start, name)) = last_ident(unit) else {
+        let unit = strip_markers(&unit);
+        let Some((name_start, name)) = last_ident(&unit) else {
             return;
         };
         let head = normalize(&unit[..name_start]);
@@ -890,23 +1122,25 @@ fn nested_record(unit: &str, fields: &mut Vec<CField>) {
             fields.push(CField {
                 name: name.to_string(),
                 ty: CType::Named(tag.to_string()),
+                docs: docs.to_vec(),
             });
         }
         return;
     };
-    let Some(close) = matching(unit, open) else {
+    let Some(close) = matching(&unit, open) else {
         return;
     };
-    let head = normalize(&unit[..open]);
+    let head = normalize(&strip_markers(&unit[..open]));
     let kind = head.split_whitespace().next().unwrap_or("struct");
     let tag = head.split_whitespace().nth(1).map(str::to_string);
-    let inner = parse_fields(&unit[open + 1..close]);
-    let tail = normalize(&unit[close + 1..]);
+    let inner = parse_fields(&unit[open + 1..close], raw_docs);
+    let tail = normalize(&strip_markers(&unit[close + 1..]));
     if let Some(tag) = tag {
         for name in declarators(&tail) {
             fields.push(CField {
                 name,
                 ty: CType::Named(tag.clone()),
+                docs: docs.to_vec(),
             });
         }
     } else if tail.is_empty() {
@@ -917,6 +1151,7 @@ fn nested_record(unit: &str, fields: &mut Vec<CField>) {
             fields.push(CField {
                 name,
                 ty: CType::Unmapped(format!("<anonymous {kind}>")),
+                docs: docs.to_vec(),
             });
         }
     }
@@ -1249,52 +1484,438 @@ fn strip_directive<'a>(rest: &'a str, keyword: &str) -> Option<&'a str> {
     }
 }
 
-/// Remove comments, keeping string and char literals (and line structure) intact.
-fn strip_comments(src: &str) -> String {
-    let mut out = String::with_capacity(src.len());
-    let mut chars = src.chars().peekable();
-    while let Some(c) = chars.next() {
-        match c {
-            '/' if chars.peek() == Some(&'/') => {
-                while let Some(&next) = chars.peek() {
-                    if next == '\n' {
-                        break;
-                    }
-                    chars.next();
-                }
+/// One documentation comment found in a header, before it is rendered.
+#[derive(Clone, Debug)]
+struct RawDoc {
+    /// Content lines, markers stripped and block-comment stars removed.
+    lines: Vec<String>,
+    /// The comment followed code on its own line (`RLAPI …; // docs`).
+    trailing: bool,
+}
+
+/// A marker left in the comment-free text: `\u{1}<index>\u{2}`.
+const DOC_OPEN: char = '\u{1}';
+const DOC_CLOSE: char = '\u{2}';
+
+fn doc_marker(index: usize) -> String {
+    format!("{DOC_OPEN}{index}{DOC_CLOSE}")
+}
+
+/// Byte ranges of every doc marker in `text`, with the doc index.
+fn marker_ranges(text: &str) -> Vec<(usize, usize, usize)> {
+    let bytes = text.as_bytes();
+    let mut found = Vec::new();
+    let mut index = 0;
+    while index < bytes.len() {
+        if bytes[index] != DOC_OPEN as u8 {
+            index += 1;
+            continue;
+        }
+        let start = index;
+        index += 1;
+        let digits = index;
+        while index < bytes.len() && bytes[index].is_ascii_digit() {
+            index += 1;
+        }
+        if index > digits && index < bytes.len() && bytes[index] == DOC_CLOSE as u8 {
+            let doc = text[digits..index].parse().ok();
+            index += 1;
+            if let Some(doc) = doc {
+                found.push((start, index, doc));
             }
-            '/' if chars.peek() == Some(&'*') => {
-                chars.next();
-                let mut previous = '\0';
-                for next in chars.by_ref() {
-                    if previous == '*' && next == '/' {
-                        break;
-                    }
-                    if next == '\n' {
-                        out.push('\n');
-                    }
-                    previous = next;
-                }
-            }
-            '"' | '\'' => {
-                let quote = c;
-                out.push(c);
-                let mut escaped = false;
-                for next in chars.by_ref() {
-                    out.push(next);
-                    if escaped {
-                        escaped = false;
-                    } else if next == '\\' {
-                        escaped = true;
-                    } else if next == quote {
-                        break;
-                    }
-                }
-            }
-            _ => out.push(c),
         }
     }
+    found
+}
+
+/// `text` with every doc marker removed.
+fn strip_markers(text: &str) -> String {
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (start, end, _) in marker_ranges(text) {
+        out.push_str(&text[cursor..start]);
+        cursor = end;
+    }
+    out.push_str(&text[cursor..]);
     out
+}
+
+/// Drop the markers at the start of a line (leading documentation) and report
+/// which docs they were.
+fn take_leading_markers(line: &str) -> (String, Vec<usize>) {
+    let mut rest = line;
+    let mut docs = Vec::new();
+    loop {
+        let trimmed = rest.trim_start();
+        let Some((start, end, index)) = marker_ranges(trimmed).first().copied() else {
+            break;
+        };
+        if start != 0 {
+            break;
+        }
+        docs.push(index);
+        rest = &trimmed[end..];
+    }
+    (rest.to_string(), docs)
+}
+
+/// Remove every marker, reporting the docs in order.
+fn take_all_markers(text: &str) -> (String, Vec<usize>) {
+    let ranges = marker_ranges(text);
+    let mut docs = Vec::with_capacity(ranges.len());
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (start, end, index) in ranges {
+        out.push_str(&text[cursor..start]);
+        docs.push(index);
+        cursor = end;
+    }
+    out.push_str(&text[cursor..]);
+    (out, docs)
+}
+
+/// Separate a declaration's leading documentation from its trailing
+/// documentation, leaving markers inside a record body for the field parser.
+fn split_unit_docs(unit: &str) -> (String, Vec<usize>, Vec<usize>) {
+    let ranges = marker_ranges(unit);
+    let mut leading = Vec::new();
+    let mut trailing = Vec::new();
+    let mut remove = Vec::new();
+    for &(start, end, index) in &ranges {
+        let before = strip_markers(&unit[..start]);
+        let after = strip_markers(&unit[end..]);
+        let is_leading = before.trim().is_empty();
+        let is_trailing = after.trim().is_empty() && before.trim_end().ends_with(';');
+        if is_leading {
+            leading.push(index);
+            remove.push((start, end));
+        } else if is_trailing {
+            trailing.push(index);
+            remove.push((start, end));
+        }
+    }
+    let mut out = String::with_capacity(unit.len());
+    let mut cursor = 0;
+    for (start, end) in remove {
+        out.push_str(&unit[cursor..start]);
+        cursor = end;
+    }
+    out.push_str(&unit[cursor..]);
+    (out, leading, trailing)
+}
+
+/// The docs of one comma- or semicolon-separated part of a record/enum body.
+/// A trailing comment after the separator opens the next part, so a marker at
+/// the very start with [`RawDoc::trailing`] set belongs to the item before it;
+/// one that follows code in the part belongs to the item in it.
+struct PartDocs {
+    text: String,
+    leading: Vec<usize>,
+    previous: Vec<usize>,
+    trailing: Vec<usize>,
+}
+
+fn split_part_docs(text: &str, raw_docs: &[RawDoc]) -> PartDocs {
+    let ranges = marker_ranges(text);
+    let mut leading = Vec::new();
+    let mut previous = Vec::new();
+    let mut trailing = Vec::new();
+    let mut remove = Vec::new();
+    for (start, end, index) in ranges {
+        let before = strip_markers(&text[..start]);
+        let after = strip_markers(&text[end..]);
+        if before.trim().is_empty() {
+            if raw_docs.get(index).is_some_and(|doc| doc.trailing) {
+                previous.push(index);
+            } else {
+                leading.push(index);
+            }
+            remove.push((start, end));
+        } else if after.trim().is_empty() {
+            trailing.push(index);
+            remove.push((start, end));
+        }
+    }
+    let mut out = String::with_capacity(text.len());
+    let mut cursor = 0;
+    for (start, end) in remove {
+        out.push_str(&text[cursor..start]);
+        cursor = end;
+    }
+    out.push_str(&text[cursor..]);
+    PartDocs {
+        text: out,
+        leading,
+        previous,
+        trailing,
+    }
+}
+
+/// A comment's content as lines, or `None` when it is not documentation.
+fn line_doc(comment: &str) -> Option<Vec<String>> {
+    let body = comment
+        .strip_prefix("///")
+        .or_else(|| comment.strip_prefix("//!"))
+        .or_else(|| comment.strip_prefix("//"))?;
+    let body = body.strip_prefix(' ').unwrap_or(body);
+    Some(vec![body.trim_end().to_string()])
+}
+
+/// `/** … */` and `/*! … */` are documentation; `/*** …` is a separator and
+/// plain `/* … */` is not documentation at all.
+fn block_doc(comment: &str) -> Option<Vec<String>> {
+    let body = if let Some(rest) = comment
+        .strip_prefix("/**<")
+        .or_else(|| comment.strip_prefix("/*!<"))
+    {
+        // A trailing field doc: `float x; /**< the x coordinate. */`
+        rest
+    } else if let Some(rest) = comment.strip_prefix("/**") {
+        if rest.starts_with('*') {
+            return None;
+        }
+        rest
+    } else {
+        comment.strip_prefix("/*!")?
+    };
+    let body = body.strip_suffix("*/").unwrap_or(body);
+    let mut lines: Vec<String> = body
+        .lines()
+        .map(|line| {
+            let line = line.trim();
+            let line = line.strip_prefix('*').unwrap_or(line);
+            let line = line.strip_prefix(' ').unwrap_or(line);
+            line.trim_end().to_string()
+        })
+        .collect();
+    while lines.first().is_some_and(|line| line.is_empty()) {
+        lines.remove(0);
+    }
+    while lines.last().is_some_and(|line| line.is_empty()) {
+        lines.pop();
+    }
+    Some(lines)
+}
+
+/// A separator such as `//---------------------` documents nothing.
+fn is_separator(lines: &[String]) -> bool {
+    !lines.is_empty()
+        && lines.iter().all(|line| {
+            let text = line.trim();
+            text.is_empty() || !text.chars().any(|c| c.is_alphanumeric())
+        })
+}
+
+/// Render the selected comments as Markdown lines. Doxygen's block commands
+/// become the headings an editor renders, and `\sa` references become one
+/// "See also" line.
+fn format_docs(indices: &[usize], docs: &[RawDoc]) -> Vec<String> {
+    let mut out = Vec::new();
+    for index in indices {
+        let Some(doc) = docs.get(*index) else {
+            continue;
+        };
+        if is_separator(&doc.lines) {
+            continue;
+        }
+        out.extend(render_doc(&doc.lines));
+    }
+    while out.last().is_some_and(|line| line.is_empty()) {
+        out.pop();
+    }
+    out
+}
+
+fn render_doc(raw: &[String]) -> Vec<String> {
+    let mut out: Vec<String> = Vec::new();
+    let mut see_also: Vec<String> = Vec::new();
+    let mut code = false;
+    for line in raw {
+        let line = line.trim();
+        if line.is_empty() {
+            if out.last().is_some_and(|line| !line.is_empty()) {
+                out.push(String::new());
+            }
+            continue;
+        }
+        if matches!(line, "\\code" | "@code") {
+            out.push("```".to_string());
+            code = true;
+            continue;
+        }
+        if matches!(line, "\\endcode" | "@endcode") {
+            out.push("```".to_string());
+            code = false;
+            continue;
+        }
+        if code {
+            out.push(line.to_string());
+            continue;
+        }
+        let (command, rest) = split_doc_command(line);
+        match command {
+            "" | "brief" => push_text(&mut out, rest),
+            "param" => {
+                if let Some((name, text)) = split_param(rest) {
+                    out.push(format!("- **{name}**: {text}"));
+                }
+            }
+            "return" | "returns" => out.push(format!("**Returns:** {rest}")),
+            "since" => out.push(format!("**Since:** {rest}")),
+            "threadsafety" => out.push(format!("**Thread safety:** {rest}")),
+            "note" => out.push(format!("**Note:** {rest}")),
+            "warning" => out.push(format!("**Warning:** {rest}")),
+            "deprecated" => out.push(format!("**Deprecated:** {rest}")),
+            "sa" => see_also.extend(
+                rest.split(',')
+                    .map(str::trim)
+                    .filter(|name| !name.is_empty())
+                    .map(str::to_string),
+            ),
+            // Commands with no meaning outside Doxygen (`\name`, `\cond`):
+            // their text, if any, is still prose.
+            _ => {
+                if !rest.is_empty() {
+                    push_text(&mut out, rest);
+                }
+            }
+        }
+    }
+    while out.last().is_some_and(|line| line.is_empty()) {
+        out.pop();
+    }
+    if !see_also.is_empty() {
+        if !out.is_empty() {
+            out.push(String::new());
+        }
+        out.push(format!("**See also:** {}", see_also.join(", ")));
+    }
+    out
+}
+
+/// `\param name text` / `@param [in] name text` split into name and text.
+fn split_param(rest: &str) -> Option<(String, String)> {
+    let mut rest = rest.trim_start();
+    if rest.starts_with('[') {
+        let close = rest.find(']')?;
+        rest = rest[close + 1..].trim_start();
+    }
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    if end == 0 {
+        return None;
+    }
+    let name = rest[..end].to_string();
+    let text = rest[end..].trim().to_string();
+    Some((name, text))
+}
+
+/// A line starts a Doxygen command when it begins with `\` or `@`; the command
+/// runs to the first space.
+fn split_doc_command(line: &str) -> (&str, &str) {
+    let Some(rest) = line.strip_prefix('\\').or_else(|| line.strip_prefix('@')) else {
+        return ("", line);
+    };
+    let end = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    let (command, rest) = rest.split_at(end);
+    (command, rest.trim_start())
+}
+
+/// Append prose, joining wrapped lines. A blank line in the source already
+/// ended the previous paragraph, and a line that starts a Markdown list opens
+/// its own item.
+fn push_text(out: &mut Vec<String>, text: &str) {
+    if text.is_empty() {
+        return;
+    }
+    if text.starts_with("- ") || text.starts_with("* ") || text.starts_with('#') {
+        out.push(text.to_string());
+        return;
+    }
+    if let Some(last) = out.last_mut() {
+        if !last.is_empty() && !last.ends_with("```") {
+            last.push(' ');
+            last.push_str(text);
+            return;
+        }
+    }
+    out.push(text.to_string());
+}
+
+/// Remove comments, keeping string and char literals (and line structure)
+/// intact. Documentation comments leave a [`doc_marker`] at their position so
+/// the scanner can attach them to the declaration they document.
+fn strip_comments(src: &str) -> (String, Vec<RawDoc>) {
+    let mut out = String::with_capacity(src.len());
+    let mut docs: Vec<RawDoc> = Vec::new();
+    let mut line_has_code = false;
+    let mut index = 0;
+    while index < src.len() {
+        let rest = &src[index..];
+        if rest.starts_with("//") {
+            let end = rest.find('\n').map(|n| index + n).unwrap_or(src.len());
+            let comment = &src[index..end];
+            if let Some(lines) = line_doc(comment) {
+                docs.push(RawDoc {
+                    lines,
+                    trailing: line_has_code,
+                });
+                out.push_str(&doc_marker(docs.len() - 1));
+            }
+            index = end;
+            continue;
+        }
+        if let Some(after) = rest.strip_prefix("/*") {
+            let end = after
+                .find("*/")
+                .map(|n| index + 2 + n + 2)
+                .unwrap_or(src.len());
+            let comment = &src[index..end];
+            if let Some(lines) = block_doc(comment) {
+                docs.push(RawDoc {
+                    lines,
+                    trailing: line_has_code,
+                });
+                out.push_str(&doc_marker(docs.len() - 1));
+            }
+            for _ in comment.matches('\n') {
+                out.push('\n');
+            }
+            if comment.contains('\n') {
+                line_has_code = false;
+            }
+            index = end;
+            continue;
+        }
+        let c = rest.chars().next().unwrap_or(' ');
+        if c == '"' || c == '\'' {
+            let quote = c;
+            out.push(c);
+            index += c.len_utf8();
+            let mut escaped = false;
+            while index < src.len() {
+                let ch = src[index..].chars().next().unwrap_or(' ');
+                out.push(ch);
+                index += ch.len_utf8();
+                if escaped {
+                    escaped = false;
+                } else if ch == '\\' {
+                    escaped = true;
+                } else if ch == quote {
+                    break;
+                }
+            }
+            line_has_code = true;
+            continue;
+        }
+        out.push(c);
+        if c == '\n' {
+            line_has_code = false;
+        } else if !c.is_whitespace() {
+            line_has_code = true;
+        }
+        index += c.len_utf8();
+    }
+    (out, docs)
 }
 
 #[cfg(test)]

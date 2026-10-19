@@ -108,20 +108,50 @@ fn build(tokens: &[SyntaxToken], events: &[Event]) -> SyntaxNode {
     for event in events {
         match event {
             Event::Start { kind, at } => {
-                // Trivia before the node's first token belongs to the parent.
+                // Trivia before the node's first token belongs to the parent,
+                // except for the run of doc comments right before it: those
+                // are the node's documentation, and attaching them here keeps
+                // lowering independent of sibling positions.
                 let frame = stack.last_mut().expect("node outside of any node");
                 let from = next_unclaimed.min(*at);
-                for token in &tokens[from..*at] {
-                    debug_assert!(token.is_trivia(), "parser skipped a real token");
-                    frame.children.push(Element::Token(*token));
+                let mut doc_from = *at;
+                while doc_from > from {
+                    let token = tokens[doc_from - 1];
+                    if token.is_trivia() {
+                        doc_from -= 1;
+                    } else {
+                        break;
+                    }
+                }
+                let has_docs = tokens[doc_from..*at]
+                    .iter()
+                    .any(|token| token.kind.is_doc_comment());
+                if has_docs {
+                    for token in &tokens[from..doc_from] {
+                        debug_assert!(token.is_trivia(), "parser skipped a real token");
+                        frame.children.push(Element::Token(*token));
+                    }
+                    let children = tokens[doc_from..*at]
+                        .iter()
+                        .map(|token| Element::Token(*token))
+                        .collect();
+                    stack.push(Frame {
+                        kind: *kind,
+                        children,
+                    });
+                } else {
+                    for token in &tokens[from..*at] {
+                        debug_assert!(token.is_trivia(), "parser skipped a real token");
+                        frame.children.push(Element::Token(*token));
+                    }
+                    stack.push(Frame {
+                        kind: *kind,
+                        children: Vec::new(),
+                    });
                 }
                 if from < *at {
                     next_unclaimed = *at;
                 }
-                stack.push(Frame {
-                    kind: *kind,
-                    children: Vec::new(),
-                });
             }
             Event::Finish => {
                 let frame = stack.pop().expect("unbalanced Finish event");

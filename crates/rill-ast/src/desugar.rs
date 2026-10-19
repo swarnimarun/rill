@@ -601,11 +601,13 @@ impl<'a> Desugar<'a> {
     fn stmt(&mut self, stmt: Stmt) -> Stmt {
         match stmt {
             Stmt::Var {
+                storage,
                 name,
                 ty,
                 init,
                 span,
             } => Stmt::Var {
+                storage,
                 name,
                 ty: ty.map(|t| self.ty(t)),
                 init: self.expr(init),

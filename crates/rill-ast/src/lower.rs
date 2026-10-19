@@ -87,6 +87,33 @@ impl<'a> Lower<'a> {
         Ident::new(self.interner.intern(&text), tok.span)
     }
 
+    /// The `///` lines the CST attached to `node`, with the marker removed and
+    /// the customary one space after it stripped. A bare `///` keeps an empty
+    /// line, which is how a paragraph break is written.
+    fn docs(&self, node: &SyntaxNode) -> Vec<String> {
+        let mut docs = Vec::new();
+        for child in &node.children {
+            match child {
+                Element::Token(token) if token.kind == K::DocComment => {
+                    docs.push(self.doc_line(*token));
+                }
+                Element::Token(token) if token.kind == K::Whitespace => {}
+                _ => break,
+            }
+        }
+        docs
+    }
+
+    /// One `///` comment's text.
+    fn doc_line(&self, token: SyntaxToken) -> String {
+        let text = self.text(token);
+        let text = text.strip_prefix("///").unwrap_or(text);
+        text.strip_prefix(' ')
+            .unwrap_or(text)
+            .trim_end()
+            .to_string()
+    }
+
     // -- module & items ----------------------------------------------------
 
     fn module(&mut self, root: &SyntaxNode) -> Module {
@@ -236,6 +263,7 @@ impl<'a> Lower<'a> {
             ty,
             constraints,
             effects,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -247,6 +275,7 @@ impl<'a> Lower<'a> {
             ty: Type::Error(span),
             constraints: Vec::new(),
             effects: EffectRow::empty(),
+            docs: Vec::new(),
             span,
         }
     }
@@ -277,6 +306,7 @@ impl<'a> Lower<'a> {
             constraints,
             effects,
             body,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -308,6 +338,7 @@ impl<'a> Lower<'a> {
             constraints,
             effects,
             body,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -366,6 +397,7 @@ impl<'a> Lower<'a> {
             name,
             params,
             body,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -386,6 +418,7 @@ impl<'a> Lower<'a> {
             params,
             constraints,
             members,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -406,6 +439,7 @@ impl<'a> Lower<'a> {
             params,
             constraints,
             members,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -427,6 +461,7 @@ impl<'a> Lower<'a> {
             name,
             params,
             members,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -445,6 +480,7 @@ impl<'a> Lower<'a> {
         ExternDecl {
             abi,
             inner,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -697,6 +733,7 @@ impl<'a> Lower<'a> {
             mutable,
             name,
             ty,
+            docs: self.docs(node),
             span: node.span,
         }
     }
@@ -724,21 +761,38 @@ impl<'a> Lower<'a> {
 
     fn variants(&mut self, node: &SyntaxNode) -> Vec<Variant> {
         let mut out = Vec::new();
-        for variant in node.child_nodes(K::Variant) {
-            let mut cur = Cursor::new(variant);
-            let name = match cur.name() {
-                Some(tok) => self.ident(tok),
-                None => Ident::new(Symbol::EMPTY, variant.span),
-            };
-            let mut payload = Vec::new();
-            while starts_type_element(&cur) {
-                payload.push(self.type_child(&mut cur, variant.span));
+        // The `|` separators live in the `VariantList` node, so a `///` above a
+        // `|` is a token of the list, not of the `Variant` that follows. Carry
+        // the pending run over to that variant.
+        let mut pending: Vec<String> = Vec::new();
+        for child in &node.children {
+            match child {
+                Element::Token(token) if token.kind == K::DocComment => {
+                    pending.push(self.doc_line(*token));
+                }
+                Element::Token(token) if token.kind == K::Whitespace => {}
+                Element::Token(token) if token.kind == K::Pipe => {}
+                Element::Node(variant) if variant.kind == K::Variant => {
+                    let mut cur = Cursor::new(variant);
+                    let name = match cur.name() {
+                        Some(tok) => self.ident(tok),
+                        None => Ident::new(Symbol::EMPTY, variant.span),
+                    };
+                    let mut payload = Vec::new();
+                    while starts_type_element(&cur) {
+                        payload.push(self.type_child(&mut cur, variant.span));
+                    }
+                    let mut docs = std::mem::take(&mut pending);
+                    docs.extend(self.docs(variant));
+                    out.push(Variant {
+                        name,
+                        payload,
+                        docs,
+                        span: variant.span,
+                    });
+                }
+                _ => pending.clear(),
             }
-            out.push(Variant {
-                name,
-                payload,
-                span: variant.span,
-            });
         }
         out
     }
@@ -910,6 +964,15 @@ impl<'a> Lower<'a> {
         match node.kind {
             K::VarStmt => {
                 let mut cur = Cursor::new(node);
+                let storage = if cur.eat(K::KwStatic).is_some() {
+                    if cur.eat(K::KwThreadLocal).is_some() {
+                        VarStorage::ThreadLocal
+                    } else {
+                        VarStorage::Static
+                    }
+                } else {
+                    VarStorage::Local
+                };
                 cur.eat(K::KwVar);
                 let name = match cur.name() {
                     Some(tok) => self.ident(tok),
@@ -923,6 +986,7 @@ impl<'a> Lower<'a> {
                 cur.eat(K::Assign);
                 let init = self.expr_child(&mut cur, node.span);
                 Stmt::Var {
+                    storage,
                     name,
                     ty,
                     init,

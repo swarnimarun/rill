@@ -5,18 +5,25 @@ use std::io;
 # the cheap, explicit alternative to per-object frees.
 
 let scratch_work (a: Arena, bytes: usize) -> usize <alloc> = {
-    var base = arena_mark (a);
-    var block = arena_alloc (a, bytes);
-    var after = arena_used (a);
-    # ... use `block` here ...
-    arena_reset (a, base);
-    after - base
+	var base = arena_mark(a);
+	var block = arena_alloc(a, bytes);
+	var after = arena_used(a);
+	# ... use `block` here ...
+	arena_reset(a, base);
+	after - base
 };
 
 let main () -> i32 <io | alloc> = {
-    var a = arena_new 4096u64;
-    var first = scratch_work (a, 100u64);
-    var second = scratch_work (a, 64u64);
-    io::println ("first " ++ (first as String) ++ " second " ++ (second as String) ++ " used " ++ (arena_used (a) as String));
-    (arena_used (a) as i32) + (first as i32) - (second as i32)
+	var a = arena_new 4096u64;
+	var first = scratch_work(a, 100u64);
+	var second = scratch_work(a, 64u64);
+	io::println(
+		"first "
+			++ (first as String)
+			++ " second "
+			++ (second as String)
+			++ " used "
+			++ (arena_used(a) as String)
+	);
+	(arena_used(a) as i32) + (first as i32) - (second as i32)
 };

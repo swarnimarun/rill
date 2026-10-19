@@ -6,16 +6,16 @@ use std::io;
 # Nothing runs in parallel: a trampoline is the honest kernel until the data
 # guarantees that make sharing sound are enforced.
 
-let task_one () -> () <io> = io::println ("task one");
+let task_one () -> () <io> = io::println("task one");
 
 let task_three () -> () <io | suspends> = {
-    io::println ("task three spawns another");
-    io_spawn (task_four)
+	io::println("task three spawns another");
+	io_spawn(task_four)
 };
 
-let task_four () -> () <io> = io::println ("task four");
+let task_four () -> () <io> = io::println("task four");
 
-let task_two () -> () <io> = io::println ("task two");
+let task_two () -> () <io> = io::println("task two");
 
 # With a kernel bound, a `sync` block's arms are queued and drained in place, so
 # work spawned earlier runs first. Without a kernel they run immediately, in order.
@@ -23,29 +23,32 @@ let task_two () -> () <io> = io::println ("task two");
 # arm that yields less wins. Cancellation is cooperative - a started arm runs to its
 # next yield.
 let quick () -> () <io | suspends> = {
-    io::println ("quick yields");
-    yield ()
+	io::println("quick yields");
+	yield ()
 };
 
 let slow () -> () <io | suspends> = {
-    io::println ("slow yields once");
-    yield ();
-    io::println ("slow yields twice");
-    yield ()
+	io::println("slow yields once");
+	yield ();
+	io::println("slow yields twice");
+	yield ()
 };
 
 let main () -> i32 <io | suspends | writes> = {
-    io_bind ();
-    io_spawn (task_one);
-    io_spawn (task_two);
-    io_spawn (task_three);
-    sync {
-        task_four ();
-        task_four ()
-    };
-    race { slow (); quick () };
-    var ran = io_run ();
-    io::println ("ran " ++ (ran as String));
-    io_unbind ();
-    0
+	io_bind();
+	io_spawn(task_one);
+	io_spawn(task_two);
+	io_spawn(task_three);
+	sync {
+		task_four();
+		task_four()
+	};
+	race {
+		slow();
+		quick()
+	};
+	var ran = io_run();
+	io::println("ran " ++ (ran as String));
+	io_unbind();
+	0
 };

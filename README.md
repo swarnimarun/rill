@@ -104,7 +104,28 @@ let main () -> i32 <io> = {
 prototypes as `extern "c"` functions with an `<io>` row, its `typedef`s as
 records whose C names are kept, its enums as `i32`, and its `#define`
 literals as constants; `use M::*;` preludes their names, and `M::name` reaches
-one without a `use`. `@link("NAME")` makes `exec` and `build` search the
+one without a `use`. The header's documentation comes along: SDL3's Doxygen
+blocks and raylib's trailing comments are turned into Markdown that the editor
+shows when the name is completed or hovered, and the comments on record fields
+and enumerators travel with those members. `///` in Rill code works the same
+way - a run of `///` lines above a declaration is its documentation:
+
+```rill
+/// Doubles a number.
+let double (x: i32) -> i32 <computes> = x * 2;
+```
+
+Go to definition follows the import back to the header: `InitWindow` opens
+`raylib.h` at its prototype, `SDL_FRect` opens `SDL_rect.h` at its `typedef`,
+and `SDL_INIT_VIDEO` opens its `#define` - a Rill declaration opens its own
+name instead. Find references answers from the resolver's reference table, so
+a type name collects its constructor calls and its annotations (`var p: Point`,
+`e as Point`) alike, and `M::name` is the same symbol as the preluded name. A
+local or parameter answers the same way from either side: the result includes
+its uses and its binding, and a shadowed name stays separate from the one it
+hides.
+
+`@link("NAME")` makes `exec` and `build` search the
 loader's own paths (`LIBRARY_PATH`, `LD_LIBRARY_PATH`, `DYLD_LIBRARY_PATH`,
 then the system prefixes) for `libNAME`, link it, and record an `rpath` so the
 binary finds it at run time.
@@ -146,6 +167,43 @@ let frontend = parse_and_lower(&source_map, file);
 assert!(frontend.is_ok());
 ```
 
+## Formatting
+
+`rillc fmt FILE... [--write]` prints the canonical form of each file (or, with
+`--write`, replaces it). A directory argument formats every `.rill` file below
+it, which is how the checked-in examples are kept canonical:
+
+```console
+$ rillc fmt examples --write
+```
+
+The formatter decides bracket adjacency from the tree, never from source
+spacing: `xs[i]` stays an adjacent call while `xs [i]` stays an application to
+an array literal. Parenthesised argument lists are unambiguous, so they are
+canonicalised to touch the callee — `f(x)` — to match the `f[x]` form; the one
+exception is a list followed by more arguments (`g (a, b) c`), where the space
+is what keeps the whole spine one call.
+
+Layout is width-aware. Settings live in a `.rill-fmt` file; the formatter
+searches the formatted file's directory and its ancestors, so one file at the
+repository root governs everything below it (a subdirectory can override it).
+Every key is optional:
+
+```toml
+# .rill-fmt
+max_width = 100              # line width; lists break one element per line
+tab_width = 4                # columns a tab counts as when measuring
+single_line_if_width = 80    # wider if/else chains break per block
+single_line_block_width = 48 # wider blocks are laid out over several lines
+blank_lines_between_items = 1
+preserve_blank_lines = true  # keep one source blank line between statements
+```
+
+Defaults are deliberately generous: short `if` chains such as
+`if (x) { 0 } else { 1 }` stay on one line, top-level declarations are separated
+by a blank line (as are trait/impl members), and a block breaks only when its
+contents no longer fit.
+
 ## Design decisions worth knowing
 
 * **Lossless by construction.** The parser emits `Start`/`Token`/`Finish`
@@ -178,6 +236,12 @@ assert!(frontend.is_ok());
   guard expands to `combine (if (cond) { () } else { fail }) (delay { rest })`,
   using §5.1's failure primitive; inside built-in handlers the guard is kept for
   the handler to interpret.
+* **Global storage is explicit.** `var` is stack storage and lives inside a
+  block. Module-level mutation is `static var` (one copy in the data segment)
+  or `static threadlocal var` (one copy per thread); a bare `var` at module
+  level and `static` inside a block are errors. Functions may reference a
+  static declared later in the file - the resolver binds all module-level
+  locals before bodies, so both orders name the same storage.
 * **Errors are data.** Nothing in the front end panics on malformed input:
   unexpected CST shapes lower to `Error` nodes with a diagnostic, guaranteed
   progress rules keep the parser advancing, and `rillc` reports and exits.

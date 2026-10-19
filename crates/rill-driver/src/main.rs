@@ -20,6 +20,9 @@ USAGE:
     rillc build <FILE.rill> [-o OUT] [--target native|linux-musl] [--emit-c]
     rillc exec <FILE.rill> [ARGS...]
                        compile into ~/.rill/cache and run it (rebuilds on change)
+    rillc fmt <FILE|DIR>... [--write]
+                       format Rill sources; a directory is searched for *.rill
+                       (settings come from the nearest .rill-fmt)
     rillc <FILE.rill> [OPTIONS]
 
 BUILD OPTIONS:
@@ -66,7 +69,8 @@ fn main() -> ExitCode {
         return exec(&path, &args[1..]);
     }
     // `rillc fmt FILE` prints the canonical form of a file. `--write` edits it in
-    // place, which is what an editor integration wants.
+    // place, which is what an editor integration wants. A directory formats every
+    // `.rill` file below it, and each file loads the nearest `.rill-fmt`.
     // `rill lsp` is the interface an editor config is most likely to declare, so
     // the compiler offers it directly rather than requiring a second binary name.
     if args.first().map(|a| a.as_str()) == Some("lsp") {
@@ -78,25 +82,41 @@ fn main() -> ExitCode {
     if args.first().map(|a| a.as_str()) == Some("fmt") {
         args.remove(0);
         let write = args.iter().any(|a| a == "--write");
-        let Some(path) = args.iter().find(|a| !a.starts_with("--")) else {
-            eprintln!("rillc fmt FILE [--write]");
+        let paths: Vec<&String> = args.iter().filter(|a| !a.starts_with("--")).collect();
+        if paths.is_empty() {
+            eprintln!("rillc fmt FILE... [--write]");
             return ExitCode::FAILURE;
-        };
-        let text = match std::fs::read_to_string(path) {
-            Ok(text) => text,
-            Err(err) => {
-                eprintln!("rillc: {path}: {err}");
-                return ExitCode::FAILURE;
+        }
+        // A directory formats every `.rill` file below it; an explicit file is
+        // formatted on its own. The `.rill-fmt` nearest each file applies.
+        let mut files = Vec::new();
+        for path in &paths {
+            collect_rill_files(std::path::Path::new(path), &mut files);
+        }
+        for file in files {
+            let text = match std::fs::read_to_string(&file) {
+                Ok(text) => text,
+                Err(err) => {
+                    eprintln!("rillc: {}: {err}", file.display());
+                    return ExitCode::FAILURE;
+                }
+            };
+            let config = match rill_fmt::Config::load_for(&file) {
+                Ok(config) => config,
+                Err(err) => {
+                    eprintln!("rillc: {err}");
+                    return ExitCode::FAILURE;
+                }
+            };
+            let formatted = rill_fmt::format_text_with(&text, &config);
+            if write {
+                if let Err(err) = std::fs::write(&file, &formatted) {
+                    eprintln!("rillc: {}: {err}", file.display());
+                    return ExitCode::FAILURE;
+                }
+            } else {
+                print!("{formatted}");
             }
-        };
-        let formatted = rill_fmt::format_text(&text);
-        if write {
-            if let Err(err) = std::fs::write(path, &formatted) {
-                eprintln!("rillc: {path}: {err}");
-                return ExitCode::FAILURE;
-            }
-        } else {
-            print!("{formatted}");
         }
         return ExitCode::SUCCESS;
     }
@@ -565,4 +585,23 @@ fn cache_path(path: &str, digest: &str) -> std::io::Result<std::path::PathBuf> {
         .map(|s| s.to_string_lossy().to_string())
         .unwrap_or_else(|| "script".to_string());
     Ok(dir.join(format!("{stem}-{digest}-{compiler:08x}")))
+}
+
+/// Every `.rill` file at `path`, or below it when it is a directory.
+fn collect_rill_files(path: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    if path.is_dir() {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        let mut children: Vec<std::path::PathBuf> = entries
+            .filter_map(|entry| entry.ok())
+            .map(|entry| entry.path())
+            .collect();
+        children.sort();
+        for child in children {
+            collect_rill_files(&child, out);
+        }
+    } else if path.extension().and_then(|ext| ext.to_str()) == Some("rill") {
+        out.push(path.to_path_buf());
+    }
 }

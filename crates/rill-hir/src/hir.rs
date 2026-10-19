@@ -13,7 +13,7 @@ use std::collections::HashMap;
 
 use rill_ast::{
     BinaryOp, ConcurrentKind, Convention, EffectRow, HandlerKind, LiteralKind, Type, TypeBody,
-    UnaryOp, UsePath,
+    UnaryOp, UsePath, VarStorage,
 };
 use rill_span::{Span, Symbol};
 
@@ -80,6 +80,15 @@ pub struct LocalInfo {
     pub owner: Option<ItemId>,
 }
 
+/// What kind of position a reference was written in.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum RefKind {
+    /// A path in an expression (`f x`, `M::C`).
+    Expr,
+    /// A name in type position (`x: T`, `e as T`, `T is Trait`).
+    Type,
+}
+
 /// A recorded name reference; `span` is the referencing path's span.
 #[derive(Clone, Debug)]
 pub struct RefInfo {
@@ -87,6 +96,7 @@ pub struct RefInfo {
     pub name: Symbol,
     pub segments: Vec<Symbol>,
     pub res: Res,
+    pub kind: RefKind,
 }
 
 // ---------------------------------------------------------------------------
@@ -98,8 +108,24 @@ pub struct Item {
     pub id: ItemId,
     /// `None` for anonymous/module-level statements.
     pub name: Option<Symbol>,
+    /// Where the name is written, when the declaration wrote one.
+    pub name_span: Option<Span>,
     pub kind: ItemKind,
+    /// `///` lines from the declaration (or the C header's documentation
+    /// comment), one entry per line.
+    pub docs: Vec<String>,
+    /// Set for declarations imported from a C header: where the declaration
+    /// sits, so goto definition can open the header.
+    pub c_source: Option<CSource>,
     pub span: Span,
+}
+
+/// A declaration's place in a C header.
+#[derive(Clone, Debug)]
+pub struct CSource {
+    pub file: std::path::PathBuf,
+    /// 0-based line; the name is located on or shortly after it.
+    pub line: u32,
 }
 
 #[derive(Clone, Debug)]
@@ -248,6 +274,9 @@ pub enum Stmt {
         span: Span,
     },
     Var {
+        /// Where the binding lives: a block stack slot or a module static
+        /// (see [`rill_ast::VarStorage`]).
+        storage: VarStorage,
         local: LocalId,
         ty: Option<Type>,
         init: Expr,
@@ -660,6 +689,24 @@ impl HirBuilder {
             self.hir.module_items.push(id);
         }
         id
+    }
+
+    pub(crate) fn set_item_docs(&mut self, id: ItemId, docs: Vec<String>) {
+        if let Some(item) = self.hir.items.get_mut(id.0 as usize) {
+            item.docs = docs;
+        }
+    }
+
+    pub(crate) fn set_item_name_span(&mut self, id: ItemId, span: Span) {
+        if let Some(item) = self.hir.items.get_mut(id.0 as usize) {
+            item.name_span = Some(span);
+        }
+    }
+
+    pub(crate) fn set_item_c_source(&mut self, id: ItemId, source: CSource) {
+        if let Some(item) = self.hir.items.get_mut(id.0 as usize) {
+            item.c_source = Some(source);
+        }
     }
 
     pub(crate) fn add_local(&mut self, info: LocalInfo) -> LocalId {

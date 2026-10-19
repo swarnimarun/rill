@@ -1,0 +1,16 @@
+.{
+    .name = .tree_sitter_rill,
+    .version = "0.1.0",
+    .fingerprint = 0xfd47828bee19f404,
+    .dependencies = .{},
+    .paths = .{
+        "bindings.zig",
+        "build.zig",
+        "build.zig.zon",
+        "grammar.js",
+        "package.json",
+        "queries",
+        "src",
+        "tree-sitter.json",
+    },
+}

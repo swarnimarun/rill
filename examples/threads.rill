@@ -5,33 +5,36 @@ use std::io;
 # a closure value, whose environment cannot be checked at the spawn site - so this
 # program has each thread print only its own text and share nothing.
 
-let alpha () -> () <io> = io::println ("thread alpha");
+let alpha () -> () <io> = io::println("thread alpha");
 
-let beta () -> () <io> = io::println ("thread beta");
+let beta () -> () <io> = io::println("thread beta");
 
-let gamma () -> () <io> = io::println ("thread gamma");
+let gamma () -> () <io> = io::println("thread gamma");
 
 # A lambda task is accepted when everything it captures can be owned by the thread:
 # here two scalars each. Its environment is heap-allocated, since the ambient arena
 # is shared state.
 let main () -> i32 <io | suspends | writes> = {
-    # The executor is configured from the language, at the top scope.
-    threads_bind (2);
-    var n = 7;
-    var m = 35;
-    spawn_thread ({ -> io::println ("closure " ++ ((n + m) as String)) });
-    spawn_thread (alpha);
-    spawn_thread (beta);
-    spawn_thread (gamma);
-    var accepted = 0;
-    # More tasks than the pool has workers: they queue, and every one still runs.
-    # `spawn_thread` no longer fails once a per-thread cap is reached.
-    for (i := 0..70) {
-        if (spawn_thread ({ -> () })) {
-            set accepted = accepted + 1;
-        } else { () }
-    };
-    var joined = join_threads ();
-    io::println ("workers " ++ (threads_count () as String) ++ " accepted " ++ (accepted as String) ++ " joined " ++ (joined as String));
-    0
+	# The executor is configured from the language, at the top scope.
+	threads_bind(2);
+	var n = 7;
+	var m = 35;
+	spawn_thread({ -> io::println("closure " ++ ((n + m) as String)) });
+	spawn_thread(alpha);
+	spawn_thread(beta);
+	spawn_thread(gamma);
+	var accepted = 0;
+	# More tasks than the pool has workers: they queue, and every one still runs.
+	# `spawn_thread` no longer fails once a per-thread cap is reached.
+	for (i := 0..70) { if (spawn_thread({ -> () })) { set accepted = accepted + 1; } else { () } };
+	var joined = join_threads();
+	io::println(
+		"workers "
+			++ (threads_count() as String)
+			++ " accepted "
+			++ (accepted as String)
+			++ " joined "
+			++ (joined as String)
+	);
+	0
 };

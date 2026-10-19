@@ -23,6 +23,9 @@ pub enum SyntaxKind {
     // ---- trivia -----------------------------------------------------------
     Whitespace,
     LineComment,
+    /// `///` — documentation attached to the declaration that follows it.
+    /// `////` is an ordinary line comment.
+    DocComment,
     BlockComment,
 
     // ---- literals ---------------------------------------------------------
@@ -108,6 +111,8 @@ pub enum SyntaxKind {
     KwExtern,
     KwUnsafe,
     KwDeinit,
+    KwStatic,
+    KwThreadLocal,
     KwAnd, // contextual binary `and`
     KwOr,  // contextual binary `or`
     KwNot, // contextual prefix `not`
@@ -204,8 +209,16 @@ impl SyntaxKind {
     pub fn is_trivia(self) -> bool {
         matches!(
             self,
-            SyntaxKind::Whitespace | SyntaxKind::LineComment | SyntaxKind::BlockComment
+            SyntaxKind::Whitespace
+                | SyntaxKind::LineComment
+                | SyntaxKind::DocComment
+                | SyntaxKind::BlockComment
         )
+    }
+
+    /// True for the `///` comments that become a declaration's documentation.
+    pub fn is_doc_comment(self) -> bool {
+        self == SyntaxKind::DocComment
     }
 
     pub fn is_literal(self) -> bool {
@@ -257,6 +270,8 @@ impl SyntaxKind {
                 | KwExtern
                 | KwUnsafe
                 | KwDeinit
+                | KwStatic
+                | KwThreadLocal
         )
     }
 
@@ -301,6 +316,8 @@ impl SyntaxKind {
             "extern" => KwExtern,
             "unsafe" => KwUnsafe,
             "deinit" => KwDeinit,
+            "static" => KwStatic,
+            "threadlocal" => KwThreadLocal,
             _ => return None,
         })
     }
@@ -340,6 +357,8 @@ impl SyntaxKind {
             KwExtern => "extern",
             KwUnsafe => "unsafe",
             KwDeinit => "deinit",
+            KwStatic => "static",
+            KwThreadLocal => "threadlocal",
             _ => return None,
         })
     }
@@ -824,7 +843,16 @@ mod tests {
 
     #[test]
     fn keyword_table_is_consistent() {
-        for kw in ["type", "yield", "deinit", "unsafe", "builder", "comptime"] {
+        for kw in [
+            "type",
+            "yield",
+            "deinit",
+            "unsafe",
+            "builder",
+            "comptime",
+            "static",
+            "threadlocal",
+        ] {
             let k = SyntaxKind::from_keyword(kw).unwrap();
             assert!(k.is_keyword());
             assert_eq!(k.keyword_text(), Some(kw));

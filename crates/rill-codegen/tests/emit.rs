@@ -335,12 +335,15 @@ fn break_exits_only_its_loop() {
 
 #[test]
 fn module_level_vars_become_file_scope_statics() {
-    // Pools and arenas must not sit on the stack: a module-level `var` becomes a
-    // static, and functions refer to it without a parameter.
+    // Pools and arenas must not sit on the stack: a module-level `static var`
+    // becomes a file-scope static, and functions refer to it without a parameter.
+    // `peek` names `used` before its declaration: the binding is in place before
+    // any body is lowered, and the tentative declaration precedes the function.
     let (source, diagnostics) = emit(
         "type Node = record { value: i64; };\n\
-         var pool: [Node; 1024] = comptime { zeroed () };\n\
-         var used: usize = 0u64;\n\
+         let peek () -> usize <computes> = used;\n\
+         static var pool: [Node; 1024] = comptime { zeroed () };\n\
+         static var used: usize = 0u64;\n\
          let push (value: i64) -> usize <computes> = {\n\
              var idx = used;\n\
              set pool[idx].value = value;\n\
@@ -353,6 +356,31 @@ fn module_level_vars_become_file_scope_statics() {
     assert!(source.contains("static "), "a file-scope static:\n{source}");
     assert!(source.contains("g_pool"), "the pool is a static:\n{source}");
     assert!(source.contains("g_used"), "{source}");
+    let declaration = source
+        .find("static r_u64 g_used;")
+        .expect("tentative declaration");
+    let function = source.rfind("rill_peek").expect("peek");
+    assert!(
+        declaration < function,
+        "the static is declared before the body that names it:\n{source}"
+    );
+}
+
+#[test]
+fn threadlocal_statics_are_emitted_per_thread() {
+    let (source, diagnostics) = emit(
+        "static threadlocal var scratch: i64 = 0i64;\n\
+         let bump () -> i64 <computes> = {\n\
+             set scratch = scratch + 1i64;\n\
+             scratch\n\
+         };\n\
+         let main () -> i32 <computes> = bump () as i32;\n",
+    );
+    assert!(!diagnostics.has_errors(), "{diagnostics:?}");
+    assert!(
+        source.contains("static _Thread_local r_i64 g_scratch"),
+        "thread-local storage:\n{source}"
+    );
 }
 
 #[test]

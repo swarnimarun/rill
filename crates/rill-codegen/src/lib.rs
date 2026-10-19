@@ -663,6 +663,27 @@ impl<'a> Generator<'a> {
             }
         }
 
+        // Bind every module static before any function body is lowered: a
+        // function may name one declared later in the source. The tentative
+        // declarations are completed by `module_static`, which keeps the
+        // initialiser.
+        for item in self.hir.items() {
+            let ItemKind::Stmt(Stmt::Var {
+                storage, local, ty, ..
+            }) = &item.kind
+            else {
+                continue;
+            };
+            if matches!(storage, rill_ast::VarStorage::Local)
+                || matches!(ty, Some(rill_ast::Type::Dyn { .. }))
+            {
+                continue;
+            }
+            let (declaration, name) = self.static_parts(*local, ty.as_ref(), *storage);
+            self.protos.push_str(&format!("{declaration};\n"));
+            self.bind(*local, name);
+        }
+
         for item in self.hir.items() {
             match &item.kind {
                 ItemKind::Fn(def) => {
@@ -907,29 +928,51 @@ impl<'a> Generator<'a> {
             .insert((trait_name.clone(), receiver_c), vt_name);
     }
 
-    /// Module-level `var` / `x := …` declarations become file-scope statics:
-    /// pools, arenas and scratch buffers live outside the stack.
+    /// The C declaration (without the initialiser) and C name of a module
+    /// static. The tentative declaration and the definition share it, so a
+    /// forward reference sees the same type and storage.
+    fn static_parts(
+        &mut self,
+        local: rill_hir::LocalId,
+        ty: Option<&rill_ast::Type>,
+        storage: rill_ast::VarStorage,
+    ) -> (String, String) {
+        let checked_ty = self.local_ty(local);
+        let declared = if matches!(checked_ty, Ty::Error) {
+            ty.cloned()
+                .map(|ast| self.syntax_to_c(&ast))
+                .unwrap_or_else(|| "r_i64".to_string())
+        } else {
+            self.c_type(&checked_ty)
+        };
+        let prefix = match storage {
+            rill_ast::VarStorage::ThreadLocal => "static _Thread_local ",
+            _ => "static ",
+        };
+        let name = format!("g_{}", self.text(self.hir.local(local).name));
+        (format!("{prefix}{declared} {name}"), name)
+    }
+
+    /// Module-level `static var` / `x := …` declarations become file-scope
+    /// statics: pools, arenas and scratch buffers live outside the stack. A
+    /// `static threadlocal var` adds `_Thread_local`, so each thread gets its
+    /// own copy.
     fn module_static(&mut self, stmt: &Stmt) {
         match stmt {
             Stmt::Var {
-                local, ty, init, ..
+                storage,
+                local,
+                ty,
+                init,
+                ..
             } => {
                 if self.dyn_binding(*local, ty.as_ref(), init, stmt.span()) {
                     return;
                 }
                 let init_code = self.expr(init);
-                let checked_ty = self.local_ty(*local);
-                let declared = if matches!(checked_ty, Ty::Error) {
-                    ty.as_ref()
-                        .cloned()
-                        .map(|ast| self.syntax_to_c(&ast))
-                        .unwrap_or_else(|| "r_i64".to_string())
-                } else {
-                    self.c_type(&checked_ty)
-                };
-                let name = format!("g_{}", self.text(self.hir.local(*local).name));
+                let (declaration, name) = self.static_parts(*local, ty.as_ref(), *storage);
                 self.defs
-                    .push_str(&format!("static {declared} {name} = {init_code};\n"));
+                    .push_str(&format!("{declaration} = {init_code};\n"));
                 self.bind(*local, name);
             }
             Stmt::Bind { pattern, value, .. } => {

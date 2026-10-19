@@ -3,20 +3,21 @@ use std::io;
 # Projections (PLAN §4.2): `balance_mut` yields a place, so reads and writes
 # through it inline as the field itself — no getter/setter pair, no copy.
 
-type Account = record { id: u64; var balance: i64; };
-
-project balance_mut (acc: inout Account) -> inout i64 <computes> = {
-    yield inout acc.balance
+type Account = record {
+	id: u64;
+	var balance: i64;
 };
 
+project balance_mut (acc: inout Account) -> inout i64 <computes> = { yield inout acc.balance };
+
 let deposit (acc: inout Account, amount: i64) -> () <computes> = {
-    set (acc . balance_mut) = acc.balance + amount
+	set (acc.balance_mut) = acc.balance + amount
 };
 
 let main () -> i32 <io> = {
-    var acc = Account 7u64 100i64;
-    deposit (inout acc, 20i64);
-    deposit (inout acc, 22i64);
-    io::println ("balance " ++ (acc . balance_mut as String));
-    (acc . balance_mut) as i32
+	var acc = Account 7u64 100i64;
+	deposit(inout acc, 20i64);
+	deposit(inout acc, 22i64);
+	io::println("balance " ++ (acc.balance_mut as String));
+	(acc.balance_mut) as i32
 };

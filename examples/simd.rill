@@ -4,10 +4,17 @@ use std::io;
 # indexing are the backend's vector extension, so nothing is unrolled by hand here.
 
 let main () -> i32 <io> = {
-    var a = f64x4 1.0 2.0 3.0 4.0;
-    var b = f64x4 10.0 20.0 30.0 40.0;
-    var sum = a + b;
-    var doubled = a * f64x4 2.0 2.0 2.0 2.0;
-    io::println ("sum " ++ (sum[0] as String) ++ " " ++ (sum[3] as String) ++ " doubled " ++ (doubled[2] as String));
-    0
+	var a = f64x4 1.0 2.0 3.0 4.0;
+	var b = f64x4 10.0 20.0 30.0 40.0;
+	var sum = a + b;
+	var doubled = a * f64x4 2.0 2.0 2.0 2.0;
+	io::println(
+		"sum "
+			++ (sum[0] as String)
+			++ " "
+			++ (sum[3] as String)
+			++ " doubled "
+			++ (doubled[2] as String)
+	);
+	0
 };

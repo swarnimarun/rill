@@ -27,6 +27,7 @@ impl<'a> Parser<'a> {
                 }
             }
             K::KwVar => self.var_stmt(),
+            K::KwStatic => self.static_var_stmt(),
             K::KwSet => self.set_stmt(),
             K::KwYield => self.yield_stmt(),
             K::KwWhen => self.when_stmt(),
@@ -123,20 +124,38 @@ impl<'a> Parser<'a> {
 
     /// `var name (: type)? = expr ;`
     fn var_stmt(&mut self) {
+        self.node(K::VarStmt, |p| p.var_body());
+    }
+
+    /// `static threadlocal? var name (: type)? = expr ;` — module-level
+    /// storage. The resolver rejects the form outside module scope.
+    fn static_var_stmt(&mut self) {
         self.node(K::VarStmt, |p| {
-            p.bump(); // `var`
-            if p.at(K::Name) || p.at(K::Underscore) {
+            p.bump(); // `static`
+            if p.at(K::KwThreadLocal) {
                 p.bump();
-            } else {
-                p.error("expected a variable name");
             }
-            if p.eat(K::Colon) {
-                p.parse_type();
-            }
-            p.expect(K::Assign, "`=`");
-            p.expr();
-            p.semi_or_block_end();
+            p.var_body();
         });
+    }
+
+    /// The shared tail of `var` and `static var`: the keyword on, then the
+    /// name, the optional annotation and the initialiser.
+    fn var_body(&mut self) {
+        if !self.eat(K::KwVar) {
+            self.error("expected `var`");
+        }
+        if self.at(K::Name) || self.at(K::Underscore) {
+            self.bump();
+        } else {
+            self.error("expected a variable name");
+        }
+        if self.eat(K::Colon) {
+            self.parse_type();
+        }
+        self.expect(K::Assign, "`=`");
+        self.expr();
+        self.semi_or_block_end();
     }
 
     /// `set place = expr ;` — `place` never swallows the `=` (no assignment

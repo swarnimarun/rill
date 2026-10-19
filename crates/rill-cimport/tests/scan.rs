@@ -121,6 +121,19 @@ fn constant<'a>(module: &'a CModule, name: &str) -> &'a rill_cimport::CConstant 
         .unwrap_or_else(|| panic!("no constant {name}"))
 }
 
+/// The recorded declaration line names the declaration in the header, which is
+/// what goto definition opens.
+fn line_names(header: &Path, line: u32, name: &str) -> bool {
+    std::fs::read_to_string(header)
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .nth(line as usize)
+                .map(|text| text.contains(name))
+        })
+        .unwrap_or(false)
+}
+
 #[test]
 fn headers_are_visited_depth_first_and_absolutely() {
     let dir = scratch("fixture");
@@ -334,6 +347,25 @@ fn sdl3_real_install() {
     assert_eq!(init.ret, CType::Bool);
     assert_eq!(init.params.len(), 1);
     assert_eq!(init.params[0].ty, CType::Named("SDL_InitFlags".to_string()));
+    // The header's Doxygen block is carried over as Markdown: the prose, the
+    // parameter list and the structured fields all survive.
+    let init_docs = init.docs.join("\n");
+    assert!(
+        init_docs.contains("Initialize the SDL library."),
+        "SDL_Init's summary is missing: {init_docs}"
+    );
+    assert!(
+        init_docs.contains("- **flags**: subsystem initialization flags."),
+        "SDL_Init's parameter docs are missing: {init_docs}"
+    );
+    assert!(
+        init_docs.contains("**Returns:**"),
+        "SDL_Init's return doc is missing: {init_docs}"
+    );
+    assert!(
+        init_docs.contains("**Since:**"),
+        "SDL_Init's \u{5c}since line is missing: {init_docs}"
+    );
 
     let window = function(&module, "SDL_CreateWindow");
     assert_eq!(
@@ -396,6 +428,16 @@ fn sdl3_real_install() {
             signed: false
         }
     );
+    // SDL documents a `#define` with a trailing `/**< … */`.
+    assert!(
+        video.docs.iter().any(|line| line.contains("implies")),
+        "SDL_INIT_VIDEO has no doc: {:?}",
+        video.docs
+    );
+    // Goto definition points into the header the declaration came from.
+    assert!(line_names(&init.header, init.line, "SDL_Init"));
+    assert!(line_names(&window.header, window.line, "SDL_CreateWindow"));
+    assert!(line_names(&video.header, video.line, "SDL_INIT_VIDEO"));
 
     let skipped = module
         .functions
@@ -410,6 +452,127 @@ fn sdl3_real_install() {
         module.constants.len(),
         module.headers.len(),
     );
+}
+
+/// Documentation comments: SDL's Doxygen blocks, raylib's trailing `//`
+/// comments, and the comments on record fields and enumerators.
+const DOCS_H: &str = r#"
+#ifndef DOCS_H_
+#define DOCS_H_
+
+/**
+ * A documented record.
+ *
+ * \since This struct is available since Docs 1.0.0.
+ */
+typedef struct DocsPoint
+{
+    float x; /**< The x coordinate. */
+    float y; /**< The y coordinate. */
+} DocsPoint;
+
+/**
+ * Add two numbers.
+ *
+ * \param a the first number.
+ * \param b the second number.
+ * \returns the sum of `a` and `b`.
+ *
+ * \threadsafety It is safe to call this function from any thread.
+ *
+ * \since This function is available since Docs 1.0.0.
+ *
+ * \sa DocsSub
+ * \sa DocsMul
+ */
+extern SDL_DECLSPEC int SDLCALL DocsAdd(int a, int b);
+
+// Window-related functions
+extern SDL_DECLSPEC void SDLCALL DocsWindow(int width, int height); // Open a window.
+
+typedef enum DocsKey
+{
+    DOCS_KEY_NONE = 0,  // No key.
+    DOCS_KEY_ESC = 1    // The escape key.
+} DocsKey;
+
+#define DOCS_FLAG 0x20u // A documented flag.
+
+#endif
+"#;
+
+#[test]
+fn documentation_comments_are_attached() {
+    let dir = scratch("docs");
+    std::fs::write(dir.join("docs.h"), DOCS_H).expect("write docs.h");
+    let module = scan_header(&dir.join("docs.h"), &[]).expect("scan docs.h");
+
+    let add = function(&module, "DocsAdd");
+    assert_eq!(
+        add.docs,
+        [
+            "Add two numbers.",
+            "",
+            "- **a**: the first number.",
+            "- **b**: the second number.",
+            "**Returns:** the sum of `a` and `b`.",
+            "",
+            "**Thread safety:** It is safe to call this function from any thread.",
+            "",
+            "**Since:** This function is available since Docs 1.0.0.",
+            "",
+            "**See also:** DocsSub, DocsMul",
+        ],
+        "the Doxygen block becomes Markdown"
+    );
+
+    // A comment on the declaration's own line beats the section heading above it.
+    let window = function(&module, "DocsWindow");
+    assert_eq!(window.docs, ["Open a window."]);
+
+    let point = type_decl(&module, "DocsPoint");
+    assert_eq!(
+        point.docs,
+        [
+            "A documented record.",
+            "",
+            "**Since:** This struct is available since Docs 1.0.0."
+        ]
+    );
+    let CTypeKind::Record(fields) = &point.kind else {
+        panic!("DocsPoint is not a record");
+    };
+    assert_eq!(fields[0].docs, ["The x coordinate."]);
+    assert_eq!(fields[1].docs, ["The y coordinate."]);
+
+    assert_eq!(constant(&module, "DOCS_KEY_NONE").docs, ["No key."]);
+    assert_eq!(constant(&module, "DOCS_KEY_ESC").docs, ["The escape key."]);
+    assert_eq!(constant(&module, "DOCS_FLAG").docs, ["A documented flag."]);
+
+    // Every declaration records the header line it was written on, which is
+    // where goto definition opens the file.
+    let header = dir.join("docs.h");
+    assert!(line_names(
+        &header,
+        function(&module, "DocsAdd").line,
+        "DocsAdd"
+    ));
+    assert!(line_names(
+        &header,
+        type_decl(&module, "DocsPoint").line,
+        "DocsPoint"
+    ));
+    assert!(line_names(
+        &header,
+        constant(&module, "DOCS_FLAG").line,
+        "DOCS_FLAG"
+    ));
+    // An enumerator carries its enum's line as a hint; the name follows it.
+    assert!(line_names(
+        &header,
+        constant(&module, "DOCS_KEY_ESC").line,
+        "DocsKey"
+    ));
 }
 
 /// raylib's house style: the C++ guard is a real `extern "C" {`, prototypes are
@@ -551,6 +714,9 @@ fn raylib_real_install() {
             CType::Text,
         ]
     );
+    // raylib documents a prototype with a trailing `//` comment.
+    assert_eq!(init.docs, ["Initialize window and OpenGL context"]);
+    assert!(line_names(&init.header, init.line, "InitWindow"));
 
     assert_eq!(function(&module, "WindowShouldClose").ret, CType::Bool);
     assert_eq!(
@@ -563,10 +729,30 @@ fn raylib_real_install() {
         panic!("Color is {color:?}");
     };
     assert_eq!(fields.len(), 4);
+    // Field comments ride on the fields, too.
+    assert!(
+        fields[0].docs.iter().any(|line| line.contains("red")),
+        "Color.r has no doc: {:?}",
+        fields[0].docs
+    );
+    assert!(
+        type_decl(&module, "Rectangle")
+            .docs
+            .iter()
+            .any(|line| line.contains("Rectangle")),
+        "Rectangle has no doc"
+    );
     assert!(matches!(
         type_decl(&module, "Rectangle").kind,
         CTypeKind::Record(_)
     ));
+    assert!(
+        constant(&module, "KEY_ESCAPE")
+            .docs
+            .iter()
+            .any(|line| line.contains("Esc")),
+        "KEY_ESCAPE has no doc"
+    );
 
     let skipped = module
         .functions

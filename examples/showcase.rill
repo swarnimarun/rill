@@ -6,99 +6,110 @@ use std::io;
 # comprehension-style `all`, `sync` composition, and tuple field access.
 
 type Account = record {
-    id: u64;
-    var balance: i64;
+	id: u64;
+	var balance: i64;
 };
 
 # A place projection: uses are inlined as the field itself, so no getter/setter
 # pair and no copy.
-project balance_mut (acc: inout Account) -> inout i64 <computes> = {
-    yield inout acc.balance;
-};
+project balance_mut (acc: inout Account) -> inout i64 <computes> = { yield inout acc.balance; };
 
 # `<decides>` with guards: the debit happens before the failing guard, so the
 # rollback is what keeps the balances honest when the transfer is refused.
 let transfer (from: inout Account, to: inout Account, amount: i64) -> () <decides | writes> = {
-    amount > 0;
-    set (from . balance_mut) = from.balance - amount;
-    from.balance >= 0;
-    set (to . balance_mut) = to.balance + amount;
+	amount > 0;
+	set (from.balance_mut) = from.balance - amount;
+	from.balance >= 0;
+	set (to.balance_mut) = to.balance + amount;
 };
 
 # Two impls of one trait, so `dyn` has something to choose between.
 type Point = record { var x: i32; };
+
 type Box = record { var side: i32; };
 
-trait Shape { let name (self: Point) -> Text <computes>; };
+trait Shape {
+	let name (self: Point) -> Text <computes>;
+};
 
 impl Shape Point = {
-    let name (p: Point) -> Text <computes> = "point";
+	let name (p: Point) -> Text <computes> = "point";
 };
 
 impl Shape Box = {
-    let name (b: Box) -> Text <computes> = "box";
+	let name (b: Box) -> Text <computes> = "box";
 };
 
 let first_positive (x: i32, y: i32) -> i32 <decides> =
-    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+	if (x > 0) { x } else { if (y > 0) { y } else { fail } };
 
-let tick_one () -> () <io> = io::println ("tick one");
+let tick_one () -> () <io> = io::println("tick one");
 
 let tick_two () -> () <io | suspends> = {
-    io::println ("tick two spawns another");
-    io_spawn (tick_three)
+	io::println("tick two spawns another");
+	io_spawn(tick_three)
 };
 
-let tick_three () -> () <io> = io::println ("tick three");
+let tick_three () -> () <io> = io::println("tick three");
 
 let main () -> i32 <io | decides | writes | alloc | suspends> = {
-    var alice = Account 1u64 500i64;
-    var bob = Account 2u64 100i64;
+	var alice = Account 1u64 500i64;
+	var bob = Account 2u64 100i64;
 
-    # 800 is refused *after* debiting alice, so the trail restores her before the
-    # fallback's 200 lands: 500 - 200 = 300 and 100 + 200 = 300.
-    option { transfer[inout alice, inout bob, 800] | transfer[inout alice, inout bob, 200] };
-    io::println ("alice " ++ (alice.balance as String) ++ " bob " ++ (bob.balance as String));
+	# 800 is refused *after* debiting alice, so the trail restores her before the
+	# fallback's 200 lands: 500 - 200 = 300 and 100 + 200 = 300.
+	option { transfer[inout alice, inout bob, 800] | transfer[inout alice, inout bob, 200] };
+	io::println("alice " ++ (alice.balance as String) ++ " bob " ++ (bob.balance as String));
 
-    # `option { … }` yields a value; `?` unwraps it and propagates absence.
-    var a = (option { first_positive[7, 0] })? | 0;
-    var b = (option { first_positive[0, 0] })? | 0;
-    io::println ("picked " ++ (a as String) ++ " and " ++ (b as String));
+	# `option { … }` yields a value; `?` unwraps it and propagates absence.
+	var a = (option { first_positive[7, 0] })? | 0;
+	var b = (option { first_positive[0, 0] })? | 0;
+	io::println("picked " ++ (a as String) ++ " and " ++ (b as String));
 
-    # A guard inside a handler body: the statement after it is skipped.
-    var guarded = (option {
-        when (a > 0);
-        io::println ("guard held");
-        a + 1
-    })? | 0;
-    io::println ("guarded " ++ (guarded as String));
+	# A guard inside a handler body: the statement after it is skipped.
+	var guarded = (option {
+		when (a > 0);
+		io::println("guard held");
+		a + 1
+	})? | 0;
+	io::println("guarded " ++ (guarded as String));
 
-    # An arena bound at the top scope: the collector's storage comes from it.
-    var scratch = arena_new 4096u64;
-    arena_bind (scratch);
-    var pairs = all { first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] };
-    io::println ("pairs " ++ (size pairs as String) ++ " arena " ++ (arena_used (scratch) as String));
-    arena_unbind ();
+	# An arena bound at the top scope: the collector's storage comes from it.
+	var scratch = arena_new 4096u64;
+	arena_bind(scratch);
+	var pairs = all { first_positive[1, 0] | first_positive[0, 2] | first_positive[0, 0] };
+	io::println("pairs " ++ (size pairs as String) ++ " arena " ++ (arena_used(scratch) as String));
+	arena_unbind();
 
-    # `sync` composes suspending work and joins it; a valued arm is the value.
-    var doubled = sync { first_positive[21, 0] * 2 };
-    var part = sync { doubled; doubled + 1 };
-    io::println ("sync " ++ (doubled as String) ++ " tuple " ++ (part.0 as String) ++ "," ++ (part.1 as String));
+	# `sync` composes suspending work and joins it; a valued arm is the value.
+	var doubled = sync { first_positive[21, 0] * 2 };
+	var part = sync {
+		doubled;
+		doubled + 1
+	};
+	io::println(
+		"sync "
+			++ (doubled as String)
+			++ " tuple "
+			++ (part.0 as String)
+			++ ","
+			++ (part.1 as String)
+	);
 
-    # `dyn Show`: one call site, two implementations.
-    var pt = Point 1i32;
-    var bx = Box 2i32;
-    var s1: dyn Shape = pt;
-    var s2: dyn Shape = bx;
-    io::println ("shapes " ++ (s1.name ()) ++ " " ++ (s2.name ()));
+	# `dyn Show`: one call site, two implementations.
+	var pt = Point 1i32;
+	var bx = Box 2i32;
+	var s1: dyn Shape = pt;
+	var s2: dyn Shape = bx;
+	io::println("shapes " ++ (s1.name()) ++ " " ++ (s2.name()));
 
-    # The Io layer: the third task spawns a fourth during the run.
-    io_bind ();
-    io_spawn (tick_one);
-    io_spawn (tick_two);
-    var ran = io_run ();
-    io::println ("tasks " ++ (ran as String));
-    io_unbind ();
+	# The Io layer: the third task spawns a fourth during the run.
+	io_bind();
+	io_spawn(tick_one);
+	io_spawn(tick_two);
+	var ran = io_run();
+	io::println("tasks " ++ (ran as String));
+	io_unbind();
 
-    alice.balance as i32
+	alice.balance as i32
 };

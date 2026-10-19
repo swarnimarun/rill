@@ -149,6 +149,8 @@ pub struct FieldTy {
     pub name: Symbol,
     pub mutable: bool,
     pub ty: Ty,
+    /// `///` lines (or header documentation) for the field.
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -156,6 +158,7 @@ pub struct FieldTy {
 pub struct VariantTy {
     pub name: Symbol,
     pub payload: Vec<Ty>,
+    pub docs: Vec<String>,
     pub span: Span,
 }
 
@@ -1068,6 +1071,7 @@ impl<'a> Checker<'a> {
                         name: field.name.sym,
                         mutable: field.mutable,
                         ty: self.ast_ty(&field.ty),
+                        docs: field.docs.clone(),
                         span: field.span,
                     })
                     .collect();
@@ -1083,6 +1087,7 @@ impl<'a> Checker<'a> {
                     .map(|variant| VariantTy {
                         name: variant.name.sym,
                         payload: variant.payload.iter().map(|t| self.ast_ty(t)).collect(),
+                        docs: variant.docs.clone(),
                         span: variant.span,
                     })
                     .collect(),

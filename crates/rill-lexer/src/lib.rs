@@ -116,6 +116,9 @@ impl<'a> Lexer<'a> {
         if c == '#' {
             return self.line_comment(start);
         }
+        if c == '/' && self.rest().starts_with("///") && !self.rest().starts_with("////") {
+            return self.doc_comment(start);
+        }
         if c == '/' && self.peek_second() == Some('/') {
             return self.line_comment(start);
         }
@@ -172,6 +175,18 @@ impl<'a> Lexer<'a> {
             self.bump();
         }
         self.token(SyntaxKind::LineComment, start)
+    }
+
+    /// `///` introduces documentation for the declaration that follows. Four
+    /// or more slashes are an ordinary comment, as in Rust.
+    fn doc_comment(&mut self, start: usize) -> SyntaxToken {
+        while let Some(c) = self.peek() {
+            if c == '\n' {
+                break;
+            }
+            self.bump();
+        }
+        self.token(SyntaxKind::DocComment, start)
     }
 
     /// Nestable block comments (§2.1).
@@ -594,6 +609,22 @@ mod tests {
             &src[block.span.start.to_usize()..block.span.end.to_usize()],
             "/* a /* nested */ b */"
         );
+    }
+
+    #[test]
+    fn doc_comments_are_their_own_kind() {
+        use SyntaxKind::*;
+        let src = "/// docs\n//// not docs\n// plain\n//! not inner\n";
+        let (tokens, diags) = tokenize(src, BytePos::new(0));
+        assert!(!diags.has_errors());
+        assert_eq!(token_kinds(&tokens), Vec::<SyntaxKind>::new());
+        let docs: Vec<&str> = tokens
+            .iter()
+            .filter(|t| t.kind == DocComment)
+            .map(|t| &src[t.span.start.to_usize()..t.span.end.to_usize()])
+            .collect();
+        assert_eq!(docs, vec!["/// docs"]);
+        assert_eq!(tokens.iter().filter(|t| t.kind == LineComment).count(), 3);
     }
 
     #[test]

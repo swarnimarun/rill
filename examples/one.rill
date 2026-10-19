@@ -5,14 +5,14 @@ use std::io;
 # `<decides>` and each call site decides what to do about it.
 
 let first_positive (x: i32, y: i32) -> i32 <decides> =
-    if (x > 0) { x } else { if (y > 0) { y } else { fail } };
+	if (x > 0) { x } else { if (y > 0) { y } else { fail } };
 
 let pick_one (x: i32, y: i32, z: i32) -> i32 <decides> =
-    one { first_positive[x, y] | first_positive[y, z] };
+	one { first_positive[x, y] | first_positive[y, z] };
 
 let main () -> () <io | decides> = {
-    var a = pick_one[0, 7, 0] | 0;      # second alternative: 7
-    var b = pick_one[0, 0, 9] | 0;      # third alternative: 9
-    var c = pick_one[0, 0, 0] | 5;      # every arm fails: the fallback's 5
-    io::println ("one: " ++ (a as String) ++ " " ++ (b as String) ++ " " ++ (c as String))
+	var a = pick_one[0, 7, 0] | 0; # second alternative: 7
+	var b = pick_one[0, 0, 9] | 0; # third alternative: 9
+	var c = pick_one[0, 0, 0] | 5; # every arm fails: the fallback's 5
+	io::println("one: " ++ (a as String) ++ " " ++ (b as String) ++ " " ++ (c as String))
 };

@@ -14,44 +14,45 @@ extern "c" let getenv (name: Text) -> Text <io>;
 @link("raylib");
 
 type RL = @include("raylib.h");
+
 use RL::*;
 
 let main () -> i32 <io> = {
-    # raylib has no hint API of its own, so the environment is read through
-    # libc: `getenv` answers a null pointer for an unset variable, which is what
-    # a zeroed `Text` is.
-    var absent: Text = comptime { zeroed () };
-    var demo = (getenv ("RILL_RAYLIB_DEMO") != absent);
-    if (demo) { SetConfigFlags (FLAG_WINDOW_HIDDEN as u32) };
+	# raylib has no hint API of its own, so the environment is read through
+	# libc: `getenv` answers a null pointer for an unset variable, which is what
+	# a zeroed `Text` is.
+	var absent: Text = comptime { zeroed() };
+	var demo = (getenv("RILL_RAYLIB_DEMO") != absent);
+	if (demo) { SetConfigFlags(FLAG_WINDOW_HIDDEN as u32) };
 
-    InitWindow (640, 360, "rill + raylib");
-    SetTargetFPS (60);
+	InitWindow(640, 360, "rill + raylib");
+	SetTargetFPS(60);
 
-    var box = Rectangle (40.0f32, 60.0f32, 80.0f32, 60.0f32);
-    var dx = 1.6f32;
-    var dy = 1.1f32;
-    var quit = false;
-    var frame = 0;
+	var box = Rectangle(40.0f32, 60.0f32, 80.0f32, 60.0f32);
+	var dx = 1.6f32;
+	var dy = 1.1f32;
+	var quit = false;
+	var frame = 0;
 
-    while (quit == false) {
-        if (WindowShouldClose ()) { set quit = true };
-        if (IsKeyPressed (KEY_ESCAPE)) { set quit = true };
+	while (quit == false) {
+		if (WindowShouldClose()) { set quit = true };
+		if (IsKeyPressed(KEY_ESCAPE)) { set quit = true };
 
-        set box.x = box.x + dx;
-        set box.y = box.y + dy;
-        if (box.x < 0.0f32 or box.x > 560.0f32) { set dx = 0.0f32 - dx };
-        if (box.y < 0.0f32 or box.y > 300.0f32) { set dy = 0.0f32 - dy };
+		set box.x = box.x + dx;
+		set box.y = box.y + dy;
+		if (box.x < 0.0f32 or box.x > 560.0f32) { set dx = 0.0f32 - dx };
+		if (box.y < 0.0f32 or box.y > 300.0f32) { set dy = 0.0f32 - dy };
 
-        BeginDrawing ();
-        ClearBackground (Color (18u8, 20u8, 28u8, 255u8));
-        DrawRectangleRec (box, Color (90u8, 200u8, 120u8, 255u8));
-        EndDrawing ();
+		BeginDrawing();
+		ClearBackground(Color(18u8, 20u8, 28u8, 255u8));
+		DrawRectangleRec(box, Color(90u8, 200u8, 120u8, 255u8));
+		EndDrawing();
 
-        set frame = frame + 1;
-        if (demo) { if (frame >= 120) { set quit = true } }
-    };
+		set frame = frame + 1;
+		if (demo) { if (frame >= 120) { set quit = true } }
+	};
 
-    CloseWindow ();
-    if (demo) { io::println ("demo frames " ++ (frame as String)) };
-    0
+	CloseWindow();
+	if (demo) { io::println("demo frames " ++ (frame as String)) };
+	0
 };

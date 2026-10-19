@@ -26,10 +26,10 @@ pub mod hir;
 pub mod resolve;
 
 pub use hir::{
-    Arg, AttributeDef, Block, BuilderDef, Cond, ConstantDef, ElseBranch, Expr, ExprId, ExprKind,
-    FnDef, Hir, ImplDef, IncludeDef, Item, ItemId, ItemKind, LocalId, LocalInfo, LocalKind,
-    MatchArm, Namespace, Param, ParamSlot, Pattern, ProjectDef, RefInfo, Res, SignatureDef, Stmt,
-    TraitDef, TypeDef, UseDef,
+    Arg, AttributeDef, Block, BuilderDef, CSource, Cond, ConstantDef, ElseBranch, Expr, ExprId,
+    ExprKind, FnDef, Hir, ImplDef, IncludeDef, Item, ItemId, ItemKind, LocalId, LocalInfo,
+    LocalKind, MatchArm, Namespace, Param, ParamSlot, Pattern, ProjectDef, RefInfo, RefKind, Res,
+    SignatureDef, Stmt, TraitDef, TypeDef, UseDef,
 };
 pub use resolve::{is_builtin, lower, lower_with, Options, BUILTIN_NAMES};
 

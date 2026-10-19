@@ -25,9 +25,10 @@ use std::collections::HashMap;
 use std::path::PathBuf;
 
 use rill_ast::{
-    Block as AstBlock, Cond as AstCond, ElseBranch as AstElse, Expr as AstExpr, FnDecl, Frontend,
-    Item as AstItem, Module, ParamGroup, Pattern as AstPattern, ProjectDecl, Stmt as AstStmt,
-    UsePath,
+    Block as AstBlock, Cond as AstCond, Constraint as AstConstraint, EffectRow as AstEffectRow,
+    ElseBranch as AstElse, Expr as AstExpr, FnDecl, Frontend, Item as AstItem, Module, ParamGroup,
+    Pattern as AstPattern, ProjectDecl, Stmt as AstStmt, Type as AstType, TypeBody as AstTypeBody,
+    UsePath, VarStorage,
 };
 use rill_diagnostics::{Diagnostic, Diagnostics};
 use rill_span::{Interner, Span, Symbol};
@@ -83,6 +84,8 @@ struct Resolver<'a> {
     imports: HashMap<Symbol, Vec<Symbol>>,
     /// `type M = @include("…")` modules: module name -> member name -> item.
     modules: HashMap<Symbol, HashMap<Symbol, ItemId>>,
+    /// Module-level bindings by name, declared in the first pass.
+    module_locals: HashMap<Symbol, LocalId>,
     /// Where `@include` looks for headers, in order.
     include_dirs: Vec<PathBuf>,
 }
@@ -102,6 +105,7 @@ impl<'a> Resolver<'a> {
             module_types: HashMap::new(),
             imports: HashMap::new(),
             modules: HashMap::new(),
+            module_locals: HashMap::new(),
             include_dirs,
         }
     }
@@ -163,6 +167,27 @@ impl<'a> Resolver<'a> {
         }
         for (item, slot) in module.items.iter().zip(&slots) {
             if !declarations(item) {
+                // Global storage is spelled out: a bare `var` at module level
+                // would silently be a static, which reads as a local.
+                if let AstItem::Stmt(AstStmt::Var {
+                    storage: VarStorage::Local,
+                    name,
+                    span,
+                    ..
+                }) = item
+                {
+                    let text = self.text(name.sym).to_string();
+                    self.diagnostics.push(
+                        Diagnostic::error(
+                            *span,
+                            "a module-level `var` must be declared `static var`",
+                        )
+                        .note(format!(
+                            "`static var {text} = …;` is one copy for the program; \
+                             `static threadlocal var {text} = …;` is one per thread"
+                        )),
+                    );
+                }
                 self.item(item, Some(*slot));
             }
         }
@@ -180,6 +205,17 @@ impl<'a> Resolver<'a> {
                     Namespace::Type => &mut self.module_types,
                 };
                 table.entry(name).or_default().push(id);
+            }
+            // A module-level binding is a local of the module scope. Declaring
+            // it here, before any body, makes every reference resolve to the
+            // same local whether it is written before or after the statement;
+            // without this a forward reference would resolve to the item and
+            // lose its storage.
+            if let AstItem::Stmt(stmt) = item {
+                for (name, span, kind) in module_bindings(stmt) {
+                    let local = self.declare_module_local(name, span, kind, id);
+                    self.module_locals.entry(name).or_insert(local);
+                }
             }
             slots.push(id);
         }
@@ -227,6 +263,16 @@ impl<'a> Resolver<'a> {
                 let mut members: HashMap<Symbol, ItemId> = HashMap::new();
                 for decl in imported.decls {
                     let id = self.push_item_owned(Some(decl.name), decl.kind, span, true);
+                    if !decl.docs.is_empty() {
+                        self.out.set_item_docs(id, decl.docs);
+                    }
+                    self.out.set_item_c_source(
+                        id,
+                        CSource {
+                            file: decl.file,
+                            line: decl.line,
+                        },
+                    );
                     members.insert(decl.name, id);
                 }
                 let headers = imported.headers;
@@ -341,6 +387,12 @@ impl<'a> Resolver<'a> {
                 self.fill_or_push(slot, Some(decl.name.sym), ItemKind::Project(def), decl.span)
             }
             AstItem::Type(decl) => {
+                for param in &decl.params {
+                    if let Some(ty) = &param.comptime_ty {
+                        self.type_refs(ty);
+                    }
+                }
+                self.type_body_refs(&decl.body);
                 let kind = ItemKind::Type(TypeDef {
                     params: decl.params.iter().map(|p| p.name.sym).collect(),
                     body: decl.body.clone(),
@@ -351,6 +403,12 @@ impl<'a> Resolver<'a> {
                 self.fill_or_push(slot, Some(decl.name.sym), kind, decl.span)
             }
             AstItem::Trait(decl) => {
+                self.constraint_type_refs(&decl.constraints);
+                for param in &decl.params {
+                    if let Some(ty) = &param.comptime_ty {
+                        self.type_refs(ty);
+                    }
+                }
                 let members = self.members(&decl.members);
                 let kind = ItemKind::Trait(TraitDef {
                     params: decl.params.iter().map(|p| p.name.sym).collect(),
@@ -360,6 +418,12 @@ impl<'a> Resolver<'a> {
                 self.fill_or_push(slot, Some(decl.name.sym), kind, decl.span)
             }
             AstItem::Impl(decl) => {
+                self.constraint_type_refs(&decl.constraints);
+                for param in &decl.params {
+                    if let Some(ty) = &param.comptime_ty {
+                        self.type_refs(ty);
+                    }
+                }
                 let members = self.members(&decl.members);
                 let kind = ItemKind::Impl(ImplDef {
                     params: decl.params.iter().map(|p| p.name.sym).collect(),
@@ -369,6 +433,11 @@ impl<'a> Resolver<'a> {
                 self.fill_or_push(slot, Some(decl.name.sym), kind, decl.span)
             }
             AstItem::Builder(decl) => {
+                for param in &decl.params {
+                    if let Some(ty) = &param.comptime_ty {
+                        self.type_refs(ty);
+                    }
+                }
                 let members = self.members(&decl.members);
                 let kind = ItemKind::Builder(BuilderDef {
                     params: decl.params.iter().map(|p| p.name.sym).collect(),
@@ -377,6 +446,9 @@ impl<'a> Resolver<'a> {
                 self.fill_or_push(slot, Some(decl.name.sym), kind, decl.span)
             }
             AstItem::Signature(decl) => {
+                self.type_refs(&decl.ty);
+                self.constraint_type_refs(&decl.constraints);
+                self.effect_type_refs(&decl.effects);
                 let kind = ItemKind::Signature(SignatureDef {
                     abi: None,
                     ty: decl.ty.clone(),
@@ -393,6 +465,9 @@ impl<'a> Resolver<'a> {
                         self.fill_or_push(slot, Some(inner.name.sym), ItemKind::Fn(def), inner.span)
                     }
                     AstItem::Signature(inner) => {
+                        self.type_refs(&inner.ty);
+                        self.constraint_type_refs(&inner.constraints);
+                        self.effect_type_refs(&inner.effects);
                         let kind = ItemKind::Signature(SignatureDef {
                             abi: decl.abi.clone(),
                             ty: inner.ty.clone(),
@@ -408,7 +483,7 @@ impl<'a> Resolver<'a> {
                 }
             }
             AstItem::Stmt(stmt) => {
-                let lowered = self.stmt(stmt);
+                let lowered = self.stmt(stmt, true);
                 let name = top_level_bindings(stmt).first().map(|(name, _)| *name);
                 self.fill_or_push(slot, name, ItemKind::Stmt(lowered), stmt.span())
             }
@@ -444,6 +519,13 @@ impl<'a> Resolver<'a> {
                 self.fill_or_push(slot, None, ItemKind::Stmt(Stmt::Error(*span)), *span)
             }
         };
+        let docs = item.docs().to_vec();
+        if !docs.is_empty() {
+            self.out.set_item_docs(lowered, docs);
+        }
+        if let Some(span) = ast_name_span(item) {
+            self.out.set_item_name_span(lowered, span);
+        }
         self.owner = previous;
         lowered
     }
@@ -477,7 +559,10 @@ impl<'a> Resolver<'a> {
             Item {
                 id,
                 name,
+                name_span: None,
                 kind,
+                docs: Vec::new(),
+                c_source: None,
                 span,
             },
             module_level,
@@ -494,6 +579,12 @@ impl<'a> Resolver<'a> {
 
     fn fn_def(&mut self, decl: &FnDecl, abi: Option<String>) -> FnDef {
         let params = self.declare_params(&decl.params);
+        self.param_type_refs(&decl.params);
+        if let Some(ret) = &decl.ret {
+            self.type_refs(&ret.ty);
+        }
+        self.constraint_type_refs(&decl.constraints);
+        self.effect_type_refs(&decl.effects);
         let ret = decl.ret.as_ref().map(slot_of);
         let body = decl.body.as_ref().map(|body| self.expr(body));
         self.pop_scope();
@@ -509,6 +600,12 @@ impl<'a> Resolver<'a> {
 
     fn project_def(&mut self, decl: &ProjectDecl) -> ProjectDef {
         let params = self.declare_params(&decl.params);
+        self.param_type_refs(&decl.params);
+        if let Some(ret) = &decl.ret {
+            self.type_refs(&ret.ty);
+        }
+        self.constraint_type_refs(&decl.constraints);
+        self.effect_type_refs(&decl.effects);
         let ret = decl.ret.as_ref().map(slot_of);
         let body = self.expr(&decl.body);
         self.pop_scope();
@@ -563,19 +660,48 @@ impl<'a> Resolver<'a> {
     }
 
     fn declare_local(&mut self, name: Symbol, span: Span, kind: LocalKind) -> LocalId {
+        let id = self.add_local(name, span, kind, self.owner);
+        let scope = self.scopes.last_mut().expect("a scope is always open");
+        if scope.locals.insert(name, id).is_some() {
+            let text = self.text(name).to_string();
+            self.err(span, format!("`{text}` is already bound in this scope"));
+        }
+        id
+    }
+
+    /// A module-level binding: a local of the module scope from the first
+    /// pass on, owned by the statement item that declares it.
+    fn declare_module_local(
+        &mut self,
+        name: Symbol,
+        span: Span,
+        kind: LocalKind,
+        owner: ItemId,
+    ) -> LocalId {
+        let id = self.add_local(name, span, kind, Some(owner));
+        let scope = self.scopes.first_mut().expect("the module scope is open");
+        if scope.locals.insert(name, id).is_some() {
+            let text = self.text(name).to_string();
+            self.err(span, format!("`{text}` is already bound in this scope"));
+        }
+        id
+    }
+
+    fn add_local(
+        &mut self,
+        name: Symbol,
+        span: Span,
+        kind: LocalKind,
+        owner: Option<ItemId>,
+    ) -> LocalId {
         let id = self.out.next_local_id();
         self.out.add_local(LocalInfo {
             id,
             name,
             span,
             kind,
-            owner: self.owner,
+            owner,
         });
-        let scope = self.scopes.last_mut().expect("a scope is always open");
-        if scope.locals.insert(name, id).is_some() {
-            let text = self.text(name).to_string();
-            self.err(span, format!("`{text}` is already bound in this scope"));
-        }
         id
     }
 
@@ -712,14 +838,20 @@ impl<'a> Resolver<'a> {
                 };
                 ExprKind::Binary { op: *op, lhs, rhs }
             }
-            AstExpr::Cast { expr, ty, .. } => ExprKind::Cast {
-                expr: Box::new(self.expr(expr)),
-                ty: ty.clone(),
-            },
-            AstExpr::Is { expr, ty, .. } => ExprKind::Is {
-                expr: Box::new(self.expr(expr)),
-                ty: ty.clone(),
-            },
+            AstExpr::Cast { expr, ty, .. } => {
+                self.type_refs(ty);
+                ExprKind::Cast {
+                    expr: Box::new(self.expr(expr)),
+                    ty: ty.clone(),
+                }
+            }
+            AstExpr::Is { expr, ty, .. } => {
+                self.type_refs(ty);
+                ExprKind::Is {
+                    expr: Box::new(self.expr(expr)),
+                    ty: ty.clone(),
+                }
+            }
             AstExpr::If {
                 cond,
                 then_branch,
@@ -878,7 +1010,145 @@ impl<'a> Resolver<'a> {
             name: segments[0],
             segments: segments.to_vec(),
             res,
+            kind: RefKind::Expr,
         });
+    }
+
+    fn record_type_ref(&mut self, span: Span, segments: &[Symbol], res: Res) {
+        self.out.add_ref(RefInfo {
+            span,
+            name: segments[0],
+            segments: segments.to_vec(),
+            res,
+            kind: RefKind::Type,
+        });
+    }
+
+    // -- type references ---------------------------------------------------
+    //
+    // Types are not expressions, so a name written in type position (`x: T`,
+    // `M::Rect`, `e as T`) has no expression to hang a reference on. These
+    // walk the type syntax and record refs anyway, which is what makes goto
+    // definition and find-references work on type names.
+
+    fn type_refs(&mut self, ty: &AstType) {
+        match ty {
+            AstType::Path { segments, span } => {
+                let symbols: Vec<Symbol> = segments.iter().map(|s| s.sym).collect();
+                let res = self.resolve_type_path(&symbols);
+                if !res.is_error() {
+                    self.record_type_ref(*span, &symbols, res);
+                }
+            }
+            AstType::App { ctor, args, .. } => {
+                self.type_refs(ctor);
+                for arg in args {
+                    self.type_refs(arg);
+                }
+            }
+            AstType::Tuple { elems, .. } => {
+                for elem in elems {
+                    self.type_refs(elem);
+                }
+            }
+            AstType::Array { elem, .. } => self.type_refs(elem),
+            AstType::Fn { params, ret, .. } => {
+                for param in params {
+                    self.type_refs(&param.ty);
+                }
+                if let Some(ret) = ret {
+                    self.type_refs(ret);
+                }
+            }
+            AstType::Ptr { pointee, .. } | AstType::Dyn { inner: pointee, .. } => {
+                self.type_refs(pointee)
+            }
+            AstType::Error(_) => {}
+        }
+    }
+
+    /// Resolution for type position: module members (`M::T`), the type
+    /// namespace, then `use` imports. Locals never name types.
+    fn resolve_type_path(&self, segments: &[Symbol]) -> Res {
+        let head = segments[0];
+        if segments.len() > 1 {
+            if let Some(id) = self.out.module_item(head, segments[1]) {
+                return Res::Item(id);
+            }
+        }
+        if let Some(id) = self.lookup_module(head, Namespace::Type) {
+            return Res::Item(id);
+        }
+        if let Some(path) = self.imports.get(&head) {
+            return Res::Import(path.clone());
+        }
+        Res::Error
+    }
+
+    fn param_type_refs(&mut self, groups: &[ParamGroup]) {
+        for group in groups {
+            for param in &group.params {
+                if let Some(ty) = &param.ty {
+                    self.type_refs(ty);
+                }
+            }
+        }
+    }
+
+    fn constraint_type_refs(&mut self, constraints: &[AstConstraint]) {
+        for constraint in constraints {
+            match constraint {
+                AstConstraint::Is {
+                    ty,
+                    trait_path,
+                    args,
+                    ..
+                } => {
+                    self.type_refs(ty);
+                    for arg in args {
+                        self.type_refs(arg);
+                    }
+                    if let Some(first) = trait_path.first() {
+                        let span = trait_path
+                            .iter()
+                            .fold(first.span, |acc, ident| acc.merge(ident.span));
+                        let symbols: Vec<Symbol> = trait_path.iter().map(|i| i.sym).collect();
+                        let res = self.resolve_type_path(&symbols);
+                        if !res.is_error() {
+                            self.record_type_ref(span, &symbols, res);
+                        }
+                    }
+                }
+                AstConstraint::Effect { effects, .. } => self.effect_type_refs(effects),
+            }
+        }
+    }
+
+    fn effect_type_refs(&mut self, row: &AstEffectRow) {
+        for item in &row.items {
+            for arg in &item.args {
+                self.type_refs(arg);
+            }
+        }
+    }
+
+    fn type_body_refs(&mut self, body: &AstTypeBody) {
+        match body {
+            AstTypeBody::Record(record) | AstTypeBody::View(record) => {
+                for field in &record.fields {
+                    self.type_refs(&field.ty);
+                }
+            }
+            AstTypeBody::Variants(variants) => {
+                for variant in variants {
+                    for payload in &variant.payload {
+                        self.type_refs(payload);
+                    }
+                }
+            }
+            AstTypeBody::Alias(ty) => self.type_refs(ty),
+            AstTypeBody::Include { .. } | AstTypeBody::Error(_) => {}
+        }
     }
 
     fn args(&mut self, args: &[rill_ast::Arg]) -> Vec<Arg> {
@@ -920,7 +1190,18 @@ impl<'a> Resolver<'a> {
 
     fn block(&mut self, block: &AstBlock) -> Block {
         self.push_scope();
-        let stmts = block.stmts.iter().map(|stmt| self.stmt(stmt)).collect();
+        let stmts = block
+            .stmts
+            .iter()
+            .map(|stmt| {
+                if let AstStmt::Var { storage, span, .. } = stmt {
+                    if !matches!(storage, VarStorage::Local) {
+                        self.err(*span, "`static` storage is only allowed at module level");
+                    }
+                }
+                self.stmt(stmt, false)
+            })
+            .collect();
         let tail = block.tail.as_ref().map(|tail| Box::new(self.expr(tail)));
         self.pop_scope();
         Block {
@@ -930,17 +1211,22 @@ impl<'a> Resolver<'a> {
         }
     }
 
-    fn stmt(&mut self, stmt: &AstStmt) -> Stmt {
+    fn stmt(&mut self, stmt: &AstStmt, top_level: bool) -> Stmt {
         match stmt {
             AstStmt::Var {
+                storage,
                 name,
                 ty,
                 init,
                 span,
             } => {
+                if let Some(ty) = ty {
+                    self.type_refs(ty);
+                }
                 let init = self.expr(init);
-                let local = self.declare_local(name.sym, name.span, LocalKind::Var);
+                let local = self.binding_local(top_level, name.sym, name.span, LocalKind::Var);
                 Stmt::Var {
+                    storage: *storage,
                     local,
                     ty: ty.clone(),
                     init,
@@ -968,7 +1254,7 @@ impl<'a> Resolver<'a> {
                 span,
             } => {
                 let value = self.expr(value);
-                let pattern = self.pattern(name);
+                let pattern = self.pattern_at(name, top_level);
                 Stmt::Bind {
                     pattern,
                     value,
@@ -977,7 +1263,7 @@ impl<'a> Resolver<'a> {
             }
             AstStmt::TryBind { name, value, span } => {
                 let value = self.expr(value);
-                let local = self.declare_local(name.sym, name.span, LocalKind::TryBind);
+                let local = self.binding_local(top_level, name.sym, name.span, LocalKind::TryBind);
                 Stmt::TryBind {
                     local,
                     value,
@@ -1044,10 +1330,33 @@ impl<'a> Resolver<'a> {
 
     /// Binds a pattern's names in the current scope.
     fn pattern(&mut self, pattern: &AstPattern) -> Pattern {
+        self.pattern_at(pattern, false)
+    }
+
+    /// A single-name binding (`var x`, `let? x`): the pre-declared module
+    /// local at module level, a fresh block local otherwise.
+    fn binding_local(
+        &mut self,
+        top_level: bool,
+        name: Symbol,
+        span: Span,
+        kind: LocalKind,
+    ) -> LocalId {
+        if top_level {
+            if let Some(local) = self.module_locals.get(&name).copied() {
+                return local;
+            }
+        }
+        self.declare_local(name, span, kind)
+    }
+
+    /// `top_level` reuses the module locals declared in the first pass, so a
+    /// module-level `x := e` is the same local everywhere it is referenced.
+    fn pattern_at(&mut self, pattern: &AstPattern, top_level: bool) -> Pattern {
         match pattern {
             AstPattern::Wildcard(span) => Pattern::Wildcard(*span),
             AstPattern::Binding { name, span } => {
-                let local = self.declare_local(name.sym, name.span, LocalKind::Pattern);
+                let local = self.binding_local(top_level, name.sym, name.span, LocalKind::Pattern);
                 Pattern::Binding { local, span: *span }
             }
             AstPattern::Literal { text, span } => Pattern::Literal {
@@ -1058,7 +1367,10 @@ impl<'a> Resolver<'a> {
                 let segments: Vec<Symbol> = path.iter().map(|s| s.sym).collect();
                 let res = self.resolve_path(&segments, *span);
                 self.record_ref(*span, &segments, res.clone());
-                let args = args.iter().map(|arg| self.pattern(arg)).collect();
+                let args = args
+                    .iter()
+                    .map(|arg| self.pattern_at(arg, top_level))
+                    .collect();
                 Pattern::Constructor {
                     path: segments,
                     res,
@@ -1067,7 +1379,10 @@ impl<'a> Resolver<'a> {
                 }
             }
             AstPattern::Tuple { elems, span } => Pattern::Tuple {
-                elems: elems.iter().map(|elem| self.pattern(elem)).collect(),
+                elems: elems
+                    .iter()
+                    .map(|elem| self.pattern_at(elem, top_level))
+                    .collect(),
                 span: *span,
             },
             AstPattern::Error(span) => {
@@ -1109,6 +1424,22 @@ fn item_name(item: &AstItem) -> (Option<Symbol>, Namespace) {
     }
 }
 
+/// Where the declaration writes its name, for tools that point at definitions.
+fn ast_name_span(item: &AstItem) -> Option<Span> {
+    match item {
+        AstItem::Fn(decl) => Some(decl.name.span),
+        AstItem::Project(decl) => Some(decl.name.span),
+        AstItem::Type(decl) => Some(decl.name.span),
+        AstItem::Trait(decl) => Some(decl.name.span),
+        AstItem::Impl(decl) => Some(decl.name.span),
+        AstItem::Builder(decl) => Some(decl.name.span),
+        AstItem::Signature(decl) => Some(decl.name.span),
+        AstItem::Attribute(decl) => Some(decl.name.span),
+        AstItem::Extern(decl) => ast_name_span(&decl.inner),
+        AstItem::Stmt(_) | AstItem::Use(_) | AstItem::Error(_) => None,
+    }
+}
+
 /// `(imported name, full path)` pairs introduced by a `use` declaration.
 fn import_names(path: &UsePath) -> Vec<(Symbol, Vec<Symbol>)> {
     match path {
@@ -1145,6 +1476,31 @@ fn top_level_bindings(stmt: &AstStmt) -> Vec<(Symbol, Span)> {
         AstStmt::TryBind { name, span, .. } => vec![(name.sym, *span)],
         AstStmt::For { pattern, .. } => pattern_bindings(pattern),
         _ => Vec::new(),
+    }
+}
+
+/// The bindings a module-level statement declares in the module scope, with
+/// the span of the name itself and the local kind the statement gives it.
+/// `for` patterns are *not* included: a loop variable is scoped to its body.
+fn module_bindings(stmt: &AstStmt) -> Vec<(Symbol, Span, LocalKind)> {
+    match stmt {
+        AstStmt::Var { name, .. } => vec![(name.sym, name.span, LocalKind::Var)],
+        AstStmt::TryBind { name, .. } => vec![(name.sym, name.span, LocalKind::TryBind)],
+        AstStmt::Bind { name, .. } => binding_idents(name)
+            .into_iter()
+            .map(|ident| (ident.sym, ident.span, LocalKind::Pattern))
+            .collect(),
+        _ => Vec::new(),
+    }
+}
+
+/// Every binding identifier in a pattern, with the identifier's own span.
+fn binding_idents(pattern: &AstPattern) -> Vec<rill_ast::Ident> {
+    match pattern {
+        AstPattern::Binding { name, .. } => vec![*name],
+        AstPattern::Tuple { elems, .. } => elems.iter().flat_map(binding_idents).collect(),
+        AstPattern::Constructor { args, .. } => args.iter().flat_map(binding_idents).collect(),
+        AstPattern::Wildcard(_) | AstPattern::Literal { .. } | AstPattern::Error(_) => Vec::new(),
     }
 }
 
