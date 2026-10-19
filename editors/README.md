@@ -16,7 +16,7 @@ $ mkdir -p ~/.config/helix
 $ cat >> ~/.config/helix/languages.toml <<EOF
 
 [language-server.rill]
-command = "rill"
+command = "rillc"
 args = ["lsp"]
 
 [[language]]

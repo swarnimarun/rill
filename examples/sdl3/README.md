@@ -5,9 +5,9 @@ names the header and the library, and the compiler reads the header and links
 the library for it.
 
 ```console
-$ rill exec examples/sdl3/window.rill        # a bouncing rectangle
-$ rill exec examples/sdl3/plasma.rill        # sine waves, point by point
-$ rill exec examples/sdl3/sidescroller.rill  # the game
+$ rillc exec examples/sdl3/window.rill        # a bouncing rectangle
+$ rillc exec examples/sdl3/plasma.rill        # sine waves, point by point
+$ rillc exec examples/sdl3/sidescroller.rill  # the game
 ```
 
 The game: arrow keys walk, `SPACE`/`UP` jumps, `ESC` or the window's close
@@ -60,7 +60,7 @@ needs no display at all, which is how `crates/rill-driver/tests/c_import.rs`
 builds and runs all three:
 
 ```console
-$ RILL_SDL3_DEMO=1 SDL_VIDEODRIVER=dummy rill exec examples/sdl3/sidescroller.rill
+$ RILL_SDL3_DEMO=1 SDL_VIDEODRIVER=dummy rillc exec examples/sdl3/sidescroller.rill
 score 1
 score 2
 score 3

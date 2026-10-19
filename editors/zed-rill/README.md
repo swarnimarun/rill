@@ -9,7 +9,7 @@ Two manual steps, neither of which can be done from a script:
 
 2. **Attach the language server.** This extension ships a grammar, queries and a
    language config, but *not* a WebAssembly server adapter - so Zed will not start
-   `rill lsp` from it. Point Zed at the installed binary in
+   `rillc lsp` from it. Point Zed at the installed binary in
    `~/.config/zed/settings.json`; a bare name is resolved from Zed's process PATH:
 
    ```json
@@ -35,7 +35,7 @@ Two manual steps, neither of which can be done from a script:
    the `languages` key accepts a language contributed by a dev extension depends on
    Zed's version. If it is ignored, the diagnostics/hover/formatting arrive once a
    WASM adapter is added to the extension - the server itself is already verified
-   (`rill lsp` answers a full session).
+   (`rillc lsp` answers a full session).
 
 The grammar lives in `editors/tree-sitter-rill` and is shared with Helix, which
 builds it from the same path.

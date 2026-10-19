@@ -5,9 +5,9 @@ names the header and the library, and the compiler reads the header and links
 the library for it.
 
 ```console
-$ rill exec examples/raylib/window.rill        # a bouncing rectangle
-$ rill exec examples/raylib/sidescroller.rill  # the game
-$ rill exec examples/raylib/match3.rill        # match 3, assets generated in code
+$ rillc exec examples/raylib/window.rill        # a bouncing rectangle
+$ rillc exec examples/raylib/sidescroller.rill  # the game
+$ rillc exec examples/raylib/match3.rill        # match 3, assets generated in code
 ```
 
 The side-scroller: arrow keys walk, `SPACE`/`UP` jumps, `ESC` or the window's
@@ -90,7 +90,7 @@ raylib has no headless driver of its own, so the demos ask for a hidden window
 `RILL_RAYLIB_DEMO` is set, printing a summary at the end:
 
 ```console
-$ RILL_RAYLIB_DEMO=1 rill exec examples/raylib/sidescroller.rill
+$ RILL_RAYLIB_DEMO=1 rillc exec examples/raylib/sidescroller.rill
 score 1
 score 2
 score 3
@@ -104,7 +104,7 @@ draws from the same generator, which is what made the first version's summaries
 differ from run to run:
 
 ```console
-$ RILL_RAYLIB_DEMO=1 rill exec examples/raylib/match3.rill
+$ RILL_RAYLIB_DEMO=1 rillc exec examples/raylib/match3.rill
 demo frames 213 score 152 moves 24
 ```
 
