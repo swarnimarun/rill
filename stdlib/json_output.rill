@@ -1,0 +1,84 @@
+// JSON output into an existing owned byte buffer. No allocation occurs here.
+// Return the byte count on success, or -1 before writing on capacity failure.
+// The output range is [offset, offset + count), with no trailing NUL.
+
+let hex_digit n = if n < 10 then n + 48 else n + 87
+
+let escaped_width byte =
+    if byte == 34 || byte == 92 then 2 else if byte < 32 then 6 else 1
+
+export let write_string (inout output) text offset =
+    let capacity = owned_bytes_len(output) in
+    if offset < 0 || offset > capacity then -1 else
+    let available = capacity - offset in
+    if available < 2 then -1 else
+    // Reserve both quotes. Subtract only after checking the next encoded width.
+    let mut remaining = available - 2 in
+    let mut input = 0 in
+    let mut good = true in
+    let preflight = while input < byte_len(text) && good do
+        let needed = escaped_width(byte_at(text, input)) in
+        if needed > remaining then good <- false else
+        let reserve = remaining <- remaining - needed in
+        input <- input + 1
+    in if good then
+        let opening = owned_bytes_set(inout output, offset, 34) in
+        let mut pos = offset + 1 in
+        let restart = input <- 0 in
+        let emit = while input < byte_len(text) do
+            let byte = byte_at(text, input) in
+            let written = if byte == 34 || byte == 92 then
+                let slash = owned_bytes_set(inout output, pos, 92) in
+                owned_bytes_set(inout output, pos + 1, byte)
+            else if byte < 32 then
+                let slash = owned_bytes_set(inout output, pos, 92) in
+                let u = owned_bytes_set(inout output, pos + 1, 117) in
+                let zero1 = owned_bytes_set(inout output, pos + 2, 48) in
+                let zero2 = owned_bytes_set(inout output, pos + 3, 48) in
+                let hi = owned_bytes_set(inout output, pos + 4, hex_digit(byte / 16)) in
+                owned_bytes_set(inout output, pos + 5, hex_digit(byte % 16))
+            else owned_bytes_set(inout output, pos, byte) in
+            let advance = pos <- pos + escaped_width(byte) in
+            input <- input + 1
+        in
+        let closing = owned_bytes_set(inout output, pos, 34) in
+        pos - offset + 1
+    else -1
+
+// The caller can concatenate successful writes by advancing by the byte count.
+let write_literal (inout output) text offset =
+    let capacity = owned_bytes_len(output) in
+    if offset < 0 || offset > capacity then -1 else
+    let count = byte_len(text) in
+    if count > capacity - offset then -1 else
+    let mut pos = 0 in
+    let emit = while pos < count do
+        let byte = owned_bytes_set(inout output, offset + pos, byte_at(text, pos)) in
+        pos <- pos + 1
+    in count
+
+export let write_bool (inout output) value offset =
+    if value then write_literal(inout output, "true", offset)
+    else write_literal(inout output, "false", offset)
+
+export let write_null (inout output) offset = write_literal(inout output, "null", offset)
+
+export let write_i32 (inout output) value offset =
+    let capacity = owned_bytes_len(output) in
+    if offset < 0 || offset > capacity then -1 else
+    // Negative magnitudes include MIN without requiring an overflowing negate.
+    let magnitude = if value > 0 then 0 - value else value in
+    let mut rest = magnitude in
+    let mut digits = 1 in
+    let measure = while rest <= -10 do
+        let advance = rest <- rest / 10 in digits <- digits + 1 in
+    let count = digits + (if value < 0 then 1 else 0) in
+    if count > capacity - offset then -1 else
+    let sign = if value < 0 then owned_bytes_set(inout output, offset, 45) else () in
+    let restart = rest <- magnitude in
+    let mut pos = offset + count in
+    let emit = while pos > offset + (if value < 0 then 1 else 0) do
+        let previous = pos <- pos - 1 in
+        let byte = owned_bytes_set(inout output, pos, 48 - rest % 10) in
+        rest <- rest / 10
+    in count

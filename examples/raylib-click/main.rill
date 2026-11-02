@@ -1,0 +1,18 @@
+extern fn click_open(title: cstr) -> unit;
+extern fn click_should_close() -> i32;
+extern fn click_pressed() -> i32;
+extern fn click_mouse_x() -> i32;
+extern fn click_mouse_y() -> i32;
+extern fn click_elapsed() -> i32;
+extern fn click_draw(score: i32, seconds_left: i32) -> unit;
+extern fn click_close() -> unit;
+
+let main =
+    let opened = click_open(c"Rill click challenge") in
+    let mut score = 0 in
+    let playing = while click_should_close() == 0 do
+        let elapsed = click_elapsed() in
+        let clicked_target = click_pressed() != 0 && click_mouse_x() >= 220 && click_mouse_x() < 420 && click_mouse_y() >= 160 && click_mouse_y() < 360 in
+        let update = if elapsed < 30 && clicked_target && score < 2147483647 then score <- score + 1 else () in
+        click_draw(score, if elapsed < 30 then 30 - elapsed else 0)
+    in click_close()

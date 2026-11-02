@@ -1,0 +1,31 @@
+// Collect the gold squares with the blue square. Move with the arrow keys.
+extern fn game_init() -> i32;
+extern fn game_poll() -> i32;
+extern fn game_left() -> i32;
+extern fn game_right() -> i32;
+extern fn game_up() -> i32;
+extern fn game_down() -> i32;
+extern fn game_draw(x: i32, y: i32, target_x: i32, target_y: i32, score: i32) -> unit;
+extern fn game_close() -> unit;
+
+let clamp n low high = if n < low then low else if n > high then high else n
+let near a b = if a > b then a - b < 20 else b - a < 20
+let main =
+    if game_init() == 0 then 1 else
+        let mut x = 300 in
+        let mut y = 220 in
+        let mut target_x = 100 in
+        let mut target_y = 100 in
+        let mut score = 0 in
+        let loop = while game_poll() != 0 do
+            let moved_x = x <- clamp(x + (game_right() - game_left()) * 4, 0, 620) in
+            let moved_y = y <- clamp(y + (game_down() - game_up()) * 4, 0, 460) in
+            let collision = if near(x, target_x) && near(y, target_y) then
+                let scored = score <- score + 1 in
+                let next_x = target_x <- (target_x + 173) % 600 in
+                target_y <- (target_y + 137) % 440
+                else () in
+            game_draw(x, y, target_x, target_y, score)
+        in
+        let close = game_close() in
+        0

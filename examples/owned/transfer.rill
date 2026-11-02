@@ -1,0 +1,3 @@
+// Ownership transfers into consume; its parameter is dropped on return.
+let consume value = box_read(value)
+let main = let resource = system_box_i32_abort(42) in consume(move resource)

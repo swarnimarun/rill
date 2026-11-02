@@ -1,0 +1,1197 @@
+//! Recursive-descent parser. Unsupported syntax is rejected rather than guessed.
+use crate::ast::{
+    BinaryOp, Expr, ExternConst, ExternFunction, ExternParam, ExternType, Function, MatchArm,
+    Param, ParamMode, Pattern, Program, TypeDecl, TypeExpr, VariantDecl,
+};
+use crate::lexer::{lex, Kind, Token};
+
+pub fn parse(source: &str) -> Result<Program, String> {
+    Parser {
+        tokens: lex(source)?,
+        pos: 0,
+        depth: 0,
+        module_mode: false,
+        block_id: 0,
+    }
+    .program()
+    .map(|module| module.program)
+}
+
+/// Parse module syntax without resolving imports or checking visibility.
+/// A successful parse does not make the module safe to compile.
+pub fn parse_module(source: &str) -> Result<ParsedModule, String> {
+    Parser {
+        tokens: lex(source)?,
+        pos: 0,
+        depth: 0,
+        module_mode: true,
+        block_id: 0,
+    }
+    .program()
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct ParsedModule {
+    pub program: Program,
+    pub exports: Vec<Export>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Export {
+    pub name: String,
+    pub kind: ExportKind,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum ExportKind {
+    Function,
+    Constant,
+    Type,
+}
+
+struct Parser {
+    tokens: Vec<Token>,
+    pos: usize,
+    depth: usize,
+    module_mode: bool,
+    block_id: usize,
+}
+const MAX_DEPTH: usize = 64;
+impl Parser {
+    fn guarded<T>(&mut self, parse: fn(&mut Self) -> Result<T, String>) -> Result<T, String> {
+        if self.depth >= MAX_DEPTH {
+            return Err(self.error("E-PARSE-DEPTH: syntax nesting exceeds 64"));
+        }
+        self.depth += 1;
+        let result = parse(self);
+        self.depth -= 1;
+        result
+    }
+    fn peek(&self) -> &Kind {
+        &self.tokens[self.pos].kind
+    }
+    fn take(&mut self) -> Kind {
+        let k = self.peek().clone();
+        if k != Kind::Eof {
+            self.pos += 1;
+        }
+        k
+    }
+    fn error(&self, message: &str) -> String {
+        let t = &self.tokens[self.pos];
+        format!("{}:{}: {} (found {:?})", t.line, t.column, message, t.kind)
+    }
+    fn expect(&mut self, kind: Kind) -> Result<(), String> {
+        if self.peek() == &kind {
+            self.take();
+            Ok(())
+        } else {
+            Err(self.error(&format!("expected {kind:?}")))
+        }
+    }
+    fn name(&mut self) -> Result<String, String> {
+        if let Kind::Ident(s) = self.peek().clone() {
+            self.take();
+            Ok(s)
+        } else {
+            Err(self.error("expected identifier"))
+        }
+    }
+    fn program(mut self) -> Result<ParsedModule, String> {
+        let mut native = crate::c_import::Config::default();
+        let mut constants = Vec::new();
+        let mut types = Vec::new();
+        let mut externs = Vec::new();
+        let mut functions = Vec::new();
+        let mut exports = Vec::new();
+        loop {
+            if *self.peek() == Kind::At {
+                self.native_directive(&mut native)?;
+            } else if self.module_mode
+                && matches!(self.peek(), Kind::Ident(name) if name == "import")
+            {
+                self.take();
+                self.name()?;
+                while *self.peek() == Kind::Dot {
+                    self.take();
+                    self.name()?;
+                }
+                if matches!(self.peek(), Kind::Ident(name) if name == "as") {
+                    self.take();
+                    self.name()?;
+                }
+                self.expect(Kind::Semi)?;
+            } else {
+                break;
+            }
+        }
+        while *self.peek() != Kind::Eof {
+            if *self.peek() == Kind::At {
+                return Err(self.error("native directives must precede declarations"));
+            }
+            let exported =
+                self.module_mode && matches!(self.peek(), Kind::Ident(name) if name == "export");
+            if exported {
+                self.take();
+            }
+            if *self.peek() == Kind::Extern {
+                if self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|token| token.kind == Kind::Const)
+                {
+                    self.take();
+                    self.take();
+                    let name = self.name()?;
+                    self.expect(Kind::Colon)?;
+                    let ty = self.extern_type()?;
+                    self.expect(Kind::Semi)?;
+                    if exported {
+                        exports.push(Export {
+                            name: name.clone(),
+                            kind: ExportKind::Constant,
+                        });
+                    }
+                    constants.push(ExternConst { name, ty });
+                } else {
+                    let declaration = self.extern_decl()?;
+                    if exported {
+                        exports.push(Export {
+                            name: declaration.name.clone(),
+                            kind: ExportKind::Function,
+                        });
+                    }
+                    externs.push(declaration);
+                }
+                continue;
+            }
+            if *self.peek() == Kind::Type {
+                let decl = self.type_decl()?;
+                if exported {
+                    exports.push(Export {
+                        name: decl.name.clone(),
+                        kind: ExportKind::Type,
+                    });
+                }
+                types.push(decl);
+                if *self.peek() == Kind::Semi {
+                    self.take();
+                }
+                continue;
+            }
+            if *self.peek() == Kind::Fn {
+                self.take();
+                let name = self.name()?;
+                let params = self.fn_params()?;
+                let body = self.block()?;
+                self.check_expr_depth(&body)?;
+                if *self.peek() == Kind::Semi {
+                    self.take();
+                }
+                if exported {
+                    exports.push(Export {
+                        name: name.clone(),
+                        kind: ExportKind::Function,
+                    });
+                }
+                functions.push(Function { name, params, body });
+                continue;
+            }
+            self.expect(Kind::Let)?;
+            let name = self.name()?;
+            let mut params = Vec::new();
+            while matches!(self.peek(), Kind::Ident(_) | Kind::LParen) {
+                if *self.peek() == Kind::LParen {
+                    self.take();
+                    let mode = match self.peek() {
+                        Kind::Inout => {
+                            self.take();
+                            ParamMode::Inout
+                        }
+                        Kind::Read => {
+                            self.take();
+                            ParamMode::Read
+                        }
+                        _ => ParamMode::Value,
+                    };
+                    let name = self.name()?;
+                    let annotation = if *self.peek() == Kind::Colon {
+                        self.take();
+                        Some(self.type_expr()?)
+                    } else {
+                        if mode == ParamMode::Value {
+                            return Err(self.error(
+                                "value parameter in parentheses requires a type annotation",
+                            ));
+                        }
+                        None
+                    };
+                    self.expect(Kind::RParen)?;
+                    params.push(Param {
+                        name,
+                        mode,
+                        annotation,
+                    });
+                } else {
+                    params.push(Param {
+                        name: self.name()?,
+                        mode: ParamMode::Value,
+                        annotation: None,
+                    });
+                }
+            }
+            self.expect(Kind::Equal)?;
+            let body = self.expr()?;
+            if *self.peek() == Kind::Semi {
+                self.take();
+            }
+            if exported {
+                exports.push(Export {
+                    name: name.clone(),
+                    kind: ExportKind::Function,
+                });
+            }
+            functions.push(Function { name, params, body });
+        }
+        Ok(ParsedModule {
+            program: Program {
+                native,
+                constants,
+                allocation_types: None,
+                types,
+                externs,
+                functions,
+            },
+            exports,
+        })
+    }
+    fn fn_params(&mut self) -> Result<Vec<Param>, String> {
+        self.expect(Kind::LParen)?;
+        let mut params = Vec::new();
+        while *self.peek() != Kind::RParen {
+            let mode = match self.peek() {
+                Kind::Read => {
+                    self.take();
+                    ParamMode::Read
+                }
+                Kind::Inout => {
+                    self.take();
+                    ParamMode::Inout
+                }
+                _ => ParamMode::Value,
+            };
+            let name = self.name()?;
+            let annotation = if *self.peek() == Kind::Colon {
+                self.take();
+                Some(self.type_expr()?)
+            } else {
+                None
+            };
+            params.push(Param {
+                name,
+                mode,
+                annotation,
+            });
+            if *self.peek() != Kind::Comma {
+                break;
+            }
+            self.take();
+        }
+        self.expect(Kind::RParen)?;
+        Ok(params)
+    }
+    fn block(&mut self) -> Result<Expr, String> {
+        if *self.peek() != Kind::LBrace {
+            return Err(self.error("expected '{' to start block"));
+        }
+        self.take();
+        let body = self.guarded(Self::block_body)?;
+        if *self.peek() != Kind::RBrace {
+            return Err(self.error("expected '}' to close block"));
+        }
+        self.take();
+        Ok(body)
+    }
+    fn block_body(&mut self) -> Result<Expr, String> {
+        if *self.peek() == Kind::RBrace {
+            return Ok(Expr::Unit);
+        }
+        if *self.peek() == Kind::Eof {
+            return Err(self.error("expected '}' to close block"));
+        }
+        if *self.peek() == Kind::Let {
+            self.take();
+            let mutable = if *self.peek() == Kind::Mut {
+                self.take();
+                true
+            } else {
+                false
+            };
+            let name = self.name()?;
+            self.expect(Kind::Equal)?;
+            let value = self.expr()?;
+            if *self.peek() != Kind::Semi {
+                return Err(self.error("expected ';' after local binding"));
+            }
+            self.take();
+            let body = self.guarded(Self::block_body)?;
+            return Ok(if mutable {
+                Expr::LetMut(name, Box::new(value), Box::new(body))
+            } else {
+                Expr::Let(name, Box::new(value), Box::new(body))
+            });
+        }
+        let value = self.expr()?;
+        if *self.peek() == Kind::RBrace {
+            return Ok(value);
+        }
+        if *self.peek() == Kind::Eof {
+            return Err(self.error("expected '}' to close block"));
+        }
+        if *self.peek() != Kind::Semi {
+            return Err(
+                self.error("expected ';' between block statements or '}' after final expression")
+            );
+        }
+        self.take();
+        // '$' is excluded from source identifiers, so this binding cannot shadow user code.
+        let name = format!("$block{}", self.block_id);
+        self.block_id += 1;
+        let discard = format!("$discard{}", self.block_id);
+        self.block_id += 1;
+        let body = self.guarded(Self::block_body)?;
+        let statement = Expr::Let(discard, Box::new(value), Box::new(Expr::Unit));
+        Ok(Expr::Let(name, Box::new(statement), Box::new(body)))
+    }
+    fn qualified_name(&mut self, first: String) -> Result<String, String> {
+        if self.module_mode && *self.peek() == Kind::Dot {
+            self.take();
+            Ok(format!("{first}.{}", self.name()?))
+        } else {
+            Ok(first)
+        }
+    }
+    fn field_path(&mut self) -> Result<Vec<String>, String> {
+        let mut path = Vec::new();
+        while *self.peek() == Kind::Dot {
+            if path.len() == 16 {
+                return Err(self.error("E-PARSE-DEPTH: field path exceeds 16"));
+            }
+            self.take();
+            path.push(self.name()?);
+        }
+        Ok(path)
+    }
+    fn extern_decl(&mut self) -> Result<ExternFunction, String> {
+        self.expect(Kind::Extern)?;
+        self.expect(Kind::Fn)?;
+        let name = self.name()?;
+        self.expect(Kind::LParen)?;
+        let mut params = Vec::new();
+        if *self.peek() != Kind::RParen {
+            loop {
+                let name = self.name()?;
+                self.expect(Kind::Colon)?;
+                let ty = self.extern_type()?;
+                params.push(ExternParam { name, ty });
+                if *self.peek() != Kind::Comma {
+                    break;
+                }
+                self.take();
+            }
+        }
+        self.expect(Kind::RParen)?;
+        self.expect(Kind::ThinArrow)?;
+        let result = self.extern_type()?;
+        self.expect(Kind::Semi)?;
+        Ok(ExternFunction {
+            name,
+            params,
+            result,
+        })
+    }
+    fn extern_type(&mut self) -> Result<ExternType, String> {
+        let start = self.pos;
+        let name = self.name()?;
+        match name.as_str() {
+            "i32" => Ok(ExternType::I32),
+            "u8" => Ok(ExternType::U8),
+            "u32" => Ok(ExternType::U32),
+            "u64" => Ok(ExternType::U64),
+            "f32" => Ok(ExternType::F32),
+            "bool" => Ok(ExternType::Bool),
+            "unit" => Ok(ExternType::Unit),
+            "cstr" => Ok(ExternType::CStr),
+            "ptr" | "const_ptr" => {
+                self.expect(Kind::Lt)?;
+                let pointee = self.name()?;
+                self.expect(Kind::Gt)?;
+                Ok(ExternType::Pointer {
+                    pointee,
+                    is_const: name == "const_ptr",
+                })
+            }
+            _ => {
+                let token = &self.tokens[start];
+                Err(format!(
+                    "{}:{}: E-FFI: unsupported foreign type {name:?}",
+                    token.line, token.column
+                ))
+            }
+        }
+    }
+    fn native_directive(&mut self, native: &mut crate::c_import::Config) -> Result<(), String> {
+        self.expect(Kind::At)?;
+        let directive_start = self.pos;
+        let name = self.name()?;
+        if !matches!(name.as_str(), "include" | "link" | "pkg_config") {
+            let token = &self.tokens[directive_start];
+            return Err(format!(
+                "{}:{}: unknown native directive @{name}",
+                token.line, token.column
+            ));
+        }
+        self.expect(Kind::LParen)?;
+        let start = self.pos;
+        let Kind::Str(value) = self.peek().clone() else {
+            return Err(self.error("native directive requires one ordinary string literal"));
+        };
+        self.take();
+        self.expect(Kind::RParen)?;
+        if *self.peek() != Kind::Semi {
+            return Err(self.error("expected ';' after native directive"));
+        }
+        self.take();
+        match name.as_str() {
+            "include" => native.includes.push(value),
+            "link" => native.links.push(value),
+            "pkg_config" => native.packages.push(value),
+            _ => unreachable!(),
+        }
+        native.validate().map_err(|message| {
+            let token = &self.tokens[start];
+            format!("{}:{}: {message}", token.line, token.column)
+        })
+    }
+    fn type_decl(&mut self) -> Result<TypeDecl, String> {
+        self.expect(Kind::Type)?;
+        let name = self.name()?;
+        let mut params = Vec::new();
+        if *self.peek() == Kind::Lt {
+            self.take();
+            loop {
+                params.push(self.name()?);
+                if *self.peek() != Kind::Comma {
+                    break;
+                }
+                self.take();
+            }
+            self.expect(Kind::Gt)?;
+        }
+        self.expect(Kind::Equal)?;
+        if *self.peek() == Kind::LBrace {
+            self.take();
+            let mut names = Vec::new();
+            let mut fields = Vec::new();
+            while *self.peek() != Kind::RBrace {
+                names.push(self.name()?);
+                self.expect(Kind::Colon)?;
+                fields.push(self.type_expr()?);
+                if *self.peek() == Kind::Semi {
+                    self.take();
+                } else if *self.peek() != Kind::RBrace {
+                    return Err(self.error("expected semicolon between record fields"));
+                }
+            }
+            self.expect(Kind::RBrace)?;
+            return Ok(TypeDecl {
+                name: name.clone(),
+                params,
+                variants: vec![VariantDecl { name, fields }],
+                record_fields: Some(names),
+            });
+        }
+        if *self.peek() == Kind::Pipe {
+            self.take();
+        }
+        let mut variants = Vec::new();
+        loop {
+            let name = self.name()?;
+            let mut fields = Vec::new();
+            if *self.peek() == Kind::LParen {
+                self.take();
+                if *self.peek() != Kind::RParen {
+                    loop {
+                        fields.push(self.type_expr()?);
+                        if *self.peek() != Kind::Comma {
+                            break;
+                        }
+                        self.take();
+                    }
+                }
+                self.expect(Kind::RParen)?;
+            }
+            variants.push(VariantDecl { name, fields });
+            if *self.peek() != Kind::Pipe {
+                break;
+            }
+            self.take();
+        }
+        Ok(TypeDecl {
+            name,
+            params,
+            variants,
+            record_fields: None,
+        })
+    }
+    fn type_expr(&mut self) -> Result<TypeExpr, String> {
+        self.guarded(Self::type_expr_inner)
+    }
+    fn type_expr_inner(&mut self) -> Result<TypeExpr, String> {
+        let first = self.name()?;
+        let name = self.qualified_name(first)?;
+        let mut args = Vec::new();
+        if *self.peek() == Kind::Lt {
+            self.take();
+            loop {
+                args.push(self.type_expr()?);
+                if *self.peek() != Kind::Comma {
+                    break;
+                }
+                self.take();
+            }
+            self.expect(Kind::Gt)?;
+        }
+        Ok(TypeExpr { name, args })
+    }
+    fn expr(&mut self) -> Result<Expr, String> {
+        let expr = self.guarded(Self::expr_inner)?;
+        self.check_expr_depth(&expr)?;
+        Ok(expr)
+    }
+    fn expr_inner(&mut self) -> Result<Expr, String> {
+        match self.peek() {
+            Kind::While => {
+                self.take();
+                let condition = self.expr()?;
+                let body = if *self.peek() == Kind::LBrace {
+                    self.block()?
+                } else if *self.peek() == Kind::Do {
+                    self.take();
+                    self.expr()?
+                } else {
+                    return Err(self.error("expected '{' block or 'do' after while condition"));
+                };
+                Ok(Expr::While(Box::new(condition), Box::new(body)))
+            }
+            Kind::Match => {
+                self.take();
+                let value = self.expr()?;
+                self.expect(Kind::LBrace)?;
+                if *self.peek() == Kind::Pipe {
+                    self.take();
+                }
+                let mut arms = Vec::new();
+                loop {
+                    let pattern = self.pattern()?;
+                    self.expect(Kind::Arrow)?;
+                    let body = self.expr()?;
+                    arms.push(MatchArm { pattern, body });
+                    if *self.peek() != Kind::Pipe {
+                        break;
+                    }
+                    self.take();
+                }
+                self.expect(Kind::RBrace)?;
+                Ok(Expr::Match(Box::new(value), arms))
+            }
+            Kind::Let => {
+                self.take();
+                let mutable = if *self.peek() == Kind::Mut {
+                    self.take();
+                    true
+                } else {
+                    false
+                };
+                let name = self.name()?;
+                self.expect(Kind::Equal)?;
+                let value = self.expr()?;
+                self.expect(Kind::In)?;
+                let body = self.expr()?;
+                if mutable {
+                    Ok(Expr::LetMut(name, Box::new(value), Box::new(body)))
+                } else {
+                    Ok(Expr::Let(name, Box::new(value), Box::new(body)))
+                }
+            }
+            Kind::If => {
+                self.take();
+                let cond = self.expr()?;
+                let braced = *self.peek() == Kind::LBrace;
+                let yes = if braced {
+                    self.block()?
+                } else {
+                    self.expect(Kind::Then)?;
+                    self.expr()?
+                };
+                self.expect(Kind::Else)?;
+                let no = if braced { self.block()? } else { self.expr()? };
+                Ok(Expr::If(Box::new(cond), Box::new(yes), Box::new(no)))
+            }
+            _ => {
+                let left = self.binary(0)?;
+                if *self.peek() == Kind::Assign {
+                    self.take();
+                    match left {
+                        Expr::Var(name) => Ok(Expr::Assign(name, Box::new(self.expr()?))),
+                        Expr::Field(root, field) => {
+                            Ok(Expr::FieldAssign(root, field, Box::new(self.expr()?)))
+                        }
+                        _ => Err(self.error("assignment target must be a local name or field")),
+                    }
+                } else {
+                    Ok(left)
+                }
+            }
+        }
+    }
+    fn pattern(&mut self) -> Result<Pattern, String> {
+        self.guarded(Self::pattern_inner)
+    }
+    fn pattern_inner(&mut self) -> Result<Pattern, String> {
+        match self.take() {
+            Kind::Ident(name) if name == "_" => Ok(Pattern::Wildcard),
+            Kind::Ident(name) => {
+                let name = self.qualified_name(name)?;
+                if *self.peek() == Kind::LParen {
+                    self.take();
+                    let mut fields = Vec::new();
+                    if *self.peek() != Kind::RParen {
+                        loop {
+                            fields.push(self.pattern()?);
+                            if *self.peek() != Kind::Comma {
+                                break;
+                            }
+                            self.take();
+                        }
+                    }
+                    self.expect(Kind::RParen)?;
+                    Ok(Pattern::Constructor(name, fields))
+                } else if name.contains('.') || name.starts_with(|c: char| c.is_ascii_uppercase()) {
+                    Ok(Pattern::Constructor(name, Vec::new()))
+                } else {
+                    Ok(Pattern::Binding(name))
+                }
+            }
+            Kind::True => Ok(Pattern::Bool(true)),
+            Kind::False => Ok(Pattern::Bool(false)),
+            Kind::Int(n) => i32::try_from(n)
+                .map(Pattern::Int)
+                .map_err(|_| self.error("integer pattern out of i32 range")),
+            Kind::Minus => match self.take() {
+                Kind::Int(n) if n <= 2147483648 => Ok(Pattern::Int((-n) as i32)),
+                _ => Err(self.error("expected negative i32 pattern")),
+            },
+            Kind::LParen => {
+                if *self.peek() == Kind::RParen {
+                    self.take();
+                    Ok(Pattern::Unit)
+                } else {
+                    let pattern = self.pattern()?;
+                    self.expect(Kind::RParen)?;
+                    Ok(pattern)
+                }
+            }
+            other => Err(self.error(&format!("expected pattern, found {other:?}"))),
+        }
+    }
+    fn binary(&mut self, min: u8) -> Result<Expr, String> {
+        let mut left = self.atom()?;
+        let mut operators = 0;
+        loop {
+            let (precedence, op) = match self.peek() {
+                Kind::Or => (1, BinaryOp::Or),
+                Kind::And => (2, BinaryOp::And),
+                Kind::EqEq => (3, BinaryOp::Eq),
+                Kind::Ne => (3, BinaryOp::Ne),
+                Kind::Lt => (4, BinaryOp::Lt),
+                Kind::Le => (4, BinaryOp::Le),
+                Kind::Gt => (4, BinaryOp::Gt),
+                Kind::Ge => (4, BinaryOp::Ge),
+                Kind::Plus => (5, BinaryOp::Add),
+                Kind::Minus => (5, BinaryOp::Sub),
+                Kind::Star => (6, BinaryOp::Mul),
+                Kind::Slash => (6, BinaryOp::Div),
+                Kind::Percent => (6, BinaryOp::Rem),
+                _ => break,
+            };
+            if precedence < min {
+                break;
+            }
+            operators += 1;
+            if operators > MAX_DEPTH {
+                return Err(self.error("E-PARSE-DEPTH: operator chain exceeds 64"));
+            }
+            self.take();
+            let right = self.binary(precedence + 1)?;
+            left = Expr::Binary(op, Box::new(left), Box::new(right));
+        }
+        Ok(left)
+    }
+    fn atom(&mut self) -> Result<Expr, String> {
+        self.guarded(Self::atom_inner)
+    }
+    fn atom_inner(&mut self) -> Result<Expr, String> {
+        if *self.peek() == Kind::LBrace {
+            return self.block();
+        }
+        let start = self.pos;
+        match self.take() {
+            Kind::Move => Ok(Expr::Move(self.name()?)),
+            Kind::Record => {
+                let first = self.name()?;
+                let name = self.qualified_name(first)?;
+                self.expect(Kind::LBrace)?;
+                let mut fields = Vec::new();
+                while *self.peek() != Kind::RBrace {
+                    let field = self.name()?;
+                    self.expect(Kind::Equal)?;
+                    fields.push((field, self.expr()?));
+                    if *self.peek() == Kind::Semi {
+                        self.take();
+                    } else if *self.peek() != Kind::RBrace {
+                        return Err(self.error("expected semicolon between record fields"));
+                    }
+                }
+                self.expect(Kind::RBrace)?;
+                Ok(Expr::Record(name, fields))
+            }
+            Kind::Str(value) => Ok(Expr::Str(value)),
+            Kind::CStr(value) => Ok(Expr::CStr(value)),
+            Kind::Int(n) => i32::try_from(n)
+                .map(Expr::Int)
+                .map_err(|_| self.error("integer literal out of i32 range")),
+            Kind::True => Ok(Expr::Bool(true)),
+            Kind::False => Ok(Expr::Bool(false)),
+            Kind::Minus => {
+                if *self.peek() == Kind::Int(2147483648) {
+                    self.take();
+                    Ok(Expr::Int(i32::MIN))
+                } else {
+                    Ok(Expr::Binary(
+                        BinaryOp::Sub,
+                        Box::new(Expr::Int(0)),
+                        Box::new(self.atom()?),
+                    ))
+                }
+            }
+            Kind::Ident(name) => {
+                let path = self.field_path()?;
+                let name = if !path.is_empty() {
+                    if self.module_mode && path.len() == 1 && *self.peek() == Kind::LParen {
+                        format!("{name}.{}", path[0])
+                    } else {
+                        return Ok(Expr::Field(name, path));
+                    }
+                } else {
+                    name
+                };
+                if *self.peek() != Kind::LParen {
+                    return Ok(Expr::Var(name));
+                }
+                self.take();
+                let mut args = Vec::new();
+                if *self.peek() != Kind::RParen {
+                    loop {
+                        if *self.peek() == Kind::Inout {
+                            self.take();
+                            let root = self.name()?;
+                            let path = self.field_path()?;
+                            if !path.is_empty() {
+                                args.push(Expr::InoutField(root, path));
+                            } else {
+                                args.push(Expr::Inout(root));
+                            }
+                        } else {
+                            args.push(self.expr()?);
+                        }
+                        if *self.peek() != Kind::Comma {
+                            break;
+                        }
+                        self.take();
+                    }
+                }
+                self.expect(Kind::RParen)?;
+                Ok(Expr::Call(name, args))
+            }
+            Kind::LParen => {
+                if *self.peek() == Kind::RParen {
+                    self.take();
+                    return Ok(Expr::Unit);
+                }
+                let e = self.expr()?;
+                self.expect(Kind::RParen)?;
+                Ok(e)
+            }
+            other => {
+                let token = &self.tokens[start];
+                Err(format!(
+                    "{}:{}: expected expression (found {other:?})",
+                    token.line, token.column
+                ))
+            }
+        }
+    }
+
+    fn check_expr_depth(&self, expr: &Expr) -> Result<(), String> {
+        let mut work = vec![(expr, 1)];
+        while let Some((node, depth)) = work.pop() {
+            if depth > MAX_DEPTH {
+                return Err(self.error("E-PARSE-DEPTH: expression tree exceeds 64"));
+            }
+            let next = depth + 1;
+            match node {
+                Expr::Binary(_, a, b) | Expr::While(a, b) => {
+                    work.push((a, next));
+                    work.push((b, next));
+                }
+                Expr::Let(_, a, b) | Expr::LetMut(_, a, b) => {
+                    work.push((a, next));
+                    work.push((b, next));
+                }
+                Expr::If(a, b, c) => {
+                    work.push((a, next));
+                    work.push((b, next));
+                    work.push((c, next));
+                }
+                Expr::Assign(_, value) | Expr::FieldAssign(_, _, value) => work.push((value, next)),
+                Expr::Record(_, fields) => {
+                    work.extend(fields.iter().map(|(_, value)| (value, next)))
+                }
+                Expr::Call(_, args) => work.extend(args.iter().map(|arg| (arg, next))),
+                Expr::Match(value, arms) => {
+                    work.push((value, next));
+                    work.extend(arms.iter().map(|arm| (&arm.body, next)));
+                }
+                Expr::Int(_)
+                | Expr::Str(_)
+                | Expr::CStr(_)
+                | Expr::Bool(_)
+                | Expr::Unit
+                | Expr::Var(_)
+                | Expr::Move(_)
+                | Expr::Field(_, _)
+                | Expr::InoutField(_, _)
+                | Expr::Inout(_) => {}
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn native_directives_are_stored_without_resolving_packages() {
+        let source = r#"@include("SDL3/SDL.h"); @link("SDL3"); @pkg_config("nonexistent-rill-parser-test");
+            extern const SDL_INIT_VIDEO: u32;
+            extern fn SDL_CreateWindow(title: cstr, width: i32, height: i32, flags: u64) -> ptr<SDL_Window>;
+            extern fn inspect(window: const_ptr<SDL_Window>, byte: u8, scale: f32) -> unit;
+            fn main() { 0 }"#;
+        let p = parse(source).unwrap();
+        assert_eq!(p.native.includes, ["SDL3/SDL.h"]);
+        assert_eq!(p.native.links, ["SDL3"]);
+        assert_eq!(p.native.packages, ["nonexistent-rill-parser-test"]);
+        assert_eq!(
+            p.constants,
+            [ExternConst {
+                name: "SDL_INIT_VIDEO".into(),
+                ty: ExternType::U32
+            }]
+        );
+        assert_eq!(p.externs[0].params[3].ty, ExternType::U64);
+        assert_eq!(
+            p.externs[0].result,
+            ExternType::Pointer {
+                pointee: "SDL_Window".into(),
+                is_const: false
+            }
+        );
+        assert_eq!(
+            p.externs[1].params[0].ty,
+            ExternType::Pointer {
+                pointee: "SDL_Window".into(),
+                is_const: true
+            }
+        );
+        assert_eq!(p.externs[1].params[1].ty, ExternType::U8);
+        assert_eq!(p.externs[1].params[2].ty, ExternType::F32);
+        let module = parse_module(
+            r#"@link("SDL3"); import helper as h; @include("SDL3/SDL.h"); fn main() { 0 }"#,
+        )
+        .unwrap();
+        assert_eq!(module.program.native.links, ["SDL3"]);
+        assert_eq!(module.program.native.includes, ["SDL3/SDL.h"]);
+    }
+    #[test]
+    fn native_syntax_rejects_malformed_directives_and_pointer_types() {
+        for (source, location, message) in [
+            (r#"@unknown("x");"#, "1:2:", "unknown native directive"),
+            (r#"@link("x") fn main() {}"#, "1:12:", "expected ';'"),
+            (r#"@link(c"x");"#, "1:7:", "ordinary string literal"),
+            (r#"@link();"#, "1:7:", "ordinary string literal"),
+            (r#"@link("a", "b");"#, "1:10:", "expected RParen"),
+            (r#"@include("x>\n#error bad");"#, "1:10:", "invalid include"),
+            (
+                r#"fn main() {} @link("x");"#,
+                "1:14:",
+                "must precede declarations",
+            ),
+            ("extern const FLAG: u32", "1:23:", "expected Semi"),
+            (
+                "extern fn f(x: ptr<SDL_Window*>)->unit;",
+                "1:30:",
+                "expected Gt",
+            ),
+            (
+                "extern fn f(x: ptr<SDL_Window.Other>)->unit;",
+                "1:30:",
+                "expected Gt",
+            ),
+        ] {
+            let error = parse(source).unwrap_err();
+            assert!(error.starts_with(location), "{error}");
+            assert!(error.contains(message), "{error}");
+        }
+        assert!(parse("extern fn f(x: ptr<ptr<SDL_Window>>)->unit;").is_err());
+        assert!(parse("extern const FLAG u32;").is_err());
+    }
+    #[test]
+    fn precedence_and_calls() {
+        let p = parse("let add x y = x + y\nlet main = add(1, 2 * 3)").unwrap();
+        assert_eq!(p.functions.len(), 2);
+        assert!(
+            matches!(&p.functions[1].body, Expr::Call(name, args) if name == "add" && matches!(args[1], Expr::Binary(BinaryOp::Mul, _, _)))
+        );
+    }
+    #[test]
+    fn parses_module_exports_and_qualified_names_only_in_module_mode() {
+        let src = "import helper as h;\nexport type Wrap<a> = Wrap(h.Option<a>)\nexport let get x = match x { h.Some(v) => h.id(v) | h.None => 0 }";
+        let parsed = parse_module(src).unwrap();
+        assert_eq!(
+            parsed.exports,
+            vec![
+                Export {
+                    name: "Wrap".into(),
+                    kind: ExportKind::Type
+                },
+                Export {
+                    name: "get".into(),
+                    kind: ExportKind::Function
+                },
+            ]
+        );
+        assert_eq!(
+            parsed.program.types[0].variants[0].fields[0].name,
+            "h.Option"
+        );
+        assert!(
+            matches!(&parsed.program.functions[0].body, Expr::Match(_, arms)
+            if matches!(&arms[0].pattern, Pattern::Constructor(name, _) if name == "h.Some")
+            && matches!(&arms[0].body, Expr::Call(name, _) if name == "h.id")
+            && matches!(&arms[1].pattern, Pattern::Constructor(name, fields) if name == "h.None" && fields.is_empty()))
+        );
+        assert!(parse(src).is_err());
+        assert!(parse("let main = h.id(1)").is_err());
+        let foreign =
+            parse_module("export extern fn x() -> i32; export extern const FLAG: u32;").unwrap();
+        assert_eq!(
+            foreign.exports,
+            vec![
+                Export {
+                    name: "x".into(),
+                    kind: ExportKind::Function
+                },
+                Export {
+                    name: "FLAG".into(),
+                    kind: ExportKind::Constant
+                },
+            ]
+        );
+        assert!(parse("export extern fn x() -> i32;").is_err());
+        assert!(parse_module("import h let main = 1").is_err());
+    }
+    #[test]
+    fn lets_and_conditionals() {
+        assert!(parse("let main = let x = 1 in if x == 1 then 2 else 3").is_ok());
+    }
+    #[test]
+    fn parses_while_expression_and_sequence() {
+        let p = parse("let main = let done = while false do () in 42").unwrap();
+        assert!(matches!(&p.functions[0].body, Expr::Let(_, value, _) if
+            matches!(value.as_ref(), Expr::While(condition, body) if **condition == Expr::Bool(false) && **body == Expr::Unit)));
+        assert!(parse("let main = while true ()").is_err());
+        assert!(parse("let main = while false do").is_err());
+    }
+    #[test]
+    fn parses_mutable_locals_and_assignment() {
+        let p = parse("let main = let mut x = 1 in let done = x <- x + 2 in x").unwrap();
+        assert!(
+            matches!(&p.functions[0].body, Expr::LetMut(name, init, body)
+            if name == "x" && **init == Expr::Int(1)
+                && matches!(body.as_ref(), Expr::Let(_, value, _)
+                    if matches!(value.as_ref(), Expr::Assign(target, _) if target == "x")))
+        );
+        assert!(parse("let main = let mut x = 0 in while x < 2 do x <- x + 1").is_ok());
+        assert!(parse("let main = (1 + 2) <- 3").is_err());
+        assert!(parse("let mut x = 0").is_err());
+    }
+    #[test]
+    fn parses_explicit_root_move() {
+        let p = parse("let main = let x = 1 in let y = move x in y").unwrap();
+        assert!(matches!(&p.functions[0].body, Expr::Let(_, _, body)
+            if matches!(body.as_ref(), Expr::Let(_, value, _) if matches!(value.as_ref(), Expr::Move(name) if name == "x"))));
+        assert!(parse("let main = move").is_err());
+        assert!(parse("let main = move x.y").is_err());
+        assert!(parse("let main = move (x)").is_err());
+    }
+    #[test]
+    fn parses_nominal_records_fields_and_annotated_parameters() {
+        let src = "type Point = { x: i32; y: i32 }\nlet set (inout p: Point) (n: i32) = p.x <- n\nlet main = let mut p = record Point { y = 2; x = 1 } in p.x";
+        let p = parse(src).unwrap();
+        assert_eq!(p.types[0].record_fields.as_ref().unwrap(), &["x", "y"]);
+        assert_eq!(p.types[0].variants[0].fields[0].name, "i32");
+        assert_eq!(p.functions[0].params[0].mode, ParamMode::Inout);
+        assert_eq!(
+            p.functions[0].params[0].annotation.as_ref().unwrap().name,
+            "Point"
+        );
+        assert_eq!(p.functions[0].params[1].mode, ParamMode::Value);
+        assert!(
+            matches!(&p.functions[0].body, Expr::FieldAssign(root, field, _) if root == "p" && field.as_slice() == ["x"])
+        );
+        assert!(matches!(&p.functions[1].body, Expr::LetMut(_, value, body)
+            if matches!(value.as_ref(), Expr::Record(name, fields) if name == "Point" && fields[0].0 == "y")
+            && matches!(body.as_ref(), Expr::Field(root, field) if root == "p" && field.as_slice() == ["x"])));
+        assert!(parse("type P = {x: i32 y: i32}").is_err());
+        assert!(parse("let main = record P {x = 1 y = 2}").is_err());
+        assert!(parse("let f (x) = x").is_err());
+        assert!(parse("let main = let mut p = record P {x = 1} in p.x.y <- 2").is_ok());
+    }
+    #[test]
+    fn parses_qualified_record_type_and_unresolved_field_access() {
+        let p = parse_module("import shapes as s; let f (p: s.Point) = p.x\nlet main = s.None")
+            .unwrap();
+        assert_eq!(
+            p.program.functions[0].params[0]
+                .annotation
+                .as_ref()
+                .unwrap()
+                .name,
+            "s.Point"
+        );
+        assert!(
+            matches!(&p.program.functions[0].body, Expr::Field(root,field) if root == "p" && field.as_slice() == ["x"])
+        );
+        assert!(
+            matches!(&p.program.functions[1].body, Expr::Field(root,field) if root == "s" && field.as_slice() == ["None"])
+        );
+    }
+    #[test]
+    fn parses_bounded_field_inout_paths() {
+        let p = parse("let main = f(inout item.x)").unwrap();
+        assert!(matches!(&p.functions[0].body, Expr::Call(_, args)
+            if matches!(&args[0], Expr::InoutField(root, field) if root == "item" && field.as_slice() == ["x"])));
+        assert!(parse("let main = f(inout item.x.y)").is_ok());
+        assert!(parse(&format!("let main = f(inout item{})", ".x".repeat(17))).is_err());
+        assert!(parse(&format!("let main = item{}", ".x".repeat(17))).is_err());
+        assert!(parse("let main = f(inout (item.x))").is_err());
+    }
+    #[test]
+    fn parses_explicit_inout_roots() {
+        let p = parse(
+            "let bump (inout x) n = x <- x + n\nlet main = let mut x = 1 in bump(inout x, 2)",
+        )
+        .unwrap();
+        assert_eq!(p.functions[0].params[0].mode, ParamMode::Inout);
+        assert_eq!(p.functions[0].params[1].mode, ParamMode::Value);
+        assert!(matches!(&p.functions[1].body, Expr::LetMut(_, _, body)
+            if matches!(body.as_ref(), Expr::Call(_, args) if matches!(&args[0], Expr::Inout(x) if x == "x"))));
+        assert!(parse("let f (inout x = x").is_err());
+        assert!(parse("let main = inout x").is_err());
+        assert!(parse("let main = f(inout 1)").is_err());
+        assert!(parse("let main = f(inout x + 1)").is_err());
+    }
+    #[test]
+    fn parses_read_parameters_and_ordinary_arguments() {
+        let p = parse("let inspect (read x) (inout y) z = x\nlet main = inspect(a, inout b, c)")
+            .unwrap();
+        assert_eq!(p.functions[0].params[0].mode, ParamMode::Read);
+        assert_eq!(p.functions[0].params[1].mode, ParamMode::Inout);
+        assert_eq!(p.functions[0].params[2].mode, ParamMode::Value);
+        assert!(matches!(&p.functions[1].body, Expr::Call(_, args)
+            if matches!(&args[0], Expr::Var(name) if name == "a")));
+        assert!(parse("let f (read) = 1").is_err());
+        assert!(parse("let f (value x) = 1").is_err());
+        assert!(parse("let main = f(read x)").is_err());
+    }
+    #[test]
+    fn parses_explicit_c_scalar_declarations() {
+        let p = parse("extern fn sum(x: i32, y: i32) -> i32; extern fn log(x: i32) -> unit; let main = sum(1, 2)").unwrap();
+        assert_eq!(p.externs.len(), 2);
+        assert_eq!(p.externs[0].params[1].ty, ExternType::I32);
+        assert_eq!(p.externs[1].result, ExternType::Unit);
+        assert!(parse("extern fn f(x: i64) -> i32; let main = 0").is_err());
+        assert!(parse("extern fn f(x: i32) -> i32 let main = 0").is_err());
+        assert!(parse("extern fn f(x: i32) -> i32; let main = 1 - 2").is_ok());
+    }
+    #[test]
+    fn c_strings_decode_escapes_and_reject_nul() {
+        let p = parse("extern fn use_text(s: cstr) -> unit; let main = use_text(c\"hi \\tκόσμος \\\"ok\\\"\")").unwrap();
+        assert_eq!(p.externs[0].params[0].ty, ExternType::CStr);
+        assert!(matches!(&p.functions[0].body, Expr::Call(_, args)
+            if args[0] == Expr::CStr("hi \tκόσμος \"ok\"".into())));
+        assert!(parse("let main = c\"abc\0def\"").is_err());
+        assert!(parse("let main = c\"abc\\0def\"").is_err());
+        assert!(parse("let main = c\"a\\qb\"").is_err());
+        assert!(parse("let main = c\"line\nbreak\"").is_err());
+        assert!(parse("let main = c\"unfinished").is_err());
+    }
+    #[test]
+    fn static_strings_decode_utf8_and_embedded_nul() {
+        let p = parse("let main = byte_at(\"é\\0a\\n\\\"\\\\\", 2)").unwrap();
+        assert!(matches!(&p.functions[0].body, Expr::Call(name, args)
+            if name == "byte_at" && args[0] == Expr::Str("é\0a\n\"\\".into())));
+        assert!(parse("let main = \"\"").is_ok());
+        assert!(parse("let main = \"a\\qb\"").is_err());
+        assert!(parse("let main = \"abc").is_err());
+        assert!(parse("let main = \"a\nb\"").is_err());
+    }
+    #[test]
+    fn generic_types_and_match_patterns() {
+        let program = parse(
+            "type Option<a> = None | Some(a)\n\
+            type Pair<a, b> = Pair(a, Option<b>)\n\
+            let main = match Some(1) { Some(x) => x | None => 0 }",
+        )
+        .unwrap();
+        assert_eq!(program.types[0].params, vec!["a"]);
+        assert_eq!(program.types[1].variants[0].fields[1].args[0].name, "b");
+        assert!(matches!(&program.functions[0].body, Expr::Match(_, arms)
+            if matches!(&arms[0].pattern, Pattern::Constructor(n, fields)
+                if n == "Some" && matches!(&fields[0], Pattern::Binding(x) if x == "x"))));
+        let p = parse("let main = match 1 { -2147483648 => 1 | _ => 0 }").unwrap();
+        assert!(matches!(&p.functions[0].body, Expr::Match(_, arms)
+            if arms[0].pattern == Pattern::Int(i32::MIN)));
+        assert!(parse("type T = C( ) |\nlet main = 1").is_err());
+        assert!(parse("let main = match true { true => 1 | }").is_err());
+    }
+    #[test]
+    fn rejects_invalid_input() {
+        assert!(parse("let main = 1 +").is_err());
+        assert!(parse("let main = @").unwrap_err().contains("1:12"));
+        assert!(parse("let main = 2147483648").is_err());
+        assert!(parse("let main = -2147483648").is_ok());
+    }
+}

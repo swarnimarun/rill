@@ -1,0 +1,124 @@
+// Bounded JSON syntax validator for a static UTF-8 input string.
+// Successful results carry the first byte after the parsed value.
+type JsonParse = JsonAt(i32) | JsonInvalid
+
+let json_byte text i = if i >= 0 && i < byte_len(text) then byte_at(text, i) else -1
+let json_digit c = c >= 48 && c <= 57
+let json_hex c = json_digit(c) || (c >= 65 && c <= 70) || (c >= 97 && c <= 102)
+let json_space c = c == 32 || c == 9 || c == 10 || c == 13
+let json_ws text start =
+    let mut pos = start in
+    let skip = while json_space(json_byte(text, pos)) do pos <- pos + 1 in
+    pos
+
+let json_starts text start word =
+    if start < 0 || start > byte_len(text) || byte_len(word) > byte_len(text) - start then false else
+    let mut pos = 0 in
+    let mut same = true in
+    let compare = while pos < byte_len(word) && same do
+        let check = if byte_at(text, start + pos) != byte_at(word, pos) then same <- false else () in
+        pos <- pos + 1
+    in same
+
+let json_string text start =
+    if json_byte(text, start) != 34 then JsonInvalid else
+    let mut pos = start + 1 in
+    let mut good = true in
+    let mut closed = false in
+    let scan = while good && closed == false do
+        let c = json_byte(text, pos) in
+        if c == 34 then
+            let step = pos <- pos + 1 in closed <- true
+        else if c < 32 then good <- false
+        else if c == 92 then
+            let esc = json_byte(text, pos + 1) in
+            if esc == 34 || esc == 92 || esc == 47 || esc == 98 || esc == 102 || esc == 110 || esc == 114 || esc == 116 then
+                pos <- pos + 2
+            else if esc == 117 then
+                if byte_len(text) - pos >= 6 && json_hex(json_byte(text, pos + 2)) && json_hex(json_byte(text, pos + 3)) && json_hex(json_byte(text, pos + 4)) && json_hex(json_byte(text, pos + 5)) then pos <- pos + 6 else good <- false
+            else good <- false
+        else pos <- pos + 1
+    in if good then JsonAt(pos) else JsonInvalid
+
+let json_number text start =
+    let mut pos = start in
+    let mut good = true in
+    let sign = if json_byte(text, pos) == 45 then pos <- pos + 1 else () in
+    let integer = if json_byte(text, pos) == 48 then pos <- pos + 1 else
+        if json_byte(text, pos) >= 49 && json_byte(text, pos) <= 57 then
+            while json_digit(json_byte(text, pos)) do pos <- pos + 1
+        else good <- false in
+    let fraction = if json_byte(text, pos) == 46 then
+        let advance = pos <- pos + 1 in
+        if json_digit(json_byte(text, pos)) then while json_digit(json_byte(text, pos)) do pos <- pos + 1 else good <- false
+        else () in
+    let exponent = if json_byte(text, pos) == 69 || json_byte(text, pos) == 101 then
+        let advance = pos <- pos + 1 in
+        let sign = if json_byte(text, pos) == 43 || json_byte(text, pos) == 45 then pos <- pos + 1 else () in
+        if json_digit(json_byte(text, pos)) then while json_digit(json_byte(text, pos)) do pos <- pos + 1 else good <- false
+        else () in
+    if good then JsonAt(pos) else JsonInvalid
+
+let json_value text start depth =
+    let pos = json_ws(text, start) in
+    let c = json_byte(text, pos) in
+    if c == 34 then json_string(text, pos)
+    else if c == 91 then json_array(text, pos, depth)
+    else if c == 123 then json_object(text, pos, depth)
+    else if c == 45 || json_digit(c) then json_number(text, pos)
+    else if json_starts(text, pos, "true") then JsonAt(pos + 4)
+    else if json_starts(text, pos, "false") then JsonAt(pos + 5)
+    else if json_starts(text, pos, "null") then JsonAt(pos + 4)
+    else JsonInvalid
+
+let json_array text start depth =
+    if depth >= 8 then JsonInvalid else
+    let mut pos = json_ws(text, start + 1) in
+    let mut good = true in
+    let mut done = false in
+    let empty = if json_byte(text, pos) == 93 then let step = pos <- pos + 1 in done <- true else () in
+    let scan = while good && done == false do
+        match json_value(text, pos, depth + 1) {
+            JsonInvalid => good <- false |
+            JsonAt(next) =>
+                let step = pos <- json_ws(text, next) in
+                if json_byte(text, pos) == 93 then
+                    let step = pos <- pos + 1 in done <- true
+                else if json_byte(text, pos) == 44 then
+                    let step = pos <- json_ws(text, pos + 1) in
+                    if json_byte(text, pos) == 93 then good <- false else ()
+                else good <- false
+        }
+    in if good then JsonAt(pos) else JsonInvalid
+
+let json_object text start depth =
+    if depth >= 8 then JsonInvalid else
+    let mut pos = json_ws(text, start + 1) in
+    let mut good = true in
+    let mut done = false in
+    let empty = if json_byte(text, pos) == 125 then let step = pos <- pos + 1 in done <- true else () in
+    let scan = while good && done == false do
+        match json_string(text, pos) {
+            JsonInvalid => good <- false |
+            JsonAt(key_end) =>
+                let step = pos <- json_ws(text, key_end) in
+                if json_byte(text, pos) != 58 then good <- false else
+                let step = pos <- pos + 1 in
+                match json_value(text, pos, depth + 1) {
+                    JsonInvalid => good <- false |
+                    JsonAt(next) =>
+                        let step = pos <- json_ws(text, next) in
+                        if json_byte(text, pos) == 125 then
+                            let step = pos <- pos + 1 in done <- true
+                        else if json_byte(text, pos) == 44 then
+                            let step = pos <- json_ws(text, pos + 1) in
+                            if json_byte(text, pos) == 125 then good <- false else ()
+                        else good <- false
+                }
+        }
+    in if good then JsonAt(pos) else JsonInvalid
+
+export let json_valid text = match json_value(text, 0, 0) {
+    JsonInvalid => false |
+    JsonAt(pos) => json_ws(text, pos) == byte_len(text)
+}

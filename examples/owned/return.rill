@@ -1,0 +1,11 @@
+// The callee transfers its byte buffer and cleanup obligation to the caller.
+let make length =
+    let mut output = system_bytes_zeroed_abort(length) in
+    let initialized = owned_bytes_set(inout output, 0, 42) in
+    move output
+
+let forward length = make(length)
+
+let main =
+    let output = forward(4) in
+    owned_bytes_get(output, 0)

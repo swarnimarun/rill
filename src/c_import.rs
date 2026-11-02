@@ -1,0 +1,296 @@
+//! Source-selected C headers and libraries. Tool arguments never pass through a shell.
+use std::ffi::{OsStr, OsString};
+use std::io::Write;
+use std::process::{Command, Stdio};
+use std::sync::atomic::{AtomicU64, Ordering};
+
+struct CheckDirectory(std::path::PathBuf);
+impl CheckDirectory {
+    fn create() -> Result<Self, String> {
+        static NEXT: AtomicU64 = AtomicU64::new(0);
+        loop {
+            let path = std::env::temp_dir().join(format!(
+                "rill-c-check-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed)
+            ));
+            match std::fs::create_dir(&path) {
+                Ok(()) => return Ok(Self(path)),
+                Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(e) => return Err(format!("E-C-IMPORT: cannot create check directory: {e}")),
+            }
+        }
+    }
+}
+impl Drop for CheckDirectory {
+    fn drop(&mut self) {
+        let _ = std::fs::remove_dir_all(&self.0);
+    }
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Config {
+    pub includes: Vec<String>,
+    pub links: Vec<String>,
+    pub packages: Vec<String>,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Resolved {
+    pub cflags: Vec<OsString>,
+    pub link_args: Vec<OsString>,
+}
+
+impl Config {
+    pub fn validate(&self) -> Result<(), String> {
+        for header in &self.includes {
+            if header.is_empty()
+                || !header
+                    .bytes()
+                    .all(|c| c.is_ascii_alphanumeric() || b"_./-".contains(&c))
+            {
+                return Err(format!("E-C-IMPORT: invalid include name {header:?}"));
+            }
+        }
+        for (kind, names) in [
+            ("library", &self.links),
+            ("pkg-config package", &self.packages),
+        ] {
+            for name in names {
+                if name.is_empty()
+                    || name.starts_with('-')
+                    || !name
+                        .bytes()
+                        .all(|c| c.is_ascii_alphanumeric() || b"_+.-".contains(&c))
+                {
+                    return Err(format!("E-C-IMPORT: invalid {kind} name {name:?}"));
+                }
+            }
+        }
+        Ok(())
+    }
+
+    /// Resolve only the packages explicitly requested by the source.
+    pub fn resolve(&self) -> Result<Resolved, String> {
+        self.validate()?;
+        let mut result = Resolved::default();
+        if !self.packages.is_empty() {
+            result.cflags = pkg_config("--cflags", &self.packages)?;
+            result.link_args = pkg_config("--libs", &self.packages)?;
+        }
+        // Source links supplement pkg-config's dependency graph. Preserve its
+        // ordered output, including repeated libraries needed by static cycles.
+        // Explicit CLI linker arguments are appended separately by the caller.
+        for name in &self.links {
+            let argument = OsString::from(format!("-l{name}"));
+            if !result.link_args.contains(&argument) {
+                result.link_args.push(argument);
+            }
+        }
+        Ok(result)
+    }
+
+    pub fn preamble(&self) -> Result<String, String> {
+        self.validate()?;
+        Ok(self
+            .includes
+            .iter()
+            .map(|header| format!("#include <{header}>\n"))
+            .collect())
+    }
+}
+
+fn pkg_config(option: &str, packages: &[String]) -> Result<Vec<OsString>, String> {
+    let output = Command::new("pkg-config")
+        .args([option, "--"])
+        .args(packages)
+        .output()
+        .map_err(|e| format!("E-C-IMPORT: cannot start pkg-config: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "E-C-IMPORT: pkg-config {}: {}",
+            packages.join(" "),
+            String::from_utf8_lossy(&output.stderr).trim()
+        ));
+    }
+    let flags = std::str::from_utf8(&output.stdout)
+        .map_err(|_| "E-C-IMPORT: pkg-config output is not UTF-8")?;
+    split_flags(flags).map(|flags| flags.into_iter().map(OsString::from).collect())
+}
+
+/// Decode pkg-config's shell-style quoting without evaluating substitutions,
+/// redirects, variables, or commands. Every decoded word is a single argument.
+fn split_flags(input: &str) -> Result<Vec<String>, String> {
+    let mut words = Vec::new();
+    let mut word = String::new();
+    let mut quote = None;
+    let mut escaped = false;
+    let mut started = false;
+    for c in input.chars() {
+        if escaped {
+            word.push(c);
+            escaped = false;
+        } else if c == '\\' && quote != Some('\'') {
+            escaped = true;
+            started = true;
+        } else if let Some(q) = quote {
+            if c == q {
+                quote = None;
+            } else {
+                word.push(c);
+            }
+        } else if c == '\'' || c == '"' {
+            quote = Some(c);
+            started = true;
+        } else if c.is_whitespace() {
+            if started {
+                words.push(std::mem::take(&mut word));
+                started = false;
+            }
+        } else {
+            word.push(c);
+            started = true;
+        }
+    }
+    if escaped || quote.is_some() {
+        return Err("E-C-IMPORT: malformed quoted pkg-config output".into());
+    }
+    if started {
+        words.push(word);
+    }
+    Ok(words)
+}
+
+/// Ask the selected target C compiler to check headers and ABI assertions.
+/// The same target/sysroot flags must also be used for the final build.
+pub fn validate_c(
+    source: &str,
+    compiler: &OsStr,
+    zig_cc: bool,
+    cflags: &[OsString],
+) -> Result<(), String> {
+    let mut command = Command::new(compiler);
+    let check_directory;
+    if zig_cc {
+        command.arg("cc");
+        // Some Zig versions do not support Clang's syntax-only driver path.
+        // Compile an object to check the same declarations without linking.
+        check_directory = Some(CheckDirectory::create()?);
+        command
+            .arg("-c")
+            .arg("-o")
+            .arg(check_directory.as_ref().unwrap().0.join("check.o"));
+    } else {
+        check_directory = None;
+        command.arg("-fsyntax-only");
+    }
+    command.args(["-std=c11", "-x", "c"]);
+    command.args(cflags);
+    command.arg("-");
+    let mut child = command
+        .stdin(Stdio::piped())
+        .stdout(Stdio::null())
+        .stderr(Stdio::piped())
+        .spawn()
+        .map_err(|e| {
+            format!(
+                "E-C-IMPORT: cannot start C compiler {}: {e}",
+                compiler.to_string_lossy()
+            )
+        })?;
+    let mut stdin = child.stdin.take().expect("piped C compiler input");
+    // Drain diagnostics while sending input, including when a bad header makes
+    // the compiler reject a large translation unit before reading all of it.
+    let (output, written) = std::thread::scope(|scope| {
+        let writer = scope.spawn(move || stdin.write_all(source.as_bytes()));
+        let output = child.wait_with_output();
+        let written = writer.join().expect("C input writer panicked");
+        (output, written)
+    });
+    let output = output.map_err(|e| format!("E-C-IMPORT: cannot wait for C compiler: {e}"))?;
+    drop(check_directory);
+    if !output.status.success() {
+        return Err(format!(
+            "E-C-IMPORT: target C header/type checking failed:\n{}",
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    written.map_err(|e| format!("E-C-IMPORT: cannot send C declarations: {e}"))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn package_flags_are_words_without_shell_execution() {
+        assert_eq!(
+            split_flags(r#"-I/a\ b '-L/c d' "-DNAME=a b" -lx $(touch /tmp/x)"#).unwrap(),
+            [
+                "-I/a b",
+                "-L/c d",
+                "-DNAME=a b",
+                "-lx",
+                "$(touch",
+                "/tmp/x)"
+            ]
+        );
+        assert!(split_flags("'unfinished").is_err());
+        assert!(split_flags("trailing\\").is_err());
+    }
+
+    #[test]
+    fn rejects_source_directive_injection() {
+        for header in ["", "stdio.h>\n#error injection", "\"a.h\""] {
+            assert!(Config {
+                includes: vec![header.into()],
+                ..Config::default()
+            }
+            .validate()
+            .is_err());
+        }
+        assert!(Config {
+            packages: vec!["--libs".into()],
+            ..Config::default()
+        }
+        .validate()
+        .is_err());
+        assert_eq!(
+            Config {
+                includes: vec!["SDL3/SDL.h".into()],
+                ..Config::default()
+            }
+            .preamble()
+            .unwrap(),
+            "#include <SDL3/SDL.h>\n"
+        );
+    }
+
+    #[test]
+    fn repeated_declarative_links_are_idempotent() {
+        let resolved = Config {
+            links: vec![
+                "first".into(),
+                "first".into(),
+                "second".into(),
+                "first".into(),
+            ],
+            ..Config::default()
+        }
+        .resolve()
+        .unwrap();
+        assert!(resolved.cflags.is_empty());
+        assert_eq!(
+            resolved.link_args,
+            [OsString::from("-lfirst"), OsString::from("-lsecond")]
+        );
+    }
+
+    #[test]
+    fn compiler_compares_types_not_only_width() {
+        let prefix = "#include <stdint.h>\n_Bool foreign(uint32_t x);\n";
+        validate_c(&format!("{prefix}_Static_assert(__builtin_types_compatible_p(__typeof__(&foreign), _Bool (*)(uint32_t)), \"signature\");"), OsStr::new("cc"), false, &[]).unwrap();
+        let error = validate_c(&format!("{prefix}_Static_assert(__builtin_types_compatible_p(__typeof__(&foreign), int (*)(int32_t)), \"signature\");"), OsStr::new("cc"), false, &[]).unwrap_err();
+        assert!(error.contains("signature"));
+    }
+}

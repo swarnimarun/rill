@@ -1,0 +1,18 @@
+// Fixed 11-byte representation: byte 0 is the offset of the first digit,
+// followed by zero-filled space and right-aligned ASCII decimal digits.
+// A negative input returns marker 255 in byte 0.
+let encode_unsigned n =
+    let mut out = bytes_new(11) in
+    if n < 0 then bytes_set(out, 0, 255) else
+    let mut value = n in
+    let mut pos = 10 in
+    let first = out <- bytes_set(out, pos, 48 + value % 10) in
+    let shrink = value <- value / 10 in
+    let shift = pos <- pos - 1 in
+    let rest = while value > 0 do
+        let digit = out <- bytes_set(out, pos, 48 + value % 10) in
+        let shrink = value <- value / 10 in
+        pos <- pos - 1
+    in bytes_set(out, 0, pos + 1)
+
+let main = encode_unsigned(12345)

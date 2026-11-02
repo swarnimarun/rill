@@ -1,0 +1,17 @@
+import std.json_input as json;
+import std.result as result;
+
+// Borrow caller-owned bytes and exhaustively handle the ordinary Result ADT.
+let main =
+    let mut input = system_bytes_zeroed_abort(2) in
+    let sign = owned_bytes_set(inout input, 0, 45) in
+    let digit = owned_bytes_set(inout input, 1, 55) in
+    match json.parse_i32(input) {
+        result.Ok(value) => value
+        | result.Err(error) => match error {
+            json.ExpectedDigit(offset) => offset
+            | json.LeadingZero(offset) => offset
+            | json.IntegerOverflow(offset) => offset
+            | json.TrailingData(offset) => offset
+        }
+    }

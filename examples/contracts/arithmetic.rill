@@ -1,0 +1,2 @@
+// Division truncates toward zero; the remainder has the dividend's sign.
+let main = if -7 / 3 == -2 && -7 % 3 == -1 then 42 else 0

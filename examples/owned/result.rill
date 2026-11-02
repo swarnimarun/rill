@@ -1,0 +1,14 @@
+// Result is an ordinary nominal sum. Allocation still uses the aborting API.
+type Result<a> = Ok(a) | Err(i32)
+
+let make n =
+  if n > 0 then
+    (let owner = system_box_i32_abort(n) in Ok(move owner))
+  else Err(1)
+
+let main =
+  let result = make(42) in
+  match move result {
+    Ok(owner) => box_read(owner)
+    | Err(code) => code
+  }

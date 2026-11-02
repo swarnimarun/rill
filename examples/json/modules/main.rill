@@ -1,0 +1,2 @@
+import validator;
+let main = validator.json_valid("{\"items\":[1,true,null,\"rill\"]}")

@@ -1,0 +1,2 @@
+// An ordinary algebraic type; importing it adds no special error handling.
+export type Result<a, e> = Ok(a) | Err(e)

@@ -1,0 +1,14 @@
+// Damage consumes shield first and never reduces health below zero.
+// This example assumes nonnegative health, shield, and damage values.
+type Status = { health: i32; shield: i32 }
+
+let apply_hit (inout health) (inout shield) damage =
+    let blocked = if shield < damage then shield else damage in
+    let remaining = damage - blocked in
+    let update_shield = shield <- shield - blocked in
+    health <- if remaining < health then health - remaining else 0
+
+let main =
+    let mut status = record Status { health = 100; shield = 30 } in
+    let hit = apply_hit(inout status.health, inout status.shield, 45) in
+    status.health

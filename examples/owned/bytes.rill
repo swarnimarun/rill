@@ -1,0 +1,8 @@
+// A runtime-sized byte value starts zeroed and remains owned by the caller.
+let first (read buffer) = owned_bytes_get(buffer, 0)
+let set_first (inout buffer) = owned_bytes_set(inout buffer, 0, 65)
+let main =
+    let length = 2 + 2 in
+    let mut buffer = system_bytes_zeroed_abort(length) in
+    let done = set_first(inout buffer) in
+    first(buffer)

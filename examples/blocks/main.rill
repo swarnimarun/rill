@@ -1,0 +1,15 @@
+fn bump(inout value: i32, amount: i32) {
+    value <- value + amount;
+}
+
+fn main() {
+    let mut value = 0;
+    while value < 6 {
+        bump(inout value, 1);
+    };
+    if value == 6 {
+        value * 7
+    } else {
+        0
+    }
+}

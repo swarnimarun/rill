@@ -1,0 +1,6 @@
+// An exclusive loan lets a function update a caller's mutable local.
+let bump (inout x) = x <- x + 1
+let main =
+    let mut value = 41 in
+    let updated = bump(inout value) in
+    value

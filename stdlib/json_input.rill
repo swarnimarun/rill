@@ -1,0 +1,46 @@
+import std.result as result;
+
+export type ParseError = ExpectedDigit(i32) | LeadingZero(i32) | IntegerOverflow(i32) | TrailingData(i32)
+
+// JSON signed i32 documents from runtime owned bytes. No allocation or mutation.
+let at (read input) pos =
+    if pos < owned_bytes_len(input) then owned_bytes_get(input, pos) else -1
+let space c = c == 32 || c == 9 || c == 10 || c == 13
+let digit c = c >= 48 && c <= 57
+let whitespace (read input) start =
+    let mut pos = start in
+    let skip = while space(at(input, pos)) do pos <- pos + 1 in pos
+
+// Offsets are bytes. Stop at the first lexical error, including overflow.
+export let parse_i32 (read input) =
+    let start = whitespace(input, 0) in
+    let negative = at(input, start) == 45 in
+    let first = if negative then start + 1 else start in
+    if digit(at(input, first)) == false then result.Err(ExpectedDigit(first)) else
+    let mut pos = first in
+    // Negative accumulation permits MIN without overflowing an intermediate.
+    let mut value = 0 in
+    let mut overflow = false in
+    let mut leading_zero = false in
+    let limit = if negative then -2147483647 - 1 else -2147483647 in
+    let scan = while digit(at(input, pos)) && overflow == false && leading_zero == false do
+        if pos > first && at(input, first) == 48 then leading_zero <- true else
+        let d = at(input, pos) - 48 in
+        if value < limit / 10 || (value == limit / 10 && d > 0 - limit % 10) then
+            overflow <- true
+        else
+            let step = value <- value * 10 - d in
+            pos <- pos + 1
+    in
+    if leading_zero then result.Err(LeadingZero(pos)) else
+    if overflow then result.Err(IntegerOverflow(pos)) else
+    let end = whitespace(input, pos) in
+    if end != owned_bytes_len(input) then result.Err(TrailingData(end)) else
+    result.Ok(if negative then value else 0 - value)
+
+export let i32_valid (read input) =
+    match parse_i32(input) { result.Ok(value) => true | result.Err(error) => false }
+
+// Invalid syntax or overflow returns the caller's fallback.
+export let parse_i32_or (read input) fallback =
+    match parse_i32(input) { result.Ok(value) => value | result.Err(error) => fallback }
