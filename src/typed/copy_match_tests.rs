@@ -238,9 +238,11 @@ fn wide_pattern_matrix_has_an_explicit_bounded_work_policy() {
         owned: false,
     };
     let mut program = TypedMain {
+        logical: Default::default(),
         native: NativeManifest::default(),
         allocation_contract: None,
         adts: vec![AdtType {
+            symbolic: None,
             origin: super::AdtOrigin::Source,
             record_fields: None,
             name: "Wide".into(),

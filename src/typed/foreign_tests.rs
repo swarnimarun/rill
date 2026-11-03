@@ -190,6 +190,7 @@ fn source_and_independent_ir_reject_owner_native_mixing() {
     // The lowerer omits unused source layouts; forge a real owner type registry
     // entry to ensure the independent restriction checks unused metadata too.
     phantom.adts.push(AdtType {
+        symbolic: None,
         origin: AdtOrigin::Source,
         record_fields: None,
         name: "Unused".into(),
@@ -387,6 +388,7 @@ fn rejects_invalid_raw_types_in_unused_adt_arguments_fields_and_capture() {
     reject(&p);
     let mut p = lower("type Marker<a> = Empty fn main() { 42 }");
     p.adts.push(AdtType {
+        symbolic: None,
         origin: AdtOrigin::Source,
         record_fields: None,
         name: "Marker".into(),
@@ -501,6 +503,7 @@ fn new_raw_visitors_do_not_hide_owner_children_or_native_mixing() {
     reject(&p);
     let mut p = owner;
     p.adts.push(AdtType {
+        symbolic: None,
         origin: AdtOrigin::Source,
         record_fields: None,
         name: "RawPhantom".into(),

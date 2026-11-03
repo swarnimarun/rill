@@ -97,6 +97,11 @@ at its exact type. Unused phantom shapes need no arbitrary default type;
 unconstrained real uses and weak monotypes can still lack a concrete layout.
 The [local-value example](examples/local-values/README.md) demonstrates immutable
 snapshots and independent whole-record/field instances.
+All-nullary enums can retain unresolved phantom arguments as frozen logical
+identities while using verified tag-only layouts. Dynamic tags, weak/mutable
+locals, generic calls and root loans use that ordinary typed path without a
+default type. Open payload-bearing roots remain unsupported. See the
+[bounded contract and verification status](docs/typed-nullary-phantoms.md).
 
 The subset includes signed 32-bit integers, booleans, unit, arithmetic,
 comparisons, short-circuit `&&` and `||`, generic algebraic types and exhaustive

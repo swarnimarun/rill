@@ -2,6 +2,7 @@ use super::*;
 
 fn record(name: &str, fields: Vec<Type>) -> AdtType {
     AdtType {
+        symbolic: None,
         origin: AdtOrigin::Source,
         name: name.into(),
         record_fields: Some((0..fields.len()).map(|i| format!("f{i}")).collect()),
@@ -25,6 +26,7 @@ fn layouts() -> Vec<AdtType> {
         record("Copy", vec![Type::Int, nominal(0, false)]),
         record("Inner", vec![Type::OwnedI32, Type::OwnedBytes]),
         AdtType {
+            symbolic: None,
             origin: AdtOrigin::Source,
             name: "Enum".into(),
             record_fields: None,

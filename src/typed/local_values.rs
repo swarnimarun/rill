@@ -263,6 +263,7 @@ impl Lower<'_, '_> {
         }
         let id = self.registry.types.len();
         self.registry.types.push(AdtType {
+            symbolic: None,
             origin: AdtOrigin::LocalCapture,
             name: CAPTURE_NAME.into(),
             arguments: fields.to_vec(),
@@ -840,6 +841,13 @@ fn require_copy(ty: Type, types: &[AdtType], budget: &mut Budget) -> Result<(), 
             if adt.owned {
                 return Err(INVALID.into());
             }
+            if adt
+                .symbolic
+                .as_ref()
+                .is_some_and(|logical| logical.dependencies.owner)
+            {
+                return Err("E-TYPED-LOCAL: owner-dependent instantiation is unsupported".into());
+            }
             budget.charge_many(adt.variants.len())?;
             let children = adt
                 .variants
@@ -887,6 +895,7 @@ mod tests {
     #[test]
     fn copy_dependency_reserves_children_before_worklist_growth() {
         let types = vec![AdtType {
+            symbolic: None,
             origin: AdtOrigin::Source,
             name: "Wide".into(),
             arguments: vec![],

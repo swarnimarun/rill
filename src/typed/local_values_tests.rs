@@ -348,6 +348,7 @@ fn capture_layout_origin_is_explicit_and_storage_identity_is_not_layout_identity
 #[test]
 fn capture_verifier_rejects_owner_phantoms_hidden_behind_nominal_fields() {
     let phantom = AdtType {
+        symbolic: None,
         origin: AdtOrigin::Source,
         name: "Phantom".into(),
         arguments: vec![Type::OwnedI32],
@@ -359,6 +360,7 @@ fn capture_verifier_rejects_owner_phantoms_hidden_behind_nominal_fields() {
         }],
     };
     let outer = AdtType {
+        symbolic: None,
         origin: AdtOrigin::Source,
         name: "Outer".into(),
         arguments: vec![],
@@ -380,6 +382,7 @@ fn capture_verifier_rejects_owner_phantoms_hidden_behind_nominal_fields() {
         owned: false,
     };
     let capture = AdtType {
+        symbolic: None,
         origin: AdtOrigin::LocalCapture,
         name: local_values::CAPTURE_NAME.into(),
         arguments: vec![payload],

@@ -117,3 +117,12 @@ source table, and no inference pointer or variable ID escapes.
 See the [fresh verification record](verification/2026-11-03-typed-function-origins.md)
 for executed checks, independent-review findings and the remaining integration
 gates.
+
+
+Ordinary typed compilation also supports the bounded
+[nullary-phantom representation](typed-nullary-phantoms.md). This origin API
+still exports closed types: after ordinary lowering and verification succeed,
+opaque logical arguments produce an explicit `E-TYPED-UNSUPPORTED` mapping
+boundary, including opaque metadata confined to bodies or capture shapes.
+No concrete witness or partial successful index is substituted. Closed mapping
+behavior and ordinary semantic-error precedence remain unchanged.

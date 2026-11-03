@@ -41,8 +41,13 @@ not a replacement for those gates.
   equality. Closed Copy aggregates, concrete generics, root/field loans and
   once-only native constant captures share this typed C path. It preserves
   exact pointer identities, unused header assertions, snapshots and reached-only
-  evaluator rejection. Unrelated unsupported Copy layouts retain the uniform
-  fallback. This is not P1 or P5 completion; see the
+  evaluator rejection. All-nullary enums with unresolved phantom arguments now
+  have separate branded logical identities and verified tag-only runtime layouts,
+  including dynamic tags, weak/mutable values, generic calls and root loans.
+  Open payload-bearing roots remain unsupported; see the [bounded contract](typed-nullary-phantoms.md)
+  and [integrated verification](verification/2026-11-03-nullary-phantoms.md),
+  with 715 default and 763 importer-enabled tests passing.
+  Other unsupported Copy layouts retain the uniform fallback. This is not P1 or P5 completion; see the
   [F2 evidence and limits](verification/2026-11-03-typed-native-transport.md) and
   [final integrated checks and SDL captures](verification/2026-11-03-typed-native-raw-integration.md).
 - P2: initialized mutable locals, nominal records, and call-scoped shared `read`

@@ -104,8 +104,14 @@ assignment, and whole-record root loans. Copy field loans now share the same
 path, with checked prefix-overlap intervals and original-slot forwarding.
 Existing `u8x16` operations now also use checked signatures and compact values
 on this path. Eligible immutable local schemes now use once-evaluated captures
-and exact concrete whole-value/field reconstruction. Unresolved real uses and
-weak monotypes still require a representable concrete layout. Existing native
+and exact concrete whole-value/field reconstruction. All-nullary enums with
+unresolved phantom arguments now retain branded logical identities and
+independently verified tag-only layouts. Their combined acceptance passed
+715 default and 763 importer-enabled tests plus independent native/C probes;
+see [nullary-phantom verification](verification/2026-11-03-nullary-phantoms.md).
+Other unresolved real uses and weak monotypes still require a separately
+proved representation. Fixed-layout phantom products and nonreturning results
+remain subsequent bounded kernel work. Existing native
 `i32`/`bool` calls and constants, `unit` results and direct static `cstr`
 arguments now use explicit typed operations and retain the full native manifest.
 Existing unsigned/float/raw-pointer transport now also uses the checked typed

@@ -151,3 +151,12 @@ types hidden in inactive fields or phantom arguments. On the combined source,
 172 focused tests and 39 independent probes passed, followed by 661 default and
 695 importer-enabled tests, formatting, both strict Clippy checks and both
 Windows GNU compile checks. Windows binaries were not executed.
+
+
+Ordinary typed compilation also supports the bounded
+[nullary-phantom representation](typed-nullary-phantoms.md). This origin API
+still exports closed types: after ordinary lowering and verification succeed,
+opaque logical arguments produce an explicit `E-TYPED-UNSUPPORTED` mapping
+boundary, including opaque metadata confined to bodies or capture shapes.
+No concrete witness or partial successful index is substituted. Closed mapping
+behavior and ordinary semantic-error precedence remain unchanged.

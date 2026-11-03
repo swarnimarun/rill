@@ -1,10 +1,11 @@
-//! A provisional typed IR for closed monomorphic scalar, static-string,
-//! fixed byte-buffer/vector, finite enum/record and Copy native-transport programs.
+//! A provisional typed IR for closed scalar, static-string, fixed byte-buffer/
+//! vector, finite enum/record and Copy native-transport programs, plus bounded
+//! all-nullary enums with frozen logical phantom arguments.
 //!
 //! This is not the verified MIR in PLAN.md. Lowering requires an existing
 //! checked program. The C backend uses it for supported forms; owned-box
 //! programs never fall back to the copying AST evaluator. Generic source
-//! functions specialize to closed signatures before lowering.
+//! functions specialize to exact logical signatures with verified runtime layouts.
 //! Programs outside this narrow subset are rejected without approximation.
 mod adt_eval;
 mod adt_lower;
@@ -34,6 +35,10 @@ mod initialization;
 #[cfg(test)]
 mod initialization_tests;
 mod instances;
+mod logical;
+#[cfg(test)]
+mod logical_tests;
+pub use logical::{LogicalType, OpaqueId, SymbolicInstance};
 mod places;
 pub mod provenance;
 pub use initialization::{Cleanup, CleanupTree, Initialization};
@@ -105,6 +110,9 @@ pub enum AdtOrigin {
 
 #[derive(Clone, Debug)]
 pub struct AdtType {
+    /// Full logical arguments of a proved all-nullary open enum. Closed layouts
+    /// retain `arguments`; opaque identities never become runtime `Type`s.
+    pub symbolic: Option<SymbolicInstance>,
     pub origin: AdtOrigin,
     /// Named record product, never a positional enum; one variant stores field types.
     pub record_fields: Option<Vec<String>>,
@@ -260,6 +268,7 @@ pub enum OwnerInit {
 
 #[derive(Clone, Debug)]
 pub struct TypedMain {
+    logical: logical::Metadata,
     native: NativeManifest,
     allocation_contract: Option<AllocationContract>,
     adts: Vec<AdtType>,
@@ -348,6 +357,7 @@ fn lower_main_traced<'source>(
         next: 0,
     };
     let mut result = TypedMain {
+        logical: Default::default(),
         native: native.clone(),
         allocation_contract: program
             .allocation_types
@@ -428,6 +438,7 @@ fn lower_main_traced<'source>(
             param_cleanup,
         });
     }
+    result.logical = lower.registry.logical;
     result.native.pointers = lower.registry.pointers;
     result.adts = lower.registry.types;
     verify(&result)?;
@@ -989,6 +1000,7 @@ impl Lower<'_, '_> {
 /// or effect proof and must not be used to bypass the source checker.
 pub fn verify(program: &TypedMain) -> Result<(), String> {
     program.native.verify()?;
+    let logical_facts = program.logical.verify(program)?;
     adts::verify(&program.adts)?;
     for adt in &program.adts {
         for &ty in adt
@@ -1028,34 +1040,41 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
     if !entry.params.is_empty() {
         return Err("E-TYPED: main has parameters".into());
     }
-    let has_owner = program
-        .adts
-        .iter()
-        .any(|adt| adt.owned || adt.arguments.iter().any(|ty| ty.is_owner()))
-        || program.functions.iter().any(|f| {
-            f.result.is_owner()
-                || f.params.iter().any(|(_, ty, _)| ty.is_owner())
-                || any_expr(&f.body, &|kind| {
-                    matches!(
-                        kind,
-                        ExprKind::TryAlloc { .. }
-                            | ExprKind::OwnerLet { .. }
-                            | ExprKind::OwnerRead(_)
-                            | ExprKind::OwnerWrite(..)
-                            | ExprKind::OwnerMove(_)
-                            | ExprKind::OwnerBytesLen(_)
-                            | ExprKind::OwnerBytesGet(..)
-                            | ExprKind::OwnerBytesSet(..)
-                    )
-                })
-        });
+    let has_owner = program.adts.iter().any(|adt| {
+        adt.owned
+            || adt.arguments.iter().any(|ty| ty.is_owner())
+            || adt
+                .symbolic
+                .as_ref()
+                .is_some_and(|logical| logical.dependencies.owner)
+    }) || program.functions.iter().any(|f| {
+        f.result.is_owner()
+            || f.params.iter().any(|(_, ty, _)| ty.is_owner())
+            || any_expr(&f.body, &|kind| {
+                matches!(
+                    kind,
+                    ExprKind::TryAlloc { .. }
+                        | ExprKind::OwnerLet { .. }
+                        | ExprKind::OwnerRead(_)
+                        | ExprKind::OwnerWrite(..)
+                        | ExprKind::OwnerMove(_)
+                        | ExprKind::OwnerBytesLen(_)
+                        | ExprKind::OwnerBytesGet(..)
+                        | ExprKind::OwnerBytesSet(..)
+                )
+            })
+    });
     if has_owner {
         if program.native.has_foreign()
             || program.adts.iter().any(|adt| {
-                adt.arguments
-                    .iter()
-                    .chain(adt.variants.iter().flat_map(|v| &v.fields))
-                    .any(|ty| ty.is_raw())
+                adt.symbolic
+                    .as_ref()
+                    .is_some_and(|logical| logical.dependencies.native)
+                    || adt
+                        .arguments
+                        .iter()
+                        .chain(adt.variants.iter().flat_map(|v| &v.fields))
+                        .any(|ty| ty.is_raw())
             })
             || program
                 .functions
@@ -1080,14 +1099,17 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
         }
         verify_acyclic_calls(program)?;
     }
-    let context = VerifyContext {
-        functions: &program.functions,
-        adts: &program.adts,
-        native: &program.native,
-    };
     let mut ids = HashSet::new();
-    for function in &program.functions {
+    for (function_index, function) in program.functions.iter().enumerate() {
+        let context = VerifyContext {
+            functions: &program.functions,
+            adts: &program.adts,
+            native: &program.native,
+            logical: &logical_facts,
+            function: function_index,
+        };
         adts::validate_type(function.result, &program.adts)?;
+        logical_facts.in_scope(function.result, function_index)?;
         program.native.validate_type(function.result)?;
         if matches!(function.result, Type::Bytes(n) if n > 256) {
             return Err("E-TYPED: invalid buffer capacity".into());
@@ -1095,6 +1117,7 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
         let mut scope = HashMap::new();
         for &(id, ty, mode) in &function.params {
             adts::validate_type(ty, &program.adts)?;
+            logical_facts.in_scope(ty, function_index)?;
             program.native.validate_type(ty)?;
             if matches!(ty, Type::Bytes(n) if n > 256) {
                 return Err("E-TYPED: invalid buffer capacity".into());
@@ -1140,6 +1163,8 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
 }
 
 struct VerifyContext<'a> {
+    logical: &'a logical::Facts,
+    function: usize,
     functions: &'a [TypedFunction],
     adts: &'a [AdtType],
     native: &'a NativeManifest,
@@ -1170,6 +1195,7 @@ fn verify_expr(
         return Err("E-TYPED-OWNER: unsupported owner result expression".into());
     }
     adts::validate_type(expr.ty, adts)?;
+    context.logical.in_scope(expr.ty, context.function)?;
     context.native.validate_type(expr.ty)?;
     use BinaryOp::*;
     if matches!(expr.ty, Type::Bytes(n) if n > 256) {
@@ -2705,6 +2731,7 @@ mod tests {
     #[test]
     fn verifier_rejects_out_of_scope_and_bad_types() {
         let p = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2721,6 +2748,7 @@ mod tests {
         };
         assert!(verify(&p).unwrap_err().contains("outside local scope"));
         let p = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2750,6 +2778,7 @@ mod tests {
             kind: ExprKind::ByteLen(Box::new(unit())),
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2771,6 +2800,7 @@ mod tests {
             kind: ExprKind::Binary(BinaryOp::Eq, Box::new(string()), Box::new(string())),
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2800,6 +2830,7 @@ mod tests {
             kind: ExprKind::BytesGet(Box::new(bytes), Box::new(bad_index)),
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2817,6 +2848,7 @@ mod tests {
             kind: ExprKind::BytesNew(257),
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2835,6 +2867,7 @@ mod tests {
 
     fn owner_program(body: ExprNode) -> TypedMain {
         TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2900,6 +2933,7 @@ mod tests {
             kind: ExprKind::Call(1, vec![CallArg::Move(LocalId(0))]),
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -2933,6 +2967,7 @@ mod tests {
                 kind: ExprKind::Call(1, vec![arg]),
             };
             let program = TypedMain {
+                logical: Default::default(),
                 native: NativeManifest::default(),
                 allocation_contract: None,
                 adts: Vec::new(),
@@ -3092,6 +3127,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let p = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3108,6 +3144,7 @@ mod tests {
         };
         assert!(verify(&p).unwrap_err().contains("invalid move argument"));
         let p = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3127,6 +3164,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let p = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3146,6 +3184,7 @@ mod tests {
             .contains("invalid call argument mode"));
         for cleanup in [vec![], vec![LocalId(0), LocalId(1)]] {
             let p = TypedMain {
+                logical: Default::default(),
                 native: NativeManifest::default(),
                 allocation_contract: None,
                 adts: Vec::new(),
@@ -3204,6 +3243,7 @@ mod tests {
             ),
         ] {
             let program = TypedMain {
+                logical: Default::default(),
                 native: NativeManifest::default(),
                 allocation_contract: None,
                 adts: Vec::new(),
@@ -3216,6 +3256,7 @@ mod tests {
             assert!(verify(&program).unwrap_err().contains("loan"));
         }
         let good = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3244,6 +3285,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3259,6 +3301,7 @@ mod tests {
             ..function(vec![ParamMode::Read])
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3305,6 +3348,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3327,6 +3371,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let p = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -3335,6 +3380,7 @@ mod tests {
         };
         assert!(verify(&p).unwrap_err().contains("recursive owner programs"));
         let p = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),

@@ -132,6 +132,7 @@ fn match_coverage_payload_cleanup_and_scope_are_validated() {
 #[test]
 fn inline_layout_cost_rejects_exponential_expansion() {
     let mut types = vec![AdtType {
+        symbolic: None,
         origin: super::AdtOrigin::Source,
         record_fields: None,
         name: "Leaf".into(),
@@ -144,6 +145,7 @@ fn inline_layout_cost_rejects_exponential_expansion() {
     }];
     for id in 1..30 {
         types.push(AdtType {
+            symbolic: None,
             origin: super::AdtOrigin::Source,
             record_fields: None,
             name: format!("Tree{id}"),
@@ -176,6 +178,7 @@ fn independent_nominal_layouts_emit_deterministically() {
 fn metadata_names_cannot_escape_c_string_literals() {
     let mut program = sample();
     program.adts.push(AdtType {
+        symbolic: None,
         origin: super::AdtOrigin::Source,
         record_fields: None,
         name: "Copy".into(),

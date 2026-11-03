@@ -337,6 +337,12 @@ fn lower_with_budget(
         Some(&mut requests),
         (!native && !owner).then_some(&mut trace),
     )?;
+    if typed.adts.iter().any(|adt| adt.symbolic.is_some()) {
+        return Err(
+            "E-TYPED-UNSUPPORTED: Copy node origin index does not map opaque logical arguments"
+                .into(),
+        );
+    }
     if native || super::has_native_representation(&typed) {
         return Err(
             "E-TYPED-UNSUPPORTED: Copy node origin index does not map native programs".into(),

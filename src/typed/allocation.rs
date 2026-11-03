@@ -213,6 +213,7 @@ mod tests {
         // Deliberately permuted tags ensure no intrinsic depends on tag order.
         let types = vec![
             AdtType {
+                symbolic: None,
                 origin: super::AdtOrigin::Source,
                 record_fields: None,
                 name: c.error_name.clone(),
@@ -234,6 +235,7 @@ mod tests {
                 ],
             },
             AdtType {
+                symbolic: None,
                 origin: super::AdtOrigin::Source,
                 record_fields: None,
                 name: c.result_name.clone(),
@@ -271,6 +273,7 @@ mod tests {
             kind: ExprKind::Int(42),
         };
         let mut program = TypedMain {
+            logical: Default::default(),
             native: NativeManifest::default(),
             adts,
             allocation_contract: Some(contract),

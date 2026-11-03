@@ -203,14 +203,18 @@ pub fn lower_main_with_function_origins(
 // Native values can be present only in an inactive variant or phantom
 // argument, without a raw expression type in the source checker. Inspect the
 // complete verified representation before publishing this narrower index.
-fn has_native_representation(typed: &TypedMain) -> bool {
+pub(super) fn has_native_representation(typed: &TypedMain) -> bool {
     typed.native.has_foreign()
         || !typed.native.pointers.is_empty()
         || typed.adts.iter().any(|adt| {
-            adt.arguments
-                .iter()
-                .chain(adt.variants.iter().flat_map(|variant| &variant.fields))
-                .any(|ty| ty.is_raw())
+            adt.symbolic
+                .as_ref()
+                .is_some_and(|logical| logical.dependencies.native)
+                || adt
+                    .arguments
+                    .iter()
+                    .chain(adt.variants.iter().flat_map(|variant| &variant.fields))
+                    .any(|ty| ty.is_raw())
         })
         || typed.functions.iter().any(|function| {
             function.result.is_raw()
@@ -234,6 +238,12 @@ fn lower_with_trace(
 ) -> Result<FunctionOriginProgram, String> {
     let checked = check::analyze(sources.program())?;
     let (typed, instances) = super::lower_main_traced(&checked, Some(&mut trace), None)?;
+    if typed.adts.iter().any(|adt| adt.symbolic.is_some()) {
+        return Err(
+            "E-TYPED-UNSUPPORTED: function origin index does not map opaque logical arguments"
+                .into(),
+        );
+    }
     // Keep ordinary semantic errors first, including existing native rejection.
     // If ordinary lowering later supports native nodes, this narrower API still
     // reports its explicit mapping boundary, never a partial successful index.

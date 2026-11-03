@@ -870,6 +870,7 @@ mod tests {
 
     fn program(body: ExprNode) -> TypedMain {
         TypedMain {
+            logical: Default::default(),
             native: Default::default(),
             allocation_contract: None,
             adts: Vec::new(),
@@ -1544,6 +1545,7 @@ mod tests {
             for phantom in [false, true] {
                 let mut typed = program(int(1));
                 typed.adts.push(AdtType {
+                    symbolic: None,
                     origin: AdtOrigin::Source,
                     record_fields: None,
                     name: "Hidden".into(),
@@ -1585,6 +1587,7 @@ mod tests {
         });
         assert_boundary(&typed, "parameter cleanup");
         let definition = AdtType {
+            symbolic: None,
             origin: AdtOrigin::Source,
             record_fields: None,
             name: "D".into(),

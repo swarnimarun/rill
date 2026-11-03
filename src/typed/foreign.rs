@@ -48,7 +48,7 @@ impl ForeignConvert {
 // Pointer spelling is preserved, not canonicalized against host C typedefs.
 // Reserve our generated namespace, not header-owned C typedef identifiers.
 // System names such as _IO_FILE and valid type keywords retain their spelling.
-fn validate_pointer(pointee: &str) -> Result<(), String> {
+pub(super) fn validate_pointer(pointee: &str) -> Result<(), String> {
     crate::check::validate_extern_type(&ExternType::Pointer {
         pointee: pointee.into(),
         is_const: false,

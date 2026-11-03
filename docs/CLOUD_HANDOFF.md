@@ -197,3 +197,14 @@ SDL3 O0/O2 execution is covered. See [the configuration record](verification/202
 for exact source revisions and limits. Legacy generated source never auto-loads
 a configuration. P5, non-Unix supervision, cache identity and broader foreign
 contracts remain open.
+
+
+The bounded [nullary-phantom increment](typed-nullary-phantoms.md) retains frozen,
+compilation-branded logical arguments separately from verified tag-only layouts.
+Ordinary typed evaluation/C now handles dynamic nullary tags, weak/mutable
+values, generic forwarding and existing root loans without choosing a default
+type. Canonical full-declaration checks prevent inactive-payload erasure;
+optional origin APIs remain closed. Open physical payload products still need
+separate field-schema reconstruction. The [integrated verification](verification/2026-11-03-nullary-phantoms.md)
+passed 715 default and 763 importer-enabled tests, both strict Clippy and Windows
+compile modes, plus independent probes and GCC/Clang O0/O2 execution.

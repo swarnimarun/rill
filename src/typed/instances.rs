@@ -1,5 +1,6 @@
-//! Reachable, closed function instances. Source type inference remains the
-//! generic semantic check; this worklist only chooses concrete representations.
+//! Reachable function instances with closed runtime layouts and frozen logical
+//! arguments. Source inference remains the generic semantic check; this worklist
+//! never solves a type variable or generalizes a weak binding.
 use crate::ast::Expr;
 use crate::check::{CheckedProgram, Type};
 use crate::source_map::{AstPath, AstStep};
@@ -19,16 +20,20 @@ struct Key {
 
 pub(super) struct Instance {
     pub source: usize,
+    pub scope: usize,
     pub params: Vec<Type>,
     pub result: Type,
     pub substitution: Substitution,
 }
 
 pub(super) struct Instances {
+    pub domain: super::logical::Domain,
     pub functions: HashMap<String, usize>,
     pub list: Vec<Instance>,
     pub entry: usize,
     ids: HashMap<Key, usize>,
+    pub binders: Vec<super::logical::OpaqueBinding>,
+    budget: super::logical::Budget,
 }
 
 impl Instances {
@@ -50,19 +55,23 @@ impl Instances {
             .collect::<HashMap<_, _>>();
         let main = *functions.get("main").ok_or("E-TYPED: missing main")?;
         let signature = &checked.functions["main"];
-        let result = substitute(&signature.result, &Substitution::new())?;
-        let entry_key = Key {
-            source: main,
-            params: vec![],
-            result,
-        };
         let mut result = Self {
+            domain: super::logical::Domain::default(),
             functions,
             list: vec![],
             entry: 0,
             ids: HashMap::new(),
+            binders: Vec::new(),
+            budget: super::logical::Budget::default(),
         };
-        let entry = result.insert(checked, entry_key.clone())?;
+        let mut entry_context = Substitution::new();
+        result.freeze_unbound(checked, main, 0, &mut entry_context)?;
+        let entry_key = Key {
+            source: main,
+            params: vec![],
+            result: substitute_logical(checked, &signature.result, &entry_context)?,
+        };
+        let entry = result.insert_seeded(checked, entry_key.clone(), Some(entry_context))?;
         if let Some(trace) = &mut trace {
             trace.request(None, None, entry);
         }
@@ -143,6 +152,20 @@ impl Instances {
     }
 
     fn insert(&mut self, checked: &CheckedProgram<'_>, key: Key) -> Result<usize, String> {
+        self.insert_seeded(checked, key, None)
+    }
+
+    fn insert_seeded(
+        &mut self,
+        checked: &CheckedProgram<'_>,
+        key: Key,
+        seed: Option<Substitution>,
+    ) -> Result<usize, String> {
+        for ty in key.params.iter().chain(std::iter::once(&key.result)) {
+            if super::logical::has_opaque(ty) {
+                super::logical::charge_type(ty, &mut self.budget)?;
+            }
+        }
         if let Some(&id) = self.ids.get(&key) {
             return Ok(id);
         }
@@ -155,7 +178,7 @@ impl Instances {
             return Err("E-TYPED-INSTANCES: wrong specialized arity".into());
         }
         let quantified = signature.quantified.iter().copied().collect();
-        let mut substitution = Substitution::new();
+        let mut substitution = seed.unwrap_or_default();
         for (expected, actual) in signature.params.iter().zip(&key.params) {
             match_type(expected, actual, &quantified, &mut substitution, 0)?;
         }
@@ -167,14 +190,93 @@ impl Instances {
             0,
         )?;
         let id = self.list.len();
+        self.freeze_unbound(checked, key.source, id, &mut substitution)?;
         self.list.push(Instance {
             source: key.source,
+            scope: id,
             params: key.params.clone(),
             result: key.result.clone(),
             substitution,
         });
         self.ids.insert(key, id);
         Ok(id)
+    }
+
+    // Freeze each unresolved checked-variable equivalence class once in its
+    // defining instance. Signature substitutions always retain the caller's
+    // existing binder; recursive forwarding therefore deduplicates by identity.
+    fn freeze_unbound(
+        &mut self,
+        checked: &CheckedProgram<'_>,
+        source: usize,
+        scope: usize,
+        context: &mut Substitution,
+    ) -> Result<(), String> {
+        fn collect(
+            ty: &Type,
+            context: &Substitution,
+            vars: &mut HashSet<usize>,
+            depth: usize,
+            budget: &mut super::logical::Budget,
+        ) -> Result<(), String> {
+            if depth > MAX_TYPE_DEPTH {
+                return Err("E-TYPED-INSTANCES: concrete type nesting exceeds 128".into());
+            }
+            match ty {
+                Type::Var(id) if !context.contains_key(id) && !vars.contains(id) => {
+                    // Charge before retaining a newly frozen equivalence class.
+                    budget.charge(1)?;
+                    vars.insert(*id);
+                }
+                Type::Nominal(_, args) => {
+                    for arg in args {
+                        collect(arg, context, vars, depth + 1, budget)?;
+                    }
+                }
+                _ => {}
+            }
+            Ok(())
+        }
+        let function = &checked.program.functions[source];
+        let signature = &checked.functions[&function.name];
+        let mut vars = HashSet::new();
+        for ty in signature
+            .params
+            .iter()
+            .chain(std::iter::once(&signature.result))
+        {
+            collect(ty, context, &mut vars, 0, &mut self.budget)?;
+        }
+        let mut pending = vec![&function.body];
+        while let Some(expr) = pending.pop() {
+            collect(
+                checked
+                    .expression_type(expr)
+                    .ok_or("E-TYPED: missing checked expression type")?,
+                context,
+                &mut vars,
+                0,
+                &mut self.budget,
+            )?;
+            runtime_children(checked, expr, &mut pending);
+        }
+        self.budget.charge(vars.len())?;
+        let mut vars = vars.into_iter().collect::<Vec<_>>();
+        vars.sort_unstable();
+        let first_ordinal = self
+            .binders
+            .iter()
+            .filter(|binder| binder.scope == scope)
+            .count();
+        for (offset, variable) in vars.into_iter().enumerate() {
+            let id = self.binders.len();
+            self.binders.push(super::logical::OpaqueBinding {
+                scope,
+                ordinal: first_ordinal + offset,
+            });
+            context.insert(variable, Type::Var(id));
+        }
+        Ok(())
     }
 
     pub fn call(&self, name: &str, params: Vec<Type>, result: Type) -> Result<usize, String> {
@@ -198,12 +300,73 @@ pub(super) fn expression_type(
     expr: &Expr,
     context: &Substitution,
 ) -> Result<Type, String> {
-    substitute(
+    substitute_logical(
+        checked,
         checked
             .expression_type(expr)
             .ok_or("E-TYPED: missing checked expression type")?,
         context,
     )
+}
+
+fn substitute_logical(
+    checked: &CheckedProgram<'_>,
+    ty: &Type,
+    context: &Substitution,
+) -> Result<Type, String> {
+    fn walk(
+        ty: &Type,
+        context: &Substitution,
+        depth: usize,
+        budget: &mut super::logical::Budget,
+    ) -> Result<Type, String> {
+        budget.charge(1)?;
+        if depth > MAX_TYPE_DEPTH {
+            return Err("E-TYPED-INSTANCES: concrete type nesting exceeds 128".into());
+        }
+        Ok(match ty {
+            Type::Var(id) => {
+                let actual = context.get(id).ok_or("E-TYPED-UNSUPPORTED: unresolved polymorphic value requires local specialization")?;
+                super::logical::charge_type(actual, budget)?;
+                // This is an already frozen logical tree, not solver input.
+                actual.clone()
+            }
+            Type::Nominal(name, args) => Type::Nominal(
+                name.clone(),
+                args.iter()
+                    .map(|arg| walk(arg, context, depth + 1, budget))
+                    .collect::<Result<_, _>>()?,
+            ),
+            ty => ty.clone(),
+        })
+    }
+    fn needs_logical(ty: &Type, context: &Substitution, depth: usize) -> Result<bool, String> {
+        if depth > MAX_TYPE_DEPTH {
+            return Err("E-TYPED-INSTANCES: concrete type nesting exceeds 128".into());
+        }
+        match ty {
+            Type::Var(id) => Ok(context.get(id).is_some_and(super::logical::has_opaque)),
+            Type::Nominal(_, args) => {
+                for arg in args {
+                    if needs_logical(arg, context, depth + 1)? {
+                        return Ok(true);
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
+    }
+    // Keep the prior closed conversion and its limits exactly intact. The new
+    // representation budget applies only when a frozen argument is present.
+    if !needs_logical(ty, context, 0)? {
+        return substitute(ty, context);
+    }
+    let mut budget = super::logical::Budget::default();
+    let result = walk(ty, context, 0, &mut budget)?;
+    super::logical::charge_type(&result, &mut budget)?;
+    super::logical::admit(checked, &result)?;
+    Ok(result)
 }
 
 pub(super) fn substitute(ty: &Type, context: &Substitution) -> Result<Type, String> {
@@ -254,11 +417,14 @@ fn match_type(
         return Err("E-TYPED-INSTANCES: concrete type nesting exceeds 128".into());
     }
     match (pattern, actual) {
-        (Type::Var(id), actual) if quantified.contains(id) => {
-            if context.get(id).is_some_and(|previous| previous != actual) {
-                return Err("E-TYPED-INSTANCES: inconsistent function substitution".into());
+        (Type::Var(id), actual) if quantified.contains(id) || context.contains_key(id) => {
+            if let Some(previous) = context.get(id) {
+                if previous != actual {
+                    return Err("E-TYPED-INSTANCES: inconsistent function substitution".into());
+                }
+            } else {
+                context.insert(*id, actual.clone());
             }
-            context.insert(*id, actual.clone());
         }
         (Type::Nominal(a, aa), Type::Nominal(b, bb)) if a == b && aa.len() == bb.len() => {
             for (a, b) in aa.iter().zip(bb) {
@@ -474,6 +640,53 @@ impl Trace {
 mod tests {
     use super::*;
     use crate::{check, parser, typed};
+
+    #[test]
+    fn symbolic_key_work_is_charged_before_dedup_or_new_instance_storage() {
+        let parsed =
+            parser::parse("type Flag<a> = Off | On\nfn id(x) { x }\nfn main() { id(Off) }")
+                .unwrap();
+        let checked = check::analyze(&parsed).unwrap();
+        let mut instances = Instances::discover(&checked).unwrap();
+        let instance = instances
+            .list
+            .iter()
+            .find(|i| i.source == instances.functions["id"])
+            .unwrap();
+        let key = Key {
+            source: instance.source,
+            params: instance.params.clone(),
+            result: instance.result.clone(),
+        };
+        let count = instances.list.len();
+        let binders = instances.binders.clone();
+        instances.budget = super::super::logical::Budget::default();
+        instances
+            .budget
+            .charge(super::super::logical::MAX_WORK - 4)
+            .unwrap();
+        instances.insert(&checked, key.clone()).unwrap();
+        assert_eq!(instances.list.len(), count);
+        instances.budget = super::super::logical::Budget::default();
+        instances
+            .budget
+            .charge(super::super::logical::MAX_WORK - 3)
+            .unwrap();
+        assert!(instances
+            .insert(&checked, key.clone())
+            .unwrap_err()
+            .contains("LOGICAL-COMPLEXITY"));
+        assert_eq!(instances.list.len(), count);
+        assert_eq!(instances.binders, binders);
+        let mut distinct = key;
+        distinct.result = Type::Nominal("Flag".into(), vec![Type::Var(999)]);
+        assert!(instances
+            .insert(&checked, distinct)
+            .unwrap_err()
+            .contains("LOGICAL-COMPLEXITY"));
+        assert_eq!(instances.list.len(), count);
+        assert_eq!(instances.binders, binders);
+    }
 
     #[test]
     fn discovery_trace_work_limit_has_an_exact_boundary() {
