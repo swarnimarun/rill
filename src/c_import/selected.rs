@@ -1,5 +1,5 @@
 //! Bounded, explicitly selected declaration import. No header text is parsed here.
-use super::Config;
+use super::{Config, Resolved};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
@@ -8,8 +8,10 @@ use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "c-import")]
 mod clang;
+pub mod facts;
+pub mod shape;
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Selection {
     pub native: Config,
     pub functions: Vec<String>,
@@ -20,7 +22,7 @@ pub struct Selection {
 }
 
 impl Selection {
-    fn validate(&self) -> Result<(), String> {
+    pub fn validate(&self) -> Result<(), String> {
         self.native.validate()?;
         if self.native.includes.is_empty() {
             return Err("E-C-IMPORT: import-c requires at least one --header".into());
@@ -42,6 +44,17 @@ impl Selection {
     }
 }
 
+/// Fresh frontend observations and the exact arguments used for both checks.
+/// Public fields allow bounded transport; a decoded value is not a validation
+/// certificate and must be checked before use by a configured caller.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Preparation {
+    pub module: String,
+    pub resolved: Resolved,
+    pub cflags: Vec<OsString>,
+    pub facts: facts::FrontendFacts,
+}
+
 pub(super) fn identifier(name: &str) -> bool {
     let mut bytes = name.bytes();
     bytes
@@ -55,25 +68,71 @@ pub(super) fn identifier(name: &str) -> bool {
 /// This library API runs libclang and external tools in the caller process
 /// without a hard timeout. The Unix CLI uses a separate supervised worker.
 pub fn generate(selection: &Selection, compiler: &OsStr, zig_cc: bool) -> Result<String, String> {
+    prepare(selection, compiler, zig_cc).map(|prepared| prepared.module)
+}
+
+/// Prepare an import in the caller process, with the same validation as
+/// `generate`. This API has no hard timeout or crash isolation.
+pub fn prepare(
+    selection: &Selection,
+    compiler: &OsStr,
+    zig_cc: bool,
+) -> Result<Preparation, String> {
+    prepare_impl(selection, compiler, zig_cc, |_, _| Ok(()), false)
+}
+
+/// Resolve the recipe once, then apply a caller's stricter argument policy
+/// before invoking libclang or the target compiler. The callback observes
+/// package resolution and common C arguments in their exact original order.
+/// It cannot replace them or cause a second resolution inside this operation.
+pub fn prepare_checked(
+    selection: &Selection,
+    compiler: &OsStr,
+    zig_cc: bool,
+    validate: impl FnOnce(&Resolved, &[OsString]) -> Result<(), String>,
+) -> Result<Preparation, String> {
+    prepare_impl(selection, compiler, zig_cc, validate, true)
+}
+
+fn prepare_impl(
+    selection: &Selection,
+    compiler: &OsStr,
+    zig_cc: bool,
+    validate: impl FnOnce(&Resolved, &[OsString]) -> Result<(), String>,
+    strict_kinds: bool,
+) -> Result<Preparation, String> {
     selection.validate()?;
     #[cfg(not(feature = "c-import"))]
     {
-        let _ = (compiler, zig_cc);
+        let _ = (compiler, zig_cc, validate, strict_kinds);
         Err("E-C-IMPORT: import-c requires a build with --features c-import and libclang 12 or newer".into())
     }
     #[cfg(feature = "c-import")]
     {
         let resolved = selection.native.resolve()?;
-        let mut flags = resolved.cflags;
+        let mut flags = resolved.cflags.clone();
         flags.extend(selection.c_args.iter().cloned());
         validate_flags(&flags)?;
+        validate(&resolved, &flags)?;
         let imported = clang::extract(selection, &flags)?;
         let program = crate::modules::compile::check_binding_source(&imported.module)
             .map_err(|e| format!("E-C-IMPORT: generated binding module: {e}"))?;
         let mut c = crate::backend::emit(&program)?;
-        c.push_str(&imported.assertions);
+        let assertions = if strict_kinds {
+            imported.facts.render_assertions(&selection.constants)?
+        } else {
+            imported
+                .facts
+                .render_legacy_assertions(&selection.constants)?
+        };
+        c.push_str(&assertions);
         super::validate_c(&c, compiler, zig_cc, &flags)?;
-        Ok(imported.module)
+        Ok(Preparation {
+            module: imported.module,
+            resolved,
+            cflags: flags,
+            facts: imported.facts,
+        })
     }
 }
 
@@ -126,6 +185,8 @@ fn validate_flags(flags: &[OsString]) -> Result<(), String> {
             "-nostdinc",
             "-pthread",
             "-std=c11",
+            "-O0",
+            "-O2",
         ]
         .contains(&text)
             || [
@@ -155,6 +216,13 @@ fn validate_flags(flags: &[OsString]) -> Result<(), String> {
 /// Publish in the destination directory after validation. A failed write/rename
 /// leaves an existing destination untouched and cleans up the temporary file.
 pub fn write_atomic(path: &Path, module: &str) -> Result<(), String> {
+    write_atomic_bytes(path, module.as_bytes())
+}
+
+/// Publish one complete binary or textual output with the same visibility and
+/// cleanup guarantees as `write_atomic`. The caller validates before entering
+/// this function; no multi-file or crash-durable directory commit is promised.
+pub fn write_atomic_bytes(path: &Path, bytes: &[u8]) -> Result<(), String> {
     static NEXT: AtomicU64 = AtomicU64::new(0);
     struct Temporary(std::path::PathBuf);
     impl Drop for Temporary {
@@ -187,7 +255,7 @@ pub fn write_atomic(path: &Path, module: &str) -> Result<(), String> {
             }
         }
     };
-    file.write_all(module.as_bytes())
+    file.write_all(bytes)
         .and_then(|()| file.sync_all())
         .map_err(|e| format!("E-C-IMPORT: cannot write output {}: {e}", path.display()))?;
     drop(file);
@@ -231,6 +299,9 @@ mod tests {
             "extra.c",
             "-Xclang",
             "-Wp,-P",
+            "-O1",
+            "-O3",
+            "-Os",
         ] {
             assert!(validate_flags(&[flag.into()]).is_err(), "{flag}");
         }
@@ -241,5 +312,8 @@ mod tests {
             "--target=aarch64-linux-gnu".into()
         ])
         .is_ok());
+        for flag in ["-O0", "-O2"] {
+            assert!(validate_flags(&[flag.into()]).is_ok(), "{flag}");
+        }
     }
 }

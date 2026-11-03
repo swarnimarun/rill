@@ -64,10 +64,14 @@ optional-target evidence must not be inferred from fixture success.
   publication. Exercise hangs, crashes, inherited pipes, malformed frames,
   output limits, interrupted imports and existing-output retention. See the
   [worker verification](verification/2026-11-03-import-worker.md).
-- [ ] Extend target/configuration persistence and non-Unix worker supervision.
-  Generated modules still require the same target/header configuration on later
-  builds. The library API remains in-process; neither path is a memory/security
-  sandbox.
+- [x] Complete bounded acceptance for explicit target/configuration persistence.
+  Focused native/SDL checks, 41 independent command probes and the full
+  default/importer-enabled aggregate pass; see the
+  [configuration record](verification/2026-11-03-native-configurations.md).
+  Ordinary generated source still does not enforce selection of a profile.
+- [ ] Extend non-Unix worker supervision separately. The library API remains
+  in-process; neither path is a memory/security sandbox. No cache identity is
+  established by configuration persistence.
 
 Useful primary references are the [libclang tutorial](https://clang.llvm.org/docs/LibClang.html)
 and [libclang type-query API](https://clang.llvm.org/doxygen/group__CINDEX__TYPES.html).

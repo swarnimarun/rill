@@ -345,6 +345,12 @@ error order. See the [bounded raw-transport verification](docs/verification/2026
 
 Selected declaration import is available with the optional `c-import` feature;
 see [the importer workflow](docs/c-interop.md#import-selected-declarations).
+An experimental explicit `--config-out` / `--config` workflow can save a bounded
+recipe and materialize its binding module separately. `check`, `emit-c`, `build`
+and `run` accept `--native-config` plus an explicit compiler to freshly validate
+that recipe and exact binding source. It is not an implicit sidecar or success
+cache; omitting the option retains legacy behavior. See
+[explicit configurations](docs/c-interop.md#explicit-native-configurations-experimental).
 On Unix, the CLI uses an isolated worker with a 30-second default deadline
 (`--timeout-ms` overrides it), bounded IPC and cleanup on failure or cancellation.
 The library importer remains in-process; this is not a memory/security sandbox.

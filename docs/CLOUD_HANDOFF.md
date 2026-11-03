@@ -187,3 +187,13 @@ passed 661 default and 695 importer-enabled tests, both strict Clippy and
 Windows GNU compile configurations, and 39 independent combined probes. It
 remains a pure Copy-body mapping API, not native/owner-cleanup or generated-C
 byte coverage.
+
+## Explicit native configurations
+
+The bounded Unix selected-C configuration increment passes 678 default and
+726 importer-enabled tests, formatting, both strict lint modes and both Windows
+compile configurations, plus 41 independent command probes. Actual configured
+SDL3 O0/O2 execution is covered. See [the configuration record](verification/2026-11-03-native-configurations.md)
+for exact source revisions and limits. Legacy generated source never auto-loads
+a configuration. P5, non-Unix supervision, cache identity and broader foreign
+contracts remain open.

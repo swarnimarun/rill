@@ -5,6 +5,8 @@ use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 pub(crate) mod abi;
+#[cfg(unix)]
+pub mod configuration;
 pub mod selected;
 
 struct CheckDirectory(std::path::PathBuf);
@@ -12,7 +14,15 @@ impl CheckDirectory {
     fn create() -> Result<Self, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
-            let path = std::env::temp_dir().join(format!(
+            let root = std::env::temp_dir();
+            let root = if root.is_absolute() {
+                root
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| format!("cannot resolve temporary directory: {e}"))?
+                    .join(root)
+            };
+            let path = root.join(format!(
                 "rill-c-check-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
@@ -216,7 +226,21 @@ pub fn validate_c(
     zig_cc: bool,
     cflags: &[OsString],
 ) -> Result<(), String> {
+    validate_c_in(source, compiler, zig_cc, cflags, None)
+}
+
+/// Check using an explicit child working directory without changing the caller.
+pub fn validate_c_in(
+    source: &str,
+    compiler: &OsStr,
+    zig_cc: bool,
+    cflags: &[OsString],
+    directory: Option<&std::path::Path>,
+) -> Result<(), String> {
     let mut command = Command::new(compiler);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
     let check_directory;
     if zig_cc {
         command.arg("cc");

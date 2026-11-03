@@ -2,6 +2,9 @@
 //! Cursors/types never escape their live translation unit; no Rust callback may
 //! unwind through C. The library remains loaded until all C resources are gone.
 #![allow(non_upper_case_globals)]
+use super::facts::{
+    BuiltinKind, ConstantFact, ConstantType, ConstantValue, FrontendFacts, ScalarProbe,
+};
 use super::{identifier, Selection};
 use crate::ast::ExternType;
 use clang_sys::*;
@@ -24,7 +27,7 @@ const PROBES: [(&str, &str, ExternType); 7] = [
 
 pub(super) struct Imported {
     pub module: String,
-    pub assertions: String,
+    pub facts: FrontendFacts,
 }
 
 struct Library(bool);
@@ -414,6 +417,22 @@ fn spelling(ty: &ExternType) -> String {
     }
 }
 
+fn builtin_kind(kind: CXTypeKind) -> Result<BuiltinKind, String> {
+    match kind {
+        CXType_Int => Ok(BuiltinKind::Int),
+        CXType_Long => Ok(BuiltinKind::Long),
+        CXType_LongLong => Ok(BuiltinKind::LongLong),
+        CXType_UChar => Ok(BuiltinKind::UChar),
+        CXType_UShort => Ok(BuiltinKind::UShort),
+        CXType_UInt => Ok(BuiltinKind::UInt),
+        CXType_ULong => Ok(BuiltinKind::ULong),
+        CXType_ULongLong => Ok(BuiltinKind::ULongLong),
+        CXType_Float => Ok(BuiltinKind::Float),
+        CXType_Bool => Ok(BuiltinKind::Bool),
+        _ => Err("E-C-IMPORT: unsupported frontend scalar kind".into()),
+    }
+}
+
 pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Imported, String> {
     let _library = Library::load()?;
     let raw_index = unsafe { clang_createIndex(1, 0) };
@@ -466,16 +485,30 @@ pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Impor
             }
         }
         module.push('\n');
-        let mut assertions = format!("\n_Static_assert(sizeof(void *) * CHAR_BIT == {pointer_width}, \"E-C-IMPORT: frontend/target pointer width mismatch\");\n");
+        let mut scalar_probes = Vec::with_capacity(6);
         for ((probe, c, _), (ty, _)) in PROBES.iter().zip(&types.0) {
             if *probe != "__rill_import_void" {
                 let size = clang_Type_getSizeOf(*ty);
-                if size <= 0 {
-                    return Err(format!("E-C-IMPORT: cannot determine size of {c}"));
+                if !(1..=1024).contains(&size) {
+                    return Err(format!(
+                        "E-C-IMPORT: cannot determine supported size of {c}"
+                    ));
                 }
-                writeln!(assertions, "_Static_assert(sizeof({c}) == {size}, \"E-C-IMPORT: frontend/target scalar width mismatch\");").unwrap();
+                scalar_probes.push(ScalarProbe {
+                    kind: builtin_kind(ty.kind)?,
+                    size_bytes: size as u32,
+                });
             }
         }
+        let scalar_probes = scalar_probes
+            .try_into()
+            .map_err(|_| "E-C-IMPORT: incorrect frontend scalar probe count")?;
+        let mut facts = FrontendFacts {
+            target_triple: triple,
+            pointer_bits: pointer_width as u32,
+            scalar_probes,
+            constants: Vec::with_capacity(selection.constants.len()),
+        };
         for name in &selection.functions {
             let declarations = found
                 .get(name)
@@ -568,20 +601,20 @@ pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Impor
             let ty = constant_types
                 .convert(clang_getCursorType(cursor), false)
                 .map_err(|e| reject(declarations[0], name, e))?;
-            if !matches!(
-                ty,
-                ExternType::I32
-                    | ExternType::U8
-                    | ExternType::U32
-                    | ExternType::U64
-                    | ExternType::Bool
-            ) {
-                return Err(reject(
-                    declarations[0],
-                    name,
-                    "only integer/bool constants are supported",
-                ));
-            }
+            let rill_type = match ty {
+                ExternType::I32 => ConstantType::I32,
+                ExternType::U8 => ConstantType::U8,
+                ExternType::U32 => ConstantType::U32,
+                ExternType::U64 => ConstantType::U64,
+                ExternType::Bool => ConstantType::Bool,
+                _ => {
+                    return Err(reject(
+                        declarations[0],
+                        name,
+                        "only integer/bool constants are supported",
+                    ))
+                }
+            };
             let evaluation = Evaluation(clang_Cursor_Evaluate(cursor));
             if evaluation.0.is_null() || clang_EvalResult_getKind(evaluation.0) != CXEval_Int {
                 return Err(reject(
@@ -590,19 +623,19 @@ pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Impor
                     "constant cannot be evaluated by the C frontend",
                 ));
             }
-            let c_type = PROBES
-                .iter()
-                .find(|(_, _, candidate)| *candidate == ty)
-                .unwrap()
-                .1;
             let value = if clang_EvalResult_isUnsignedInt(evaluation.0) != 0 {
-                format!("{}ULL", clang_EvalResult_getAsUnsigned(evaluation.0))
+                ConstantValue::Unsigned(clang_EvalResult_getAsUnsigned(evaluation.0))
             } else {
-                format!("({}LL)", clang_EvalResult_getAsLongLong(evaluation.0))
+                ConstantValue::Signed(clang_EvalResult_getAsLongLong(evaluation.0))
             };
             writeln!(module, "export extern const {name}: {};", spelling(&ty)).unwrap();
-            writeln!(assertions, "_Static_assert(__builtin_constant_p({name}) && __builtin_types_compatible_p(__typeof__({name}), {c_type}) && ({name}) == {value}, \"E-C-IMPORT: incompatible target constant {name}\");").unwrap();
+            facts.constants.push(ConstantFact {
+                name: name.clone(),
+                rill_type,
+                value,
+            });
         }
-        Ok(Imported { module, assertions })
+        facts.validate(&selection.constants)?;
+        Ok(Imported { module, facts })
     }
 }

@@ -83,6 +83,33 @@ pub fn load_program(entry: &Path) -> Result<Program, ModuleError> {
     lower(&super::load(entry)?)
 }
 
+/// One checked program and the exact immutable source graph used to lower it.
+/// This small snapshot seam does not construct optional origin indexes.
+pub struct ProgramSnapshot {
+    program: Program,
+    graph: ModuleGraph,
+}
+impl ProgramSnapshot {
+    pub fn program(&self) -> &Program {
+        &self.program
+    }
+    pub fn source(&self, logical_name: &str) -> Option<&str> {
+        self.graph
+            .modules
+            .get(logical_name)
+            .map(|module| module.source.as_str())
+    }
+}
+
+/// Load each source through the ordinary bounded graph loader exactly once,
+/// check that graph, then retain it for byte-identity comparisons. Callers must
+/// not reread a path to establish the identity of this program's source.
+pub fn load_program_snapshot(entry: &Path) -> Result<ProgramSnapshot, ModuleError> {
+    let graph = super::load(entry)?;
+    let program = lower(&graph)?;
+    Ok(ProgramSnapshot { program, graph })
+}
+
 /// Load/check through the same bounded loader and lowering pass, then preserve
 /// owned origins for the exact flattened program. Native ABI validation is still
 /// the driver's separate responsibility. Metadata errors use E-MODULE-SOURCE-MAP;

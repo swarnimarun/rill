@@ -105,3 +105,9 @@ open. See [module origins](module-source-origins.md),
 
 Run `cargo test` for the currently supported subset. The C differential tests
 require `cc` and compare interpreter and emitted C results at `-O0` and `-O2`.
+
+An explicit selected-C configuration persistence increment passes 678 default
+and 726 importer-enabled tests plus independent command probes. It keeps legacy
+commands unchanged and requires fresh supervised validation for opted-in
+capture/materialization and consumers. This bounded acceptance closes no full
+phase gate. See the [configuration record](verification/2026-11-03-native-configurations.md).

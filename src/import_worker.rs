@@ -1,7 +1,11 @@
 //! CLI-only process boundary. The public library importer remains in-process.
 //! The worker is the same executable, not a PATH lookup or environment override.
 //! This bounds IPC and elapsed work; it is not a memory or security sandbox.
-use rill::c_import::{selected::Selection, Config};
+use rill::c_import::{
+    configuration,
+    selected::{Preparation, Selection},
+    Config,
+};
 use std::{
     ffi::{OsStr, OsString},
     fs,
@@ -20,6 +24,7 @@ use std::{
 
 pub(super) const COMMAND: &str = "__rill-import-worker-v1";
 const REQUEST_MAGIC: &[u8] = b"RILL-IMPORT-REQUEST\0\x01";
+const PREPARE_REQUEST_MAGIC: &[u8] = b"RILL-IMPORT-PREPARE-REQUEST\0\x02";
 const RESPONSE_MAGIC: &[u8] = b"RILL-IMPORT-RESPONSE\0\x01";
 const MAX_REQUEST: usize = 1024 * 1024;
 const MAX_MODULE: usize = 1024 * 1024;
@@ -183,84 +188,8 @@ fn decode_response(bytes: &[u8], selection: &Selection) -> Result<String, String
     Ok(module.to_owned())
 }
 
-// Reject anything beyond the shallow generated subset before invoking the
-// general parser/checker in the parent. In particular, arbitrary worker text
-// cannot introduce recursive Rill functions/types or expression trees here.
 fn validate_response_shape(module: &str, selection: &Selection) -> Result<(), String> {
-    let mut declarations = 0;
-    for line in module.lines() {
-        if line.is_empty() || line.starts_with("//") {
-            continue;
-        }
-        declarations += 1;
-        if declarations > MAX_ITEMS * 3 + 256 || line.len() > 64 * 1024 {
-            return Err(protocol_error());
-        }
-        if let Some(value) = line
-            .strip_prefix("@include(\"")
-            .or_else(|| line.strip_prefix("@link(\""))
-            .or_else(|| line.strip_prefix("@pkg_config(\""))
-        {
-            let value = value.strip_suffix("\");").ok_or_else(protocol_error)?;
-            if !value
-                .bytes()
-                .all(|b| b.is_ascii_alphanumeric() || b"_./-+".contains(&b))
-            {
-                return Err(protocol_error());
-            }
-            continue;
-        }
-        if !(line.starts_with("export extern fn ") || line.starts_with("export extern const "))
-            || !line.ends_with(';')
-            || line.bytes().filter(|b| *b == b';').count() != 1
-        {
-            return Err(protocol_error());
-        }
-        let (mut parens, mut angles) = (0i32, 0i32);
-        let mut previous = 0;
-        for b in line.bytes() {
-            if !(b.is_ascii_alphanumeric() || b" _:,();<>-".contains(&b)) {
-                return Err(protocol_error());
-            }
-            match b {
-                b'(' => parens += 1,
-                b')' => parens -= 1,
-                b'<' => angles += 1,
-                b'>' if previous != b'-' => angles -= 1,
-                _ => {}
-            }
-            if !(0..=1).contains(&parens) || !(0..=1).contains(&angles) {
-                return Err(protocol_error());
-            }
-            previous = b;
-        }
-        if parens != 0 || angles != 0 {
-            return Err(protocol_error());
-        }
-    }
-    let parsed = rill::parser::parse_module(module).map_err(|_| protocol_error())?;
-    let program = &parsed.program;
-    if !program.functions.is_empty()
-        || !program.types.is_empty()
-        || program.allocation_types.is_some()
-        || program.externs.len() + program.constants.len() > 256
-        || program.externs.iter().any(|f| f.params.len() > 128)
-        || program.native != selection.native
-        || !program
-            .externs
-            .iter()
-            .map(|f| &f.name)
-            .eq(selection.functions.iter())
-        || !program
-            .constants
-            .iter()
-            .map(|c| &c.name)
-            .eq(selection.constants.iter())
-        || parsed.exports.len() != program.externs.len() + program.constants.len()
-    {
-        return Err(protocol_error());
-    }
-    Ok(())
+    rill::c_import::selected::shape::validate(module, selection).map_err(|_| protocol_error())
 }
 
 static CANCELLED: AtomicI32 = AtomicI32::new(0);
@@ -342,17 +271,35 @@ pub(super) fn run() -> Result<(), String> {
         .take((MAX_REQUEST + 1) as u64)
         .read_to_end(&mut request)
         .map_err(|e| format!("E-C-IMPORT: cannot read import worker request: {e}"))?;
-    let (selection, compiler, zig_cc) = decode_request(&request)?;
-    let module = rill::c_import::selected::generate(&selection, &compiler, zig_cc)?;
-    if module.len() > MAX_MODULE {
-        return Err("E-C-IMPORT: import worker module exceeds 1 MiB".into());
+    if request.starts_with(PREPARE_REQUEST_MAGIC) {
+        let (selection, compiler, zig_cc, declared_links) = decode_prepare_request(&request)?;
+        let prepared = rill::c_import::selected::prepare_checked(
+            &selection,
+            &compiler,
+            zig_cc,
+            |resolved, common| {
+                configuration::validate_c_args(common)?;
+                configuration::validate_link_sequence(&resolved.link_args, &declared_links)
+            },
+        )?;
+        let response = configuration::encode_preparation(&prepared, &selection)?;
+        io::stdout()
+            .lock()
+            .write_all(&response)
+            .map_err(|e| format!("E-C-IMPORT: cannot write preparation response: {e}"))
+    } else {
+        let (selection, compiler, zig_cc) = decode_request(&request)?;
+        let module = rill::c_import::selected::generate(&selection, &compiler, zig_cc)?;
+        if module.len() > MAX_MODULE {
+            return Err("E-C-IMPORT: import worker module exceeds 1 MiB".into());
+        }
+        let mut stdout = io::stdout().lock();
+        stdout
+            .write_all(RESPONSE_MAGIC)
+            .and_then(|()| stdout.write_all(&(module.len() as u32).to_le_bytes()))
+            .and_then(|()| stdout.write_all(module.as_bytes()))
+            .map_err(|e| format!("E-C-IMPORT: cannot write import worker response: {e}"))
     }
-    let mut stdout = io::stdout().lock();
-    stdout
-        .write_all(RESPONSE_MAGIC)
-        .and_then(|()| stdout.write_all(&(module.len() as u32).to_le_bytes()))
-        .and_then(|()| stdout.write_all(module.as_bytes()))
-        .map_err(|e| format!("E-C-IMPORT: cannot write import worker response: {e}"))
 }
 
 pub(super) fn generate(
@@ -371,12 +318,85 @@ pub(super) fn generate(
     Ok(module)
 }
 
+fn encode_prepare_request(
+    selection: &Selection,
+    compiler: &OsStr,
+    zig_cc: bool,
+    declared_links: &[OsString],
+) -> Result<Vec<u8>, String> {
+    configuration::validate_selection(selection)?;
+    configuration::validate_link_args(declared_links)?;
+    if !Path::new(compiler).is_absolute() || compiler.as_bytes().contains(&0) {
+        return Err("E-C-CONFIG: preparation requires an absolute explicit compiler".into());
+    }
+    let legacy = encode_request(selection, compiler, zig_cc)?;
+    let mut output = Encoder(PREPARE_REQUEST_MAGIC.to_vec());
+    output.bytes(&legacy)?;
+    output.list(declared_links.iter().map(OsString::as_os_str))?;
+    if output.0.len() > MAX_REQUEST {
+        return Err("E-C-CONFIG: preparation request exceeds 1 MiB".into());
+    }
+    Ok(output.0)
+}
+fn decode_prepare_request(
+    bytes: &[u8],
+) -> Result<(Selection, OsString, bool, Vec<OsString>), String> {
+    if bytes.len() > MAX_REQUEST {
+        return Err(protocol_error());
+    }
+    let mut input = Decoder(bytes);
+    if input.take(PREPARE_REQUEST_MAGIC.len())? != PREPARE_REQUEST_MAGIC {
+        return Err(protocol_error());
+    }
+    let (selection, compiler, zig_cc) = decode_request(input.bytes()?)?;
+    let links = input.list()?;
+    input.done()?;
+    // Apply identical bounds/grammar in both directions before invoking tools.
+    encode_prepare_request(&selection, &compiler, zig_cc, &links)?;
+    Ok((selection, compiler, zig_cc, links))
+}
+pub(super) fn prepare(
+    selection: &Selection,
+    compiler: &OsStr,
+    zig_cc: bool,
+    declared_links: &[OsString],
+    directory: &Path,
+    timeout: Duration,
+) -> Result<Preparation, String> {
+    let _cancellation = Cancellation::install()?;
+    let executable = std::env::current_exe()
+        .map_err(|e| format!("E-C-IMPORT: cannot locate import worker executable: {e}"))?;
+    let request = encode_prepare_request(selection, compiler, zig_cc, declared_links)?;
+    let response = supervise_in(
+        &executable,
+        &request,
+        timeout,
+        Some(directory),
+        configuration::MAX_ARTIFACT,
+    )?;
+    let prepared = configuration::decode_preparation(&response, selection)?;
+    configuration::validate_link_sequence(&prepared.resolved.link_args, declared_links)?;
+    validate_response_shape(&prepared.module, selection)?;
+    rill::modules::compile::check_binding_source(&prepared.module)
+        .map_err(|e| format!("E-C-IMPORT: invalid prepared binding module: {e}"))?;
+    check_cancelled()?;
+    Ok(prepared)
+}
+
 struct Workspace(PathBuf);
 impl Workspace {
     fn create() -> Result<Self, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         loop {
-            let path = std::env::temp_dir().join(format!(
+            let root = std::env::temp_dir();
+            let root = if root.is_absolute() {
+                root
+            } else {
+                std::env::current_dir()
+                    .map_err(|e| format!("cannot resolve temporary directory: {e}"))?
+                    .join(root)
+            };
+            let path = root.join(format!(
                 "rill-import-worker-{}-{}",
                 std::process::id(),
                 NEXT.fetch_add(1, Ordering::Relaxed)
@@ -500,12 +520,26 @@ fn read_available(
 }
 
 fn supervise(executable: &Path, request: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
+    supervise_in(executable, request, timeout, None, MAX_RESPONSE)
+}
+
+fn supervise_in(
+    executable: &Path,
+    request: &[u8],
+    timeout: Duration,
+    directory: Option<&Path>,
+    response_limit: usize,
+) -> Result<Vec<u8>, String> {
     if request.len() > MAX_REQUEST {
         return Err("E-C-IMPORT: import worker request exceeds 1 MiB".into());
     }
     let workspace = Workspace::create()?;
     let start = Instant::now();
-    let child = Command::new(executable)
+    let mut command = Command::new(executable);
+    if let Some(directory) = directory {
+        command.current_dir(directory);
+    }
+    let child = command
         .arg(COMMAND)
         .env("TMPDIR", &workspace.0)
         .env("TMP", &workspace.0)
@@ -568,7 +602,7 @@ fn supervise(executable: &Path, request: &[u8], timeout: Duration) -> Result<Vec
             }
         }
         if !out_done {
-            out_done = read_available(&mut stdout, &mut output, MAX_RESPONSE, "output")?;
+            out_done = read_available(&mut stdout, &mut output, response_limit, "output")?;
         }
         if !err_done {
             err_done = read_available(
@@ -700,6 +734,61 @@ mod tests {
         assert_eq!(decoded.resource_dir, s.resource_dir);
         assert_eq!(cc, compiler);
         assert!(zig);
+    }
+
+    #[test]
+    fn preparation_request_is_versioned_bounded_and_exact() {
+        let mut selected = selection();
+        selected.c_args = vec![
+            "-I".into(),
+            OsString::from_vec(b"path \xff".to_vec()),
+            "-O2".into(),
+        ];
+        let compiler = OsStr::new("/explicit/compiler");
+        let links = vec!["-la".into(), "-lb".into(), "-la".into()];
+        let request = encode_prepare_request(&selected, compiler, false, &links).unwrap();
+        let (roundtrip, cc, zig, arguments) = decode_prepare_request(&request).unwrap();
+        assert_eq!(roundtrip, selected);
+        assert_eq!(cc, compiler);
+        assert!(!zig);
+        assert_eq!(arguments, links);
+        for end in 0..request.len() {
+            assert!(decode_prepare_request(&request[..end]).is_err(), "{end}");
+        }
+        let mut extra = request.clone();
+        extra.push(0);
+        assert!(decode_prepare_request(&extra).is_err());
+        let mut changed = request;
+        changed[PREPARE_REQUEST_MAGIC.len() - 1] = 1;
+        assert!(decode_prepare_request(&changed).is_err());
+        assert!(decode_request(&changed).is_err());
+        assert!(
+            encode_prepare_request(&selected, OsStr::new("relative-cc"), false, &links).is_err()
+        );
+        assert!(encode_prepare_request(&selected, compiler, false, &["-E".into()]).is_err());
+        selected.c_args = vec!["-D_Static_assert(x,y)=".into()];
+        assert!(encode_prepare_request(&selected, compiler, false, &[]).is_err());
+    }
+
+    #[test]
+    fn supervised_preparation_uses_child_cwd_without_changing_parent() {
+        let fixture = Fixture::new();
+        let original = std::env::current_dir().unwrap();
+        let worker = fixture.script("cat >/dev/null\npwd");
+        let response = supervise_in(
+            &worker,
+            b"request",
+            Duration::from_secs(2),
+            Some(&fixture.path),
+            configuration::MAX_ARTIFACT,
+        )
+        .unwrap();
+        assert_eq!(
+            String::from_utf8(response).unwrap().trim(),
+            fixture.path.to_str().unwrap()
+        );
+        assert_eq!(std::env::current_dir().unwrap(), original);
+        fixture.cleaned();
     }
 
     #[test]

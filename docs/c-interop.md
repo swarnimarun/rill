@@ -210,7 +210,9 @@ supported import flags are `-I`, `-D`, `-U` (joined or separate), `-isystem`,
 `-iquote`, `-idirafter`, `-include`, `-imacros`, `-isysroot`, `--sysroot`,
 `-target`, `--target`, `-arch`, `-m32`, `-m64`, `-march=`, `-mcpu=`, `-mabi=`,
 `-mfpu=`, `-mfloat-abi=`, `-fshort-wchar`, `-fshort-enums`, `-fsigned-char`,
-`-funsigned-char`, `-fms-extensions`, `-nostdinc`, `-pthread` and `-std=c11`.
+`-funsigned-char`, `-fms-extensions`, `-nostdinc`, `-pthread`, `-std=c11`,
+`-O0` and `-O2`. The legacy joined `-resource-dir=...` spelling is also
+accepted; strict saved profiles use only `--clang-resource-dir` below.
 Other flags are rejected rather than silently dropped. In particular `-E`,
 output flags, response files and extra C inputs cannot bypass semantic checks.
 Use structured arguments for paths with spaces, as in the example above.
@@ -331,3 +333,102 @@ SDL3 development files are unavailable. It does not simulate physical clicks.
 visibility, compatible duplicate declarations and rejected conflicts, including
 C execution at `-O0` and `-O2`. `tests/c_import_direct.rs` covers direct header declarations and negative
 compatibility cases. See [remaining FFI work](blockers/ffi.md) for the open gate.
+
+### Explicit native configurations (experimental)
+
+The optional Unix configured workflow records an ordered recipe and expected
+frontend observations. It **does not cache successful checks**. Every use
+re-resolves packages and freshly runs the isolated frontend and target checks.
+Omitting `--native-config` keeps the legacy workflow above: generated `.rill`
+source never loads a sidecar or enforces use of a saved profile on its own.
+
+Capture one configuration, then materialize its ordinary module separately:
+
+```sh
+rill import-c --header api.h --function api_add --constant API_FLAG \
+  --c-arg -I --c-arg ./include --c-arg -O2 \
+  --cc /usr/bin/cc --config-out native.rillcfg --binding-module bindings
+rill import-c --config native.rillcfg --cc /usr/bin/cc -o bindings.rill
+rill check main.rill --native-config native.rillcfg --cc /usr/bin/cc
+rill emit-c main.rill --native-config native.rillcfg --cc /usr/bin/cc
+rill build main.rill --native-config native.rillcfg --cc /usr/bin/cc -o program
+rill run main.rill --native-config native.rillcfg --cc /usr/bin/cc
+rill import-c --inspect-config native.rillcfg
+```
+
+`main.rill` must import the saved logical module (`bindings` above). Nested
+logical names such as `native.bindings` are accepted; filesystem paths, `std`
+and `@entry` are not. The saved module must match the exact source bytes in the
+one loaded/checked program snapshot, including comments and whitespace. An
+identical declaration in a different module is not a match. Pure Rill wrapper
+modules may accompany it, but the flattened program's ordered native dependency
+configuration must equal the saved selection. Extra headers, packages or source
+libraries require a newly captured combined profile.
+
+`--config-out` publishes only the configuration and cannot be combined with
+`-o`. A second materialization command freshly checks the recipe before publishing
+one module. Capture, materialization and configured executable builds each use
+same-directory one-file atomic replacement. A failure leaves the corresponding
+old output intact. This is not a two-file transaction or a crash-durable directory
+metadata promise. Inspection is read-only escaped text and runs no package,
+frontend, compiler or user program, including in a default-feature Unix build.
+
+Configured execution requires an explicit `--cc` or `--zig-cc`. `CC` is not a
+fallback. The explicit selector is resolved from the caller's PATH or path and
+compared byte-for-byte with the saved invocation path and driver. Symlink
+spelling is retained; the artifact cannot select the executable. There are no
+version-query, installation or discovery commands inferred from the record.
+
+The saved working directory is relative to the artifact parent where possible.
+Relative include, sysroot, forced-include and frontend-resource operands retain
+that basis when a profile is used from another directory. Moving a project and
+profile together can preserve these relative relationships. Absolute native
+inputs and compiler/resource paths remain machine-specific. Compiler child CWD
+does not change caller-relative output destinations or the runtime program's
+working directory. Environment values are not serialized. Trusted headers,
+objects and toolchains must remain stable while an invocation runs.
+
+Strict profiles allow only the existing importer flag list, plus `-O0` and
+`-O2`; these optimization flags reach both libclang and target compilation.
+Only one optimization token is accepted. Separate profiles are needed for O0
+and O2 because optimization can change preprocessing. Repeated/conflicting
+selectors, option-looking path operands, shared `-resource-dir=...`, function-like
+`-D` macros and overrides of assertion/probe machinery are rejected. Use the
+separate `--clang-resource-dir` option for frontend resource headers. Unix path
+operands may contain spaces or non-UTF-8 bytes when passed separately.
+
+Only capture accepts declared `--link-arg` values: validated `-lNAME`, joined or
+separate `-L`, `-pthread`, exact GNU group/as-needed switches, a literal
+`-Wl,-rpath,PATH`, and absolute `.o`, `.a`, `.so`, versioned `.so.N` or `.dylib`
+inputs. Rpath operands cannot contain commas, controls or variable syntax.
+Framework switches, arbitrary linker escapes, response files, plugins, output
+flags and extra C source files are not accepted. Package linker output follows
+this same grammar. Its order and duplicates are preserved, source `@link`
+entries supplement absent libraries, then declared inputs append exactly once.
+Legacy unconfigured linker arguments retain their existing raw behavior.
+
+Saved mode rejects extra selection, dependency, preprocessing, resource or link
+options. Configured consumers reject `--c-arg`, `--link-arg`, a second profile,
+and nondefault SIMD; no override or refresh-on-failure flag exists. Every fresh
+preparation compares ordered package outputs, target triple, scalar kinds and
+sizes, pointer width, exact constant types/values and full generated module
+bytes. Full emitted C receives freshly rendered assertions too. Drift reports
+`E-C-CONFIG-DRIFT` and requires explicit recapture or materialization.
+
+The deterministic binary v1 record is limited to 2 MiB overall, 512 KiB metadata,
+1 MiB module text, 64 KiB per argument/path/line, 1,024 items per native argv/list,
+and the existing selected-symbol/parameter limits. Unknown schemas, tags,
+truncation, trailing bytes and structural inconsistencies reject before use.
+It contains no raw C assertions, executable hooks, environment map, secret
+snapshot, timestamp or trusted validation bit. Defines are ordinary configuration,
+not a safe place to store credentials. `--inspect-config` makes raw path bytes
+reviewable without loss.
+
+Configured preparation retains the existing Unix timeout/cancellation and
+process-group cleanup. Consumer `--timeout-ms` bounds only that preparation,
+not the final application compiler/linker or the explicit runtime program.
+Non-Unix configured commands reject without an in-process fallback. This feature
+does not establish hermetic builds, transitive header-byte identity, cross-target
+ABI certification, cache validity or foreign ownership/lifetime/effect safety.
+The focused author verification and remaining integrated acceptance work are
+tracked in [the verification record](verification/2026-11-03-native-configurations.md).
