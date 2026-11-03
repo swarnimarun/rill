@@ -4,6 +4,7 @@ use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+pub(crate) mod abi;
 pub mod selected;
 
 struct CheckDirectory(std::path::PathBuf);

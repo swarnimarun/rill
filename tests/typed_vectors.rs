@@ -42,14 +42,9 @@ fn compare_program(program: &rill::ast::Program, source: &str, expected: Option<
     let binary = dir.join("main");
     let mut emitted = vec![c];
     if !checked.has_owned() {
-        // Force the old native representation without pretending raw-C values
-        // have interpreter semantics. The unused marker changes no result.
-        let fallback_source =
-            source.replacen("fn main() {", "fn main() { let native_marker = u32(0);", 1);
-        let fallback_program = rill::parser::parse(&fallback_source).unwrap();
-        let fallback = rill::backend::emit(&fallback_program).unwrap();
-        assert!(fallback.contains("rl_value"));
-        emitted.push(fallback);
+        let reference_c = rill::backend::emit_reference(program).unwrap();
+        assert!(reference_c.contains("rl_value"));
+        emitted.push(reference_c);
     }
     for c in emitted {
         fs::write(&source_path, c).unwrap();

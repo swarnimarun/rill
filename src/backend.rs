@@ -1,5 +1,6 @@
 //! A portable C11 backend for the checked sequential subset.
 use crate::ast::{BinaryOp, Expr, ExternType, ParamMode, Pattern, Program};
+use crate::c_import::abi::c_type;
 use std::collections::HashMap;
 use std::fmt::Write;
 
@@ -167,31 +168,6 @@ static rl_value rl_compare(int op, rl_value a, rl_value b) {
 }
 "#;
 
-fn c_type(ty: &ExternType) -> String {
-    match ty {
-        ExternType::I32 => "int32_t".into(),
-        ExternType::Bool => "_Bool".into(),
-        ExternType::Unit => "void".into(),
-        ExternType::CStr => "const char *".into(),
-        ExternType::U8 => "uint8_t".into(),
-        ExternType::U32 => "uint32_t".into(),
-        ExternType::U64 => "uint64_t".into(),
-        ExternType::F32 => "float".into(),
-        ExternType::Pointer { pointee, is_const } => format!(
-            "{}{} *",
-            if *is_const { "const " } else { "" },
-            match pointee.as_str() {
-                "i32" => "int32_t",
-                "u8" => "uint8_t",
-                "u32" => "uint32_t",
-                "u64" => "uint64_t",
-                "f32" => "float",
-                "bool" => "_Bool",
-                _ => pointee,
-            }
-        ),
-    }
-}
 fn wrap_c(ty: &ExternType, value: &str) -> String {
     match ty {
         ExternType::I32 => format!("rl_make(0, {value})"),
@@ -224,6 +200,23 @@ pub fn emit(program: &Program) -> Result<String, String> {
         Err(error) if error.starts_with("E-TYPED-UNSUPPORTED:") && !checked.has_owned() => {}
         Err(error) => return Err(error),
     }
+    emit_checked_reference(&checked)
+}
+
+/// Emit uniform C11 directly from the checked Copy subset's source AST.
+/// This is a differential oracle during migration to the shared typed path;
+/// owner programs must never use this copying representation. Like `emit`, it
+/// returns target-header assertions but does not run the target C compiler.
+pub fn emit_reference(program: &Program) -> Result<String, String> {
+    let checked = crate::check::analyze(program)?;
+    emit_checked_reference(&checked)
+}
+
+fn emit_checked_reference(checked: &crate::check::CheckedProgram<'_>) -> Result<String, String> {
+    if checked.has_owned() {
+        return Err("E-REFERENCE: owner programs require the checked typed path".into());
+    }
+    let program = checked.program;
     let has_payload = program
         .types
         .iter()
@@ -274,40 +267,12 @@ pub fn emit(program: &Program) -> Result<String, String> {
     out.push_str(&format!("#define RL_CAP {capacity}\n{RUNTIME}"));
     out.push_str("_Static_assert(CHAR_BIT == 8, \"Rill strings require 8-bit bytes\");\n");
     out.push_str("_Static_assert(sizeof(rl_node) <= 64 && sizeof(rl_value) <= 64 * (RL_CAP + 1), \"unsupported target value layout\");\n");
-    for function in &program.externs {
-        let result = c_type(&function.result);
-        let params = if function.params.is_empty() {
-            "void".into()
-        } else {
-            function
-                .params
-                .iter()
-                .map(|p| c_type(&p.ty))
-                .collect::<Vec<_>>()
-                .join(", ")
-        };
-        if program.native.includes.is_empty() {
-            writeln!(out, "extern {result} {}({params});", function.name).unwrap();
-        } else {
-            writeln!(out, "_Static_assert(__builtin_types_compatible_p(__typeof__(&{}), {result} (*)({params})), \"E-FFI: incompatible header prototype for {}\");", function.name, function.name).unwrap();
-        }
-    }
-    for constant in &program.constants {
-        let n = &constant.name;
-        let c = c_type(&constant.ty);
-        let condition = match constant.ty {
-            ExternType::U8 => format!("__builtin_classify_type({n}) == 1 && ({n}) >= 0 && ({n}) <= UINT8_MAX"),
-            ExternType::U32 => format!("__builtin_classify_type({n}) == 1 && ({n}) >= 0 && ({n}) <= UINT32_MAX"),
-            ExternType::U64 => format!("__builtin_classify_type({n}) == 1 && ({n}) >= 0 && ({n}) <= UINT64_MAX"),
-            ExternType::I32 => format!("__builtin_classify_type({n}) == 1 && (({n}) >= 0 ? ({n}) <= INT32_MAX : ({n}) >= INT32_MIN)"),
-            _ => format!("__builtin_types_compatible_p(__typeof__({n}), {c})"),
-        };
-        writeln!(
-            out,
-            "_Static_assert({condition}, \"E-FFI: incompatible header constant {n}\");"
-        )
-        .unwrap();
-    }
+    crate::c_import::abi::emit_declarations(
+        &program.native,
+        &program.externs,
+        &program.constants,
+        &mut out,
+    );
     for (i, f) in program.functions.iter().enumerate() {
         write!(out, "\nstatic rl_value rl_fn_{i}(").unwrap();
         if f.params.is_empty() {
@@ -357,7 +322,7 @@ pub fn emit(program: &Program) -> Result<String, String> {
             functions: &functions,
             constructors: &constructors,
             externs: &externs,
-            checked: &checked,
+            checked,
             next: 0,
         };
         let result = emitter.expr(&f.body, &mut env)?;

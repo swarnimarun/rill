@@ -42,6 +42,8 @@ static uint8_t byte_value(uint8_t x) { return x; }
     }
     fn compile_and_run(&self, body: &str, expected: &[u8]) {
         let c = rill::compile(&self.source(body)).unwrap();
+        let program = rill::parser::parse(&self.source(body)).unwrap();
+        assert_eq!(c, rill::backend::emit_reference(&program).unwrap());
         rill::c_import::validate_c(&c, OsStr::new("cc"), false, &[]).unwrap();
         let source = self.0.join("generated.c");
         let executable = self.0.join("program");
@@ -111,6 +113,8 @@ fn header_rejects_scalar_bool_and_pointee_mismatches() {
         "extern const TOO_WIDE: u64; fn main() { 0 }",
     ] {
         let c = rill::compile(&f.source(body)).unwrap();
+        let program = rill::parser::parse(&f.source(body)).unwrap();
+        assert_eq!(c, rill::backend::emit_reference(&program).unwrap());
         let error = rill::c_import::validate_c(&c, OsStr::new("cc"), false, &[]).unwrap_err();
         assert!(error.contains("E-FFI: incompatible header"), "{error}");
     }

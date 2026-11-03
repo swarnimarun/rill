@@ -248,6 +248,14 @@ calls. Manual externs without dependency directives need a native run.
 Without source directives, `check` performs Rill checks only, even when
 `--cc` or `--c-arg` is supplied.
 
+The library APIs `backend::emit` and `backend::emit_reference` return C containing
+all declared header assertions, including unused declarations; they do not run
+the target compiler themselves. The latter is a checked uniform-C differential
+oracle for Copy programs and rejects owner programs. Native ABI spelling and
+assertion generation are shared, without changing default lowering or the
+selected importer's additional frontend/target checks. See the
+[reference-emitter checkpoint](verification/2026-11-03-native-c-oracle.md).
+
 Choose the compiler with `--cc executable` or `--zig-cc`; these options cannot
 be combined. `--cc` takes precedence over `CC`, which otherwise defaults to
 `cc`. Repeated `--c-arg argument` supplies include paths, target flags or other

@@ -18,8 +18,13 @@ fn public_execution_and_codegen_reject_unchecked_programs() {
     for (source, code) in cases {
         let program = parser::parse(source).unwrap();
         let emit_error = backend::emit(&program).unwrap_err();
+        let reference_error = backend::emit_reference(&program).unwrap_err();
         let run_error = interpreter::run(&program).unwrap_err();
         assert!(emit_error.contains(code), "{source}: {emit_error}");
+        assert!(
+            reference_error.contains(code),
+            "{source}: {reference_error}"
+        );
         assert!(run_error.contains(code), "{source}: {run_error}");
     }
 }
@@ -49,6 +54,9 @@ fn fabricated_constructor_names_are_rejected_before_c_emission() {
             }],
         };
         assert!(rill::backend::emit(&program)
+            .unwrap_err()
+            .contains("E-NAME"));
+        assert!(rill::backend::emit_reference(&program)
             .unwrap_err()
             .contains("E-NAME"));
         assert!(rill::interpreter::run(&program)
@@ -87,6 +95,9 @@ fn malformed_record_metadata_is_rejected() {
         assert!(rill::backend::emit(&program)
             .unwrap_err()
             .contains("E-RECORD"));
+        assert!(rill::backend::emit_reference(&program)
+            .unwrap_err()
+            .contains("E-RECORD"));
         assert!(rill::interpreter::run(&program)
             .unwrap_err()
             .contains("E-RECORD"));
@@ -105,6 +116,9 @@ fn fabricated_field_paths_respect_checked_limits() {
         };
         **body = Expr::Field("p".into(), path);
         assert!(backend::emit(&program).unwrap_err().contains("E-RECORD"));
+        assert!(backend::emit_reference(&program)
+            .unwrap_err()
+            .contains("E-RECORD"));
         assert!(interpreter::run(&program).unwrap_err().contains("E-RECORD"));
     }
     let mut program = parser::parse("type P = { x: i32 }\nlet f (inout x) = ()\nlet main = let mut p = record P { x = 1 } in f(inout p.x)").unwrap();
@@ -116,5 +130,8 @@ fn fabricated_field_paths_respect_checked_limits() {
     };
     args[0] = Expr::InoutField("p".into(), vec![]);
     assert!(backend::emit(&program).unwrap_err().contains("E-RECORD"));
+    assert!(backend::emit_reference(&program)
+        .unwrap_err()
+        .contains("E-RECORD"));
     assert!(interpreter::run(&program).unwrap_err().contains("E-RECORD"));
 }

@@ -2458,8 +2458,8 @@ mod tests {
     }
 
     #[test]
-    fn rejects_unimplemented_features_without_lowering() {
-        let p = parser::parse("fn main() { let marker = u32(0); 1 }").unwrap();
+    fn raw_c_values_remain_unsupported_until_native_migration() {
+        let p = parser::parse("fn main() { u32(0) }").unwrap();
         let checked = check::analyze(&p).unwrap();
         assert!(lower_main(&checked)
             .unwrap_err()

@@ -74,29 +74,33 @@ fn typed_primitive_c_matches_checked_interpreters() {
         fs::create_dir(&dir).unwrap();
         let c_file = dir.join("main.c");
         let executable = dir.join("main");
-        fs::write(&c_file, c).unwrap();
-        for opt in ["-O0", "-O2"] {
-            let build = Command::new("cc")
-                .args(["-std=c11", opt])
-                .arg(&c_file)
-                .arg("-o")
-                .arg(&executable)
-                .output()
-                .unwrap();
-            assert!(
-                build.status.success(),
-                "{source}: {}",
-                String::from_utf8_lossy(&build.stderr)
-            );
-            let result = Command::new(&executable).output().unwrap();
-            match &expected {
-                Ok(value) => {
-                    assert!(result.status.success(), "{source}");
-                    assert_eq!(result.stdout, format!("{value}\n").as_bytes(), "{source}");
-                }
-                Err(_) => {
-                    assert!(!result.status.success(), "{source}");
-                    assert_eq!(result.stderr, b"rill: runtime trap\n", "{source}");
+        let reference_c = rill::backend::emit_reference(&program).unwrap();
+        assert!(reference_c.contains("rl_value"));
+        for c in [c, reference_c] {
+            fs::write(&c_file, c).unwrap();
+            for opt in ["-O0", "-O2"] {
+                let build = Command::new("cc")
+                    .args(["-std=c11", opt])
+                    .arg(&c_file)
+                    .arg("-o")
+                    .arg(&executable)
+                    .output()
+                    .unwrap();
+                assert!(
+                    build.status.success(),
+                    "{source}: {}",
+                    String::from_utf8_lossy(&build.stderr)
+                );
+                let result = Command::new(&executable).output().unwrap();
+                match &expected {
+                    Ok(value) => {
+                        assert!(result.status.success(), "{source}");
+                        assert_eq!(result.stdout, format!("{value}\n").as_bytes(), "{source}");
+                    }
+                    Err(_) => {
+                        assert!(!result.status.success(), "{source}");
+                        assert_eq!(result.stderr, b"rill: runtime trap\n", "{source}");
+                    }
                 }
             }
         }
@@ -105,11 +109,16 @@ fn typed_primitive_c_matches_checked_interpreters() {
 }
 
 #[test]
-fn unsupported_typed_program_uses_existing_backend() {
-    let program = rill::parser::parse("fn main() { let marker = u32(0); 42 }").unwrap();
+fn checked_reference_c_is_explicit_without_changing_default_routing() {
+    let program = rill::parser::parse("fn main() { 42 }").unwrap();
     let checked = rill::check::analyze(&program).unwrap();
-    assert!(rill::typed::lower_main(&checked)
-        .unwrap_err()
-        .contains("E-TYPED-UNSUPPORTED"));
-    assert!(rill::backend::emit(&program).unwrap().contains("rl_value"));
+    let typed = rill::typed::lower_main(&checked).unwrap();
+    assert_eq!(
+        rill::backend::emit(&program).unwrap(),
+        rill::typed::emit_c(&typed).unwrap()
+    );
+    assert!(!rill::backend::emit(&program).unwrap().contains("rl_value"));
+    assert!(rill::backend::emit_reference(&program)
+        .unwrap()
+        .contains("rl_value"));
 }

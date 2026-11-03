@@ -21,6 +21,9 @@ programs. Other supported Copy programs use the checked reference evaluator
 while their typed lowering is implemented. Source native dependency
 directives select a compiled native run automatically; `run --native` or
 compiler/link arguments also select native execution.
+For differential testing, `backend::emit_reference` explicitly emits the checked
+Copy subset using the uniform C representation. It rejects owner programs and
+does not change the default backend or provide a new CLI mode.
 `build` invokes `cc` to compile C11 output.
 Set `CC` or pass `--cc <executable>` to choose a C compiler; `--cc` takes
 precedence over `CC`. Use `--zig-cc` to invoke `zig cc`. The two compiler

@@ -230,3 +230,23 @@ Actual direct and generated-binding SDL3 integrations ran in the full suites.
 This adds no physical-input, GPU, AArch64, stable-language or whole-phase claim.
 Owned-record products/projected moves and native foreign typed lowering remain
 separate development candidates, not features of this verified checkpoint.
+
+## Shared native declaration checkpoint `2b480528`
+
+All seven commands passed on source
+`2b48052857bf846d795fa7c0b08a7d8329ce99f2`: **541 default tests** and
+**575 importer-enabled tests**, with no failures, ignored tests or dependency
+skips. Formatting, both strict Clippy modes and both Windows GNU compile checks
+passed; source and clean worktree stayed unchanged.
+
+The independently reviewed F0 increment extracts the existing native header
+declarations and ABI assertions without changing their output, and exposes a
+checked uniform-C reference emitter that rejects owner programs. Differential
+tests use that explicit oracle instead of injecting unsupported raw operations.
+Production native lowering is unchanged. See the
+[native-C oracle report](2026-11-03-native-c-oracle.md) for the exact evidence.
+
+The complete aggregate used a guarded RAM-backed temporary Cargo target, two
+build jobs, no Rust debug symbols and no incremental artifacts. Persistent
+source/evidence were retained without deleting caches or other work. This
+storage choice does not add an optimization, native ABI or full-phase claim.
