@@ -101,16 +101,19 @@ path, with checked prefix-overlap intervals and original-slot forwarding.
 Existing `u8x16` operations now also use checked signatures and compact values
 on this path. Eligible immutable local schemes now use once-evaluated captures
 and exact concrete whole-value/field reconstruction. Unresolved real uses and
-weak monotypes still require a representable concrete layout. Owned records,
-foreign values, stable resolved IDs for all source constructs and complete MIR
-coverage remain open. See the
+weak monotypes still require a representable concrete layout. Existing native
+`i32`/`bool` calls and constants, `unit` results and direct static `cstr`
+arguments now use explicit typed operations and retain the full native manifest.
+Raw unsigned/float/pointer transport, owned records, stable resolved IDs for all
+source constructs and complete MIR coverage remain open. See the
 [Copy-pattern verification](verification/2026-11-03-typed-copy-patterns.md),
 [generic-instance verification](verification/2026-11-03-typed-specialization.md),
 [root-loan verification](verification/2026-11-03-typed-copy-loans.md),
 [Copy-record verification](verification/2026-11-03-typed-copy-records.md) and
 [field-loan verification](verification/2026-11-03-typed-field-loans.md), and
 [Copy-vector verification](verification/2026-11-03-typed-vectors.md), and
-[local-value verification](verification/2026-11-03-typed-local-values.md).
+[local-value verification](verification/2026-11-03-typed-local-values.md), and
+[native-call verification](verification/2026-11-03-typed-native-calls.md).
 
 ## 4. Complete P3 and P4 contracts
 

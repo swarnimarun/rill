@@ -149,9 +149,9 @@ pub(super) fn verify_constructor(
     fields: &[(usize, ExprNode)],
     scope: &mut HashMap<LocalId, Local>,
     ids: &mut HashSet<LocalId>,
-    functions: &[TypedFunction],
-    adts: &[AdtType],
+    context: &VerifyContext<'_>,
 ) -> Result<Type, String> {
+    let adts = context.adts;
     let adt = definition(id, adts)?;
     if fields.len() != adt.variants[0].fields.len() {
         return Err("E-TYPED-RECORD: incomplete record construction".into());
@@ -165,7 +165,7 @@ pub(super) fn verify_constructor(
         if !seen.insert(index) {
             return Err("E-TYPED-RECORD: duplicate field initialization".into());
         }
-        if verify_expr(value, scope, ids, functions, adts)? != *expected {
+        if verify_expr(value, scope, ids, context)? != *expected {
             return Err("E-TYPED-RECORD: incorrect field type".into());
         }
     }

@@ -271,6 +271,7 @@ mod tests {
             kind: ExprKind::Int(42),
         };
         let mut program = TypedMain {
+            native: NativeManifest::default(),
             adts,
             allocation_contract: Some(contract),
             entry: 0,

@@ -5,9 +5,9 @@ pub(super) fn constructor(
     fields: &[ExprNode],
     scope: &mut HashMap<LocalId, Local>,
     ids: &mut HashSet<LocalId>,
-    functions: &[TypedFunction],
-    adts: &[AdtType],
+    context: &VerifyContext<'_>,
 ) -> Result<Type, String> {
+    let adts = context.adts;
     let definition = adts
         .get(adt)
         .ok_or("E-TYPED-ADT: invalid constructor type")?;
@@ -22,7 +22,7 @@ pub(super) fn constructor(
         return Err("E-TYPED-ADT: wrong constructor arity".into());
     }
     for (value, ty) in fields.iter().zip(&variant.fields) {
-        if verify_expr(value, scope, ids, functions, adts)? != *ty {
+        if verify_expr(value, scope, ids, context)? != *ty {
             return Err("E-TYPED-ADT: wrong constructor field type".into());
         }
     }
@@ -36,10 +36,10 @@ pub(super) fn match_value(
     arms: &[AdtArm],
     scope: &mut HashMap<LocalId, Local>,
     ids: &mut HashSet<LocalId>,
-    functions: &[TypedFunction],
-    adts: &[AdtType],
+    context: &VerifyContext<'_>,
 ) -> Result<Type, String> {
-    let Type::Adt { id, .. } = verify_expr(value, scope, ids, functions, adts)? else {
+    let adts = context.adts;
+    let Type::Adt { id, .. } = verify_expr(value, scope, ids, context)? else {
         return Err("E-TYPED-ADT: match requires nominal value".into());
     };
     let definition = &adts[id];
@@ -99,7 +99,7 @@ pub(super) fn match_value(
                 None => {}
             }
         }
-        let ty = verify_expr(&arm.body, &mut branch, ids, functions, adts)?;
+        let ty = verify_expr(&arm.body, &mut branch, ids, context)?;
         if result.is_some_and(|expected| expected != ty) {
             return Err("E-TYPED-ADT: inconsistent arm result".into());
         }

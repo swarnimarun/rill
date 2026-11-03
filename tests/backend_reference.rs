@@ -87,7 +87,9 @@ fn unused_manual_prototypes_keep_exact_abi_types_names_and_order() {
     let c = backend::emit_reference(&program).unwrap();
     assert!(c.contains(&expected), "{c}");
     assert!(!c.contains("E-FFI: incompatible header"));
-    assert_eq!(c, backend::emit(&program).unwrap());
+    let typed = backend::emit(&program).unwrap();
+    assert!(!typed.contains("rl_value"));
+    assert!(typed.contains(&expected));
     assert_eq!(program, snapshot);
 }
 
@@ -130,15 +132,23 @@ fn main() { 42 }
         "_Static_assert(__builtin_types_compatible_p(__typeof__(FLOAT), float), \"E-FFI: incompatible header constant FLOAT\");",
         "_Static_assert(__builtin_types_compatible_p(__typeof__(POINTER), const Window *), \"E-FFI: incompatible header constant POINTER\");",
     ]);
-    assert_eq!(c, backend::emit(&program).unwrap());
+    let typed = backend::emit(&program).unwrap();
+    assert!(!typed.contains("rl_value"));
+    assert!(typed.starts_with("#include <z.h>\n#include <a.h>\n#include <z.h>"));
+    assert_eq!(
+        typed
+            .lines()
+            .filter(|line| line.contains("E-FFI:"))
+            .collect::<Vec<_>>(),
+        declarations
+    );
     assert_eq!(program, snapshot);
 }
 
 #[test]
-fn reference_and_current_native_fallback_emit_identical_programs() {
+fn reference_and_raw_runtime_fallback_emit_identical_programs() {
     for source in [
         "fn main() { u32(0) }",
-        "extern fn native(value: i32) -> i32; fn main() { native(42) }",
         "@include(\"stdint.h\"); extern const UINT64_MAX: u64; fn main() { UINT64_MAX }",
     ] {
         let program = parser::parse(source).unwrap();

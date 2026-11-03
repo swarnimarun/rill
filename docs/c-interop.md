@@ -75,6 +75,33 @@ A `cstr` argument is a direct NUL-free UTF-8 literal such as `c"Rill"`, with
 program-lifetime storage. Supported escapes are `\n`, `\r`, `\t`, `\\` and `\"`.
 Ordinary Rill strings permit embedded NUL and are a separate type.
 
+## Checked native-call increment
+
+The typed path now represents `i32`/`bool` native calls and constant reads,
+`unit` results and direct static `cstr` arguments explicitly. It carries the
+complete validated native configuration and declarations, including unused
+unsigned, float and pointer signatures/constants. The shared declaration emitter
+preserves every target-header assertion. Independent IR validation checks
+metadata, identities, operand kinds/types and the current enclosing Rill loans;
+it does not run the target compiler or establish foreign effects or lifetimes.
+
+C emission evaluates scalar operands in written order into snapshots before
+the native call. `_Bool` ABI values convert explicitly to/from internal typed
+booleans. C strings remain NUL-free UTF-8 literals with program lifetime.
+Constant reads evaluate the header expression at that source position, rather
+than assuming purity or caching it. A generalized constructor/record initializer
+captures each constant leaf once, including unused shapes and aliases.
+
+This F1 increment retains whole-program checked uniform fallback for runtime
+`u8`/`u32`/`u64`/`f32`/raw-pointer forms and independently unsupported Copy layouts.
+Malformed typed IR is an error, not a reason to select fallback. Owner programs
+still reject foreign declarations, headers and raw C values; dependency flags
+alone retain their previous behavior. No host FFI is introduced: reached calls
+evaluate their scalar arguments first, then report `E-INTERP-FFI`; reached
+constants report `E-FFI`. Unused declarations and untaken native branches do not
+prevent pure evaluation. Raw-operation evaluator behavior and CLI native-run
+selection are unchanged. See [the verification report](verification/2026-11-03-typed-native-calls.md).
+
 ## Reusable binding modules
 
 Put dependencies and declarations in a local binding module, then import it:

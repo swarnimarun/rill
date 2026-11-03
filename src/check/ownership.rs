@@ -20,6 +20,14 @@ pub(super) fn verify(checked: &CheckedProgram<'_>) -> Result<(), String> {
     if !program.externs.is_empty() {
         return Err("E-OWNED: owner programs cannot declare foreign functions".into());
     }
+    if !program.constants.is_empty()
+        || !program.native.includes.is_empty()
+        || checked.has_c_values()
+    {
+        return Err(
+            "E-OWNED: owner programs cannot use foreign constants, headers or raw C values".into(),
+        );
+    }
     reject_recursive_calls(checked)?;
     for function in &program.functions {
         let sig = &checked.functions[&function.name];

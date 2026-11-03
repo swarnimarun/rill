@@ -110,10 +110,10 @@ pub(super) fn verify_match(
     arms: &[CopyArm],
     scope: &mut HashMap<LocalId, Local>,
     ids: &mut HashSet<LocalId>,
-    functions: &[TypedFunction],
-    adts: &[AdtType],
+    context: &VerifyContext<'_>,
 ) -> Result<Type, String> {
-    let ty = verify_expr(value, scope, ids, functions, adts)?;
+    let adts = context.adts;
+    let ty = verify_expr(value, scope, ids, context)?;
     if ty.is_owner() {
         return Err("E-TYPED-MATCH: cannot copy an owner".into());
     }
@@ -142,7 +142,7 @@ pub(super) fn verify_match(
                 },
             );
         }
-        let body_ty = verify_expr(&arm.body, &mut branch, ids, functions, adts)?;
+        let body_ty = verify_expr(&arm.body, &mut branch, ids, context)?;
         if result.is_some_and(|expected| expected != body_ty) {
             return Err("E-TYPED-MATCH: inconsistent arm result".into());
         }

@@ -43,7 +43,22 @@ static uint8_t byte_value(uint8_t x) { return x; }
     fn compile_and_run(&self, body: &str, expected: &[u8]) {
         let c = rill::compile(&self.source(body)).unwrap();
         let program = rill::parser::parse(&self.source(body)).unwrap();
-        assert_eq!(c, rill::backend::emit_reference(&program).unwrap());
+        let reference = rill::backend::emit_reference(&program).unwrap();
+        let checked = rill::check::analyze(&program).unwrap();
+        match rill::typed::lower_main(&checked) {
+            Ok(typed) => assert_eq!(c, rill::typed::emit_c(&typed).unwrap()),
+            Err(error) if error.starts_with("E-TYPED-UNSUPPORTED:") => assert_eq!(c, reference),
+            Err(error) => panic!("invalid typed lowering: {error}"),
+        }
+        assert_eq!(
+            c.lines()
+                .filter(|line| line.contains("E-FFI:"))
+                .collect::<Vec<_>>(),
+            reference
+                .lines()
+                .filter(|line| line.contains("E-FFI:"))
+                .collect::<Vec<_>>()
+        );
         rill::c_import::validate_c(&c, OsStr::new("cc"), false, &[]).unwrap();
         let source = self.0.join("generated.c");
         let executable = self.0.join("program");
@@ -114,7 +129,22 @@ fn header_rejects_scalar_bool_and_pointee_mismatches() {
     ] {
         let c = rill::compile(&f.source(body)).unwrap();
         let program = rill::parser::parse(&f.source(body)).unwrap();
-        assert_eq!(c, rill::backend::emit_reference(&program).unwrap());
+        let reference = rill::backend::emit_reference(&program).unwrap();
+        let checked = rill::check::analyze(&program).unwrap();
+        match rill::typed::lower_main(&checked) {
+            Ok(typed) => assert_eq!(c, rill::typed::emit_c(&typed).unwrap()),
+            Err(error) if error.starts_with("E-TYPED-UNSUPPORTED:") => assert_eq!(c, reference),
+            Err(error) => panic!("invalid typed lowering: {error}"),
+        }
+        assert_eq!(
+            c.lines()
+                .filter(|line| line.contains("E-FFI:"))
+                .collect::<Vec<_>>(),
+            reference
+                .lines()
+                .filter(|line| line.contains("E-FFI:"))
+                .collect::<Vec<_>>()
+        );
         let error = rill::c_import::validate_c(&c, OsStr::new("cc"), false, &[]).unwrap_err();
         assert!(error.contains("E-FFI: incompatible header"), "{error}");
     }

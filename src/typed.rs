@@ -1,5 +1,5 @@
 //! A provisional typed IR for closed monomorphic scalar, static-string,
-//! fixed byte-buffer/vector and finite enum/record programs.
+//! fixed byte-buffer/vector, finite enum/record and scalar native-call programs.
 //!
 //! This is not the verified MIR in PLAN.md. Lowering requires an existing
 //! checked program. The C backend uses it for supported forms; owned-box
@@ -20,9 +20,14 @@ mod copy_match;
 use copy_loans::{CopyLocals, CopySlot};
 #[cfg(test)]
 mod copy_match_tests;
+mod foreign;
+use foreign::NativeManifest;
+pub use foreign::{ForeignArg, ForeignConstantId, ForeignFunctionId};
 mod field_loans;
 #[cfg(test)]
 mod field_loans_tests;
+#[cfg(test)]
+mod foreign_tests;
 mod initialization;
 #[cfg(test)]
 mod initialization_tests;
@@ -152,6 +157,8 @@ pub enum ExprKind {
     FieldRead(FieldPlace),
     FieldAssign(FieldPlace, Box<ExprNode>),
     Call(usize, Vec<CallArg>),
+    ForeignCall(ForeignFunctionId, Vec<ForeignArg>),
+    ForeignConst(ForeignConstantId),
     Constructor {
         adt: usize,
         variant: usize,
@@ -234,6 +241,7 @@ pub enum OwnerInit {
 
 #[derive(Clone, Debug)]
 pub struct TypedMain {
+    native: NativeManifest,
     allocation_contract: Option<AllocationContract>,
     adts: Vec<AdtType>,
     functions: Vec<TypedFunction>,
@@ -280,16 +288,19 @@ struct Local {
 /// programs use the existing AST backend.
 pub fn lower_main(checked: &CheckedProgram<'_>) -> Result<TypedMain, String> {
     let program = checked.program;
-    if !program.externs.is_empty()
-        || !program.constants.is_empty()
-        || checked.has_c_values()
-        || !program.native.includes.is_empty()
-    {
-        return Err("E-TYPED-UNSUPPORTED: types and foreign functions".into());
+    let native = NativeManifest::from_checked(checked)?;
+    if checked.has_owned() && (native.has_foreign() || checked.has_c_values()) {
+        return Err(
+            "E-TYPED-OWNER: owner programs cannot use foreign declarations or values".into(),
+        );
+    }
+    if checked.has_c_values() {
+        return Err("E-TYPED-UNSUPPORTED: raw C runtime values await foreign transport".into());
     }
     let instances = instances::Instances::discover(checked)?;
     let registry = adts::Registry::build(checked, &instances)?;
     let mut lower = Lower {
+        native: &native,
         registry,
         checked,
         locals: HashMap::new(),
@@ -307,6 +318,7 @@ pub fn lower_main(checked: &CheckedProgram<'_>) -> Result<TypedMain, String> {
         next: 0,
     };
     let mut result = TypedMain {
+        native: native.clone(),
         allocation_contract: program
             .allocation_types
             .as_ref()
@@ -380,6 +392,7 @@ pub fn lower_main(checked: &CheckedProgram<'_>) -> Result<TypedMain, String> {
 }
 
 struct Lower<'a, 'b> {
+    native: &'a NativeManifest,
     registry: adts::Registry,
     checked: &'a CheckedProgram<'b>,
     locals: HashMap<String, Local>,
@@ -410,6 +423,14 @@ impl Lower<'_, '_> {
         }
         let ty = self.registry.convert(&self.source_type(expr)?)?;
         let kind = match expr {
+            Expr::Call(name, args) if self.native.function_id(name).is_some() => {
+                self.foreign_call(self.native.function_id(name).unwrap(), args)?
+            }
+            Expr::Var(name)
+                if !self.locals.contains_key(name) && self.native.constant_id(name).is_some() =>
+            {
+                ExprKind::ForeignConst(self.native.constant_id(name).unwrap())
+            }
             Expr::Record(_, fields) => self.record(expr, ty, fields)?,
             Expr::Field(root, _) => ExprKind::FieldRead(self.field_place(expr, root, false)?),
             Expr::FieldAssign(root, _, value) => {
@@ -865,6 +886,7 @@ impl Lower<'_, '_> {
 /// local identity, mutability, and operation types. This is not an ownership
 /// or effect proof and must not be used to bypass the source checker.
 pub fn verify(program: &TypedMain) -> Result<(), String> {
+    program.native.verify()?;
     adts::verify(&program.adts)?;
     for function in &program.functions {
         let error = std::cell::RefCell::new(None);
@@ -895,19 +917,46 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
     if !entry.params.is_empty() {
         return Err("E-TYPED: main has parameters".into());
     }
-    let has_owner = program.functions.iter().any(|f| {
-        f.result.is_owner()
-            || f.params.iter().any(|(_, ty, _)| ty.is_owner())
-            || any_expr(&f.body, &|kind| {
-                matches!(
-                    kind,
-                    ExprKind::OwnerLet { .. } | ExprKind::OwnerRead(_) | ExprKind::OwnerWrite(..)
-                )
-            })
-    });
+    let has_owner = program
+        .adts
+        .iter()
+        .any(|adt| adt.owned || adt.arguments.iter().any(|ty| ty.is_owner()))
+        || program.functions.iter().any(|f| {
+            f.result.is_owner()
+                || f.params.iter().any(|(_, ty, _)| ty.is_owner())
+                || any_expr(&f.body, &|kind| {
+                    matches!(
+                        kind,
+                        ExprKind::TryAlloc { .. }
+                            | ExprKind::OwnerLet { .. }
+                            | ExprKind::OwnerRead(_)
+                            | ExprKind::OwnerWrite(..)
+                            | ExprKind::OwnerMove(_)
+                            | ExprKind::OwnerBytesLen(_)
+                            | ExprKind::OwnerBytesGet(..)
+                            | ExprKind::OwnerBytesSet(..)
+                    )
+                })
+        });
     if has_owner {
+        if program.native.has_foreign()
+            || program.functions.iter().any(|f| {
+                any_expr(&f.body, &|kind| {
+                    matches!(kind, ExprKind::ForeignCall(..) | ExprKind::ForeignConst(_))
+                })
+            })
+        {
+            return Err(
+                "E-TYPED-OWNER: owner programs cannot use foreign declarations or values".into(),
+            );
+        }
         verify_acyclic_calls(program)?;
     }
+    let context = VerifyContext {
+        functions: &program.functions,
+        adts: &program.adts,
+        native: &program.native,
+    };
     let mut ids = HashSet::new();
     for function in &program.functions {
         adts::validate_type(function.result, &program.adts)?;
@@ -937,14 +986,7 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
                 },
             );
         }
-        if verify_expr(
-            &function.body,
-            &mut scope,
-            &mut ids,
-            &program.functions,
-            &program.adts,
-        )? != function.result
-        {
+        if verify_expr(&function.body, &mut scope, &mut ids, &context)? != function.result {
             return Err("E-TYPED: wrong function result type".into());
         }
         let mut expected = Vec::new();
@@ -967,13 +1009,20 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
     Ok(())
 }
 
+struct VerifyContext<'a> {
+    functions: &'a [TypedFunction],
+    adts: &'a [AdtType],
+    native: &'a NativeManifest,
+}
+
 fn verify_expr(
     expr: &ExprNode,
     scope: &mut HashMap<LocalId, Local>,
     ids: &mut HashSet<LocalId>,
-    functions: &[TypedFunction],
-    adts: &[AdtType],
+    context: &VerifyContext<'_>,
 ) -> Result<Type, String> {
+    let functions = context.functions;
+    let adts = context.adts;
     if expr.ty.is_owner()
         && !matches!(
             expr.kind,
@@ -996,15 +1045,17 @@ fn verify_expr(
         return Err("E-TYPED: invalid buffer capacity".into());
     }
     let ty = match &expr.kind {
+        ExprKind::ForeignCall(id, args) => foreign::verify_call(*id, args, scope, ids, context)?,
+        ExprKind::ForeignConst(id) => foreign::verify_constant(*id, context.native)?,
         ExprKind::Vector(op, args) => {
             let types = args
                 .iter()
-                .map(|arg| verify_expr(arg, scope, ids, functions, adts))
+                .map(|arg| verify_expr(arg, scope, ids, context))
                 .collect::<Result<Vec<_>, _>>()?;
             op.result(&types)?
         }
         ExprKind::TryAlloc { input, layout, .. } => {
-            if verify_expr(input, scope, ids, functions, adts)? != Type::Int {
+            if verify_expr(input, scope, ids, context)? != Type::Int {
                 return Err("E-TYPED-ALLOC: input must be i32".into());
             }
             Type::Adt {
@@ -1013,27 +1064,27 @@ fn verify_expr(
             }
         }
         ExprKind::CopyMatch { value, arms } => {
-            copy_match::verify_match(value, arms, scope, ids, functions, adts)?
+            copy_match::verify_match(value, arms, scope, ids, context)?
         }
         ExprKind::Constructor {
             adt,
             variant,
             fields,
-        } => adt_verify::constructor(*adt, *variant, fields, scope, ids, functions, adts)?,
+        } => adt_verify::constructor(*adt, *variant, fields, scope, ids, context)?,
         ExprKind::Match { value, arms } => {
-            adt_verify::match_value(value, arms, scope, ids, functions, adts)?
+            adt_verify::match_value(value, arms, scope, ids, context)?
         }
         ExprKind::Int(_) => Type::Int,
         ExprKind::Str(_) => Type::StaticStr,
         ExprKind::Bool(_) => Type::Bool,
         ExprKind::Unit => Type::Unit,
         ExprKind::Record { adt, fields } => {
-            records::verify_constructor(*adt, fields, scope, ids, functions, adts)?
+            records::verify_constructor(*adt, fields, scope, ids, context)?
         }
         ExprKind::FieldRead(place) => records::verify_place(place, scope, adts, false)?,
         ExprKind::FieldAssign(place, value) => {
             let expected = records::verify_place(place, scope, adts, true)?;
-            if verify_expr(value, scope, ids, functions, adts)? != expected {
+            if verify_expr(value, scope, ids, context)? != expected {
                 return Err("E-TYPED-RECORD: incorrect assigned field type".into());
             }
             Type::Unit
@@ -1084,7 +1135,7 @@ fn verify_expr(
                 return Err("E-TYPED-OWNER: invalid owner write".into());
             }
             scope.get_mut(id).unwrap().loaned = true;
-            let value_type = verify_expr(value, scope, ids, functions, adts);
+            let value_type = verify_expr(value, scope, ids, context);
             scope.get_mut(id).unwrap().loaned = false;
             if value_type? != Type::Int {
                 return Err("E-TYPED-OWNER: invalid written value".into());
@@ -1118,15 +1169,15 @@ fn verify_expr(
             let check = match &expr.kind {
                 ExprKind::OwnerBytesLen(_) => Ok(()),
                 ExprKind::OwnerBytesGet(_, index) => {
-                    if verify_expr(index, scope, ids, functions, adts)? == Type::Int {
+                    if verify_expr(index, scope, ids, context)? == Type::Int {
                         Ok(())
                     } else {
                         Err("E-TYPED-OWNER: invalid bytes index")
                     }
                 }
                 ExprKind::OwnerBytesSet(_, index, value) => {
-                    if verify_expr(index, scope, ids, functions, adts)? == Type::Int
-                        && verify_expr(value, scope, ids, functions, adts)? == Type::Int
+                    if verify_expr(index, scope, ids, context)? == Type::Int
+                        && verify_expr(value, scope, ids, context)? == Type::Int
                     {
                         Ok(())
                     } else {
@@ -1156,7 +1207,7 @@ fn verify_expr(
         } => {
             let owner_ty = match init {
                 OwnerInit::Expr(value) => {
-                    let ty = verify_expr(value, scope, ids, functions, adts)?;
+                    let ty = verify_expr(value, scope, ids, context)?;
                     if !ty.is_owner() {
                         return Err("E-TYPED-OWNER: expected affine initializer".into());
                     }
@@ -1166,14 +1217,14 @@ fn verify_expr(
                     if !matches!(value.kind, ExprKind::Call(..)) {
                         return Err("E-TYPED-OWNER: initializer must be a direct call".into());
                     }
-                    let ty = verify_expr(value, scope, ids, functions, adts)?;
+                    let ty = verify_expr(value, scope, ids, context)?;
                     if !ty.is_owner() {
                         return Err("E-TYPED-OWNER: call must return an owner".into());
                     }
                     ty
                 }
                 OwnerInit::Alloc(value) | OwnerInit::BytesAlloc(value) => {
-                    if verify_expr(value, scope, ids, functions, adts)? != Type::Int {
+                    if verify_expr(value, scope, ids, context)? != Type::Int {
                         return Err("E-TYPED-OWNER: allocation requires i32".into());
                     }
                     if matches!(init, OwnerInit::Alloc(_)) {
@@ -1214,7 +1265,7 @@ fn verify_expr(
                     mode: ParamMode::Value,
                 },
             );
-            let result = verify_expr(body, scope, ids, functions, adts)?;
+            let result = verify_expr(body, scope, ids, context)?;
             let expected = scope
                 .get(local)
                 .ok_or("E-TYPED-OWNER: missing owner")?
@@ -1298,7 +1349,7 @@ fn verify_expr(
                     | (CallArg::ReadTemporary(value), ty, ParamMode::Read)
                         if !ty.is_owner() =>
                     {
-                        if verify_expr(value, scope, ids, functions, adts)? != *ty {
+                        if verify_expr(value, scope, ids, context)? != *ty {
                             return Err("E-TYPED: wrong call argument type".into());
                         }
                     }
@@ -1316,43 +1367,38 @@ fn verify_expr(
         ExprKind::BytesNew(n) if *n <= 256 => Type::Bytes(*n),
         ExprKind::BytesNew(_) => return Err("E-TYPED: invalid buffer capacity".into()),
         ExprKind::BytesLen(value) => {
-            if !matches!(
-                verify_expr(value, scope, ids, functions, adts)?,
-                Type::Bytes(_)
-            ) {
+            if !matches!(verify_expr(value, scope, ids, context)?, Type::Bytes(_)) {
                 return Err("E-TYPED: invalid bytes_len operand".into());
             }
             Type::Int
         }
         ExprKind::BytesGet(value, index) => {
-            if !matches!(
-                verify_expr(value, scope, ids, functions, adts)?,
-                Type::Bytes(_)
-            ) || verify_expr(index, scope, ids, functions, adts)? != Type::Int
+            if !matches!(verify_expr(value, scope, ids, context)?, Type::Bytes(_))
+                || verify_expr(index, scope, ids, context)? != Type::Int
             {
                 return Err("E-TYPED: invalid bytes_get operands".into());
             }
             Type::Int
         }
         ExprKind::BytesSet(value, index, byte) => {
-            let ty = verify_expr(value, scope, ids, functions, adts)?;
+            let ty = verify_expr(value, scope, ids, context)?;
             if !matches!(ty, Type::Bytes(_))
-                || verify_expr(index, scope, ids, functions, adts)? != Type::Int
-                || verify_expr(byte, scope, ids, functions, adts)? != Type::Int
+                || verify_expr(index, scope, ids, context)? != Type::Int
+                || verify_expr(byte, scope, ids, context)? != Type::Int
             {
                 return Err("E-TYPED: invalid bytes_set operands".into());
             }
             ty
         }
         ExprKind::ByteLen(value) => {
-            if verify_expr(value, scope, ids, functions, adts)? != Type::StaticStr {
+            if verify_expr(value, scope, ids, context)? != Type::StaticStr {
                 return Err("E-TYPED: invalid byte_len operand".into());
             }
             Type::Int
         }
         ExprKind::ByteAt(value, index) => {
-            if verify_expr(value, scope, ids, functions, adts)? != Type::StaticStr
-                || verify_expr(index, scope, ids, functions, adts)? != Type::Int
+            if verify_expr(value, scope, ids, context)? != Type::StaticStr
+                || verify_expr(index, scope, ids, context)? != Type::Int
             {
                 return Err("E-TYPED: invalid byte_at operands".into());
             }
@@ -1364,7 +1410,7 @@ fn verify_expr(
             value,
             body,
         } => {
-            let value_ty = verify_expr(value, scope, ids, functions, adts)?;
+            let value_ty = verify_expr(value, scope, ids, context)?;
             if value_ty.is_owner() {
                 return Err("E-TYPED-OWNER: owner needs explicit init".into());
             }
@@ -1384,7 +1430,7 @@ fn verify_expr(
                     mode: ParamMode::Value,
                 },
             );
-            let result = verify_expr(body, scope, ids, functions, adts);
+            let result = verify_expr(body, scope, ids, context);
             scope.remove(local);
             result?
         }
@@ -1397,16 +1443,16 @@ fn verify_expr(
                 || local.ty.is_owner()
                 || !local.initialization.fully_initialized()
                 || field_loans::conflicts(&local, &[], true)
-                || verify_expr(value, scope, ids, functions, adts)? != local.ty
+                || verify_expr(value, scope, ids, context)? != local.ty
             {
                 return Err("E-TYPED: invalid assignment".into());
             }
             Type::Unit
         }
         ExprKind::Binary(op, a, b) => {
-            let left = verify_expr(a, scope, ids, functions, adts)?;
+            let left = verify_expr(a, scope, ids, context)?;
             let snapshot = scope.clone();
-            let right = verify_expr(b, scope, ids, functions, adts)?;
+            let right = verify_expr(b, scope, ids, context)?;
             if matches!(op, And | Or) && !same_owner_states(&snapshot, scope) {
                 return Err("E-TYPED-OWNER: move in conditional expression".into());
             }
@@ -1421,13 +1467,13 @@ fn verify_expr(
             }
         }
         ExprKind::If(c, a, b) => {
-            if verify_expr(c, scope, ids, functions, adts)? != Type::Bool {
+            if verify_expr(c, scope, ids, context)? != Type::Bool {
                 return Err("E-TYPED: invalid condition".into());
             }
             let mut yes_scope = scope.clone();
-            let a = verify_expr(a, &mut yes_scope, ids, functions, adts)?;
+            let a = verify_expr(a, &mut yes_scope, ids, context)?;
             let mut no_scope = scope.clone();
-            if verify_expr(b, &mut no_scope, ids, functions, adts)? != a {
+            if verify_expr(b, &mut no_scope, ids, context)? != a {
                 return Err("E-TYPED: inconsistent branches".into());
             }
             if !same_owner_states(&yes_scope, &no_scope) {
@@ -1440,13 +1486,13 @@ fn verify_expr(
         }
         ExprKind::While(c, b) => {
             let before = scope.clone();
-            if verify_expr(c, scope, ids, functions, adts)? != Type::Bool {
+            if verify_expr(c, scope, ids, context)? != Type::Bool {
                 return Err("E-TYPED: invalid loop condition".into());
             }
             if !same_owner_states(&before, scope) {
                 return Err("E-TYPED-OWNER: move in loop".into());
             }
-            if verify_expr(b, scope, ids, functions, adts)? != Type::Unit {
+            if verify_expr(b, scope, ids, context)? != Type::Unit {
                 return Err("E-TYPED: invalid loop body".into());
             }
             if !same_owner_states(&before, scope) {
@@ -1466,6 +1512,7 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
         return true;
     }
     match &expr.kind {
+        ExprKind::ForeignCall(_, args) => args.iter().any(|arg| matches!(arg, ForeignArg::Value(value) if any_expr(value, predicate))),
         ExprKind::Vector(_,args)=>args.iter().any(|arg|any_expr(arg,predicate)),
         ExprKind::CopyMatch { value, arms } => {
             any_expr(value, predicate) || arms.iter().any(|a| any_expr(&a.body, predicate))
@@ -1506,6 +1553,13 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
 
 fn collect_calls(expr: &ExprNode, out: &mut Vec<usize>) {
     match &expr.kind {
+        ExprKind::ForeignCall(_, args) => {
+            for arg in args {
+                if let ForeignArg::Value(value) = arg {
+                    collect_calls(value, out);
+                }
+            }
+        }
         ExprKind::Vector(_, args) => {
             for arg in args {
                 collect_calls(arg, out);
@@ -1729,6 +1783,20 @@ fn evaluate_expr(
 ) -> Result<crate::interpreter::Value, String> {
     use crate::interpreter::Value;
     match &expr.kind {
+        ExprKind::ForeignCall(id, args) => {
+            for arg in args {
+                if let ForeignArg::Value(value) = arg {
+                    evaluate_expr(value, locals, program, depth, state, owners)?;
+                }
+            }
+            Err(format!(
+                "E-INTERP-FFI: cannot call C function {} in the interpreter",
+                program.native.functions[id.0 as usize].name
+            ))
+        }
+        ExprKind::ForeignConst(_) => {
+            Err("E-FFI: imported C constants require native C emission".into())
+        }
         ExprKind::Vector(op, args) => {
             vectors::evaluate(*op, args, locals, program, depth, state, owners)
         }
@@ -2469,6 +2537,7 @@ mod tests {
     #[test]
     fn verifier_rejects_out_of_scope_and_bad_types() {
         let p = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2484,6 +2553,7 @@ mod tests {
         };
         assert!(verify(&p).unwrap_err().contains("outside local scope"));
         let p = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2512,6 +2582,7 @@ mod tests {
             kind: ExprKind::ByteLen(Box::new(unit())),
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2532,6 +2603,7 @@ mod tests {
             kind: ExprKind::Binary(BinaryOp::Eq, Box::new(string()), Box::new(string())),
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2560,6 +2632,7 @@ mod tests {
             kind: ExprKind::BytesGet(Box::new(bytes), Box::new(bad_index)),
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2576,6 +2649,7 @@ mod tests {
             kind: ExprKind::BytesNew(257),
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2593,6 +2667,7 @@ mod tests {
 
     fn owner_program(body: ExprNode) -> TypedMain {
         TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2657,6 +2732,7 @@ mod tests {
             kind: ExprKind::Call(1, vec![CallArg::Move(LocalId(0))]),
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -2689,6 +2765,7 @@ mod tests {
                 kind: ExprKind::Call(1, vec![arg]),
             };
             let program = TypedMain {
+                native: NativeManifest::default(),
                 allocation_contract: None,
                 adts: Vec::new(),
                 entry: 0,
@@ -2847,6 +2924,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let p = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 1,
@@ -2862,6 +2940,7 @@ mod tests {
         };
         assert!(verify(&p).unwrap_err().contains("invalid move argument"));
         let p = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 1,
@@ -2880,6 +2959,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let p = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 1,
@@ -2898,6 +2978,7 @@ mod tests {
             .contains("invalid call argument mode"));
         for cleanup in [vec![], vec![LocalId(0), LocalId(1)]] {
             let p = TypedMain {
+                native: NativeManifest::default(),
                 allocation_contract: None,
                 adts: Vec::new(),
                 entry: 1,
@@ -2955,6 +3036,7 @@ mod tests {
             ),
         ] {
             let program = TypedMain {
+                native: NativeManifest::default(),
                 allocation_contract: None,
                 adts: Vec::new(),
                 entry: 1,
@@ -2966,6 +3048,7 @@ mod tests {
             assert!(verify(&program).unwrap_err().contains("loan"));
         }
         let good = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 1,
@@ -2993,6 +3076,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 1,
@@ -3007,6 +3091,7 @@ mod tests {
             ..function(vec![ParamMode::Read])
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 1,
@@ -3052,6 +3137,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let program = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 2,
@@ -3073,6 +3159,7 @@ mod tests {
             param_cleanup: vec![],
         };
         let p = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,
@@ -3080,6 +3167,7 @@ mod tests {
         };
         assert!(verify(&p).unwrap_err().contains("recursive owner programs"));
         let p = TypedMain {
+            native: NativeManifest::default(),
             allocation_contract: None,
             adts: Vec::new(),
             entry: 0,

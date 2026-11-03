@@ -31,6 +31,10 @@ bounded capture-and-shape elaboration for eligible immutable schemes. Concrete
 leaves are evaluated once into private typed capture records; aliases share
 captures and each whole/field use has an exact concrete type. Unused phantom
 shapes need no default type. This does not broaden generalization or ownership.
+The [checked-native increment](verification/2026-11-03-typed-native-integration.md)
+adds explicit typed scalar native calls/constants and static C-string arguments,
+with complete declaration checks and source-order captures. Raw foreign
+transport still uses the checked uniform fallback; P1 and P5 remain open.
 
 ## Open the checkpoint
 

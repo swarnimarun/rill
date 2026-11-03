@@ -234,6 +234,9 @@ impl Lower<'_, '_> {
                 }
                 self.capture_leaf(expr, captures)?
             }
+            Expr::Var(name) if self.native.constant_id(name).is_some() => {
+                self.capture_leaf(expr, captures)?
+            }
             Expr::Var(name) => self.constructor_shape(expr, name, &[], captures, depth)?,
             Expr::Call(name, args) => self.constructor_shape(expr, name, args, captures, depth)?,
             Expr::Record(name, fields) => {

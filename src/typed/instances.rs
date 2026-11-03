@@ -243,6 +243,21 @@ pub(super) fn runtime_children<'a>(
             return;
         }
     }
+    // A verified direct cstr operand belongs to the native ABI, not the
+    // registry of storable values. Do not skip any other expression.
+    if let Expr::Call(name, args) = expr {
+        if let Some(function) = checked.program.externs.iter().find(|f| f.name == *name) {
+            if args.len() == function.params.len() {
+                for (arg, param) in args.iter().zip(&function.params).rev() {
+                    if !matches!((arg, &param.ty), (Expr::CStr(value), crate::ast::ExternType::CStr) if !value.as_bytes().contains(&0))
+                    {
+                        pending.push(arg);
+                    }
+                }
+                return;
+            }
+        }
+    }
     children(expr, pending);
 }
 

@@ -2,12 +2,13 @@
 mod adt;
 mod allocation;
 mod copy_match;
+mod foreign;
 mod records;
 mod vectors;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
-use super::{CallArg, ExprKind, ExprNode, LocalId, OwnerInit, Type, TypedMain};
+use super::{CallArg, ExprKind, ExprNode, ForeignArg, LocalId, OwnerInit, Type, TypedMain};
 use crate::ast::{BinaryOp, ParamMode};
 
 const RUNTIME: &str = r#"#include <stdint.h>
@@ -49,8 +50,16 @@ static int32_t rl_checked(int op, int32_t x, int32_t y) {
 /// this after `lower_main`; this verifier does not replace source checking.
 pub fn emit_c(program: &TypedMain) -> Result<String, String> {
     super::verify(program)?;
+    let mut out = program.native.config.preamble()?;
+    out.push_str(RUNTIME);
+    crate::c_import::abi::emit_declarations(
+        &program.native.config,
+        &program.native.functions,
+        &program.native.constants,
+        &mut out,
+    );
     let mut emitter = Emitter {
-        out: String::from(RUNTIME),
+        out,
         next: 0,
         frame_cost: 0,
         program,
@@ -58,7 +67,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         borrowed_copy: HashSet::new(),
         adt_costs: super::adts::layout_costs(&program.adts)?,
     };
-    emitter.out.push_str("_Static_assert(sizeof(int) <= 64 && sizeof(int32_t) <= 64 && sizeof(rl_unit) <= 64 && sizeof(rl_str) <= 64, \"unsupported typed value layout\");\n");
+    emitter.out.push_str("_Static_assert(sizeof(int) <= 64 && sizeof(_Bool) <= 64 && sizeof(int32_t) <= 64 && sizeof(rl_unit) <= 64 && sizeof(rl_str) <= 64, \"unsupported typed value layout\");\n");
     if program.adts.iter().any(|adt| adt.owned)
         || program.functions.iter().any(|function| {
             function.result.is_owner()
@@ -228,6 +237,13 @@ fn collect_type(ty: Type, output: &mut BTreeSet<usize>) {
 fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
     collect_type(expr.ty, output);
     match &expr.kind {
+        ExprKind::ForeignCall(_, args) => {
+            for arg in args {
+                if let ForeignArg::Value(value) = arg {
+                    collect_expr(value, output);
+                }
+            }
+        }
         ExprKind::Vector(_, args) => {
             for arg in args {
                 collect_expr(arg, output);
@@ -299,7 +315,8 @@ fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
         ExprKind::Assign(_, value) | ExprKind::ByteLen(value) | ExprKind::BytesLen(value) => {
             collect_expr(value, output)
         }
-        ExprKind::Int(_)
+        ExprKind::ForeignConst(_)
+        | ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
         | ExprKind::Unit
@@ -313,6 +330,9 @@ fn contains_owner(expr: &ExprNode) -> bool {
         return true;
     }
     match &expr.kind {
+        ExprKind::ForeignCall(_, args) => args
+            .iter()
+            .any(|arg| matches!(arg, ForeignArg::Value(value) if contains_owner(value))),
         ExprKind::Vector(_, args) => args.iter().any(contains_owner),
         ExprKind::CopyMatch { value, arms } => {
             contains_owner(value) || arms.iter().any(|a| contains_owner(&a.body))
@@ -385,6 +405,8 @@ impl Emitter<'_> {
         let ty = c_type(expr.ty);
         self.add_cost(expr.ty);
         match &expr.kind {
+            ExprKind::ForeignCall(id, args) => self.foreign_call(&result, *id, args),
+            ExprKind::ForeignConst(id) => self.foreign_constant(&result, *id),
             ExprKind::Vector(op, args) => self.vector(&result, &ty, *op, args),
             ExprKind::Record { fields, .. } => self.record(&result, &ty, fields),
             ExprKind::FieldRead(place) => {

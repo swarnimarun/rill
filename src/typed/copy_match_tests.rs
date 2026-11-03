@@ -238,6 +238,7 @@ fn wide_pattern_matrix_has_an_explicit_bounded_work_policy() {
         owned: false,
     };
     let mut program = TypedMain {
+        native: NativeManifest::default(),
         allocation_contract: None,
         adts: vec![AdtType {
             origin: super::AdtOrigin::Source,

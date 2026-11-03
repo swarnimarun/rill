@@ -37,9 +37,15 @@ mutability and active root/field loans, retaining the source limit of 16 steps.
 Assignment updates the original root after its right-hand side finishes,
 preserving sibling or prefix replacements. Existing `u8x16` values use a compact
 16-byte struct and independently checked operations on the same typed path,
-including inside restricted owner programs. Foreign-value programs still use
-the checked AST C backend; raw C values require native execution. Owner programs
-reject foreign forms rather than falling back to copying execution.
+including inside restricted owner programs. Existing native `i32`/`bool` calls
+and constant reads, `unit` results and direct static `cstr` arguments now use
+explicit typed operations when the surrounding Copy layouts are supported.
+The complete manifest retains unused declarations and target-header assertions.
+Runtime unsigned/float/raw-pointer forms still use the checked AST C backend;
+raw C values require native execution. The evaluator rejects reached native
+operations rather than loading host symbols. Owner programs reject foreign
+forms rather than falling back to copying execution. See the
+[native-call evidence](../verification/2026-11-03-typed-native-calls.md).
 Copy root and field loans use explicit typed shared/exclusive operands
 and materialized read temporaries. The IR independently checks argument-order
 conflicts and forwarding, including prefix overlap and disjoint siblings; C
