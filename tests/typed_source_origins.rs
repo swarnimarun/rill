@@ -519,6 +519,7 @@ fn native_and_fallback_paths_keep_their_boundary() {
         "extern fn abs(x: i32) -> i32;\nfn main() { abs(-42) }",
         "extern fn native_text(text: cstr) -> i32;\nfn main() { native_text(c\"literal\") }",
         "fn main() { u32(0) }",
+        "fn inspect(p: ptr<void>) { is_null(p) }\nfn main() { inspect(c_null()) }",
     ] {
         let tree = Tree::new(source);
         let sources = tree.load();
@@ -540,5 +541,39 @@ fn native_and_fallback_paths_keep_their_boundary() {
             }
         }
         assert_eq!(rill::backend::emit(sources.program()).unwrap(), before);
+    }
+}
+
+#[test]
+fn raw_native_layout_metadata_stays_outside_function_origins() {
+    for raw in ["u8", "u32", "u64", "f32", "ptr<void>", "const_ptr<void>"] {
+        for source in [
+            format!("type E = Empty | Has({raw})\nfn main() {{ Empty }}"),
+            format!("type Marker<a> = Marker\nfn take(x: Marker<{raw}>) {{ 42 }}\nfn main() {{ take(Marker) }}"),
+        ] {
+            let tree = Tree::new(&source);
+            let sources = tree.load();
+            let checked = rill::check::analyze(sources.program()).unwrap();
+            assert!(!checked.has_c_values(), "{source}");
+            let typed = rill::typed::lower_main(&checked).unwrap();
+            let before = rill::backend::emit(sources.program()).unwrap();
+            assert_eq!(rill::typed::emit_c(&typed).unwrap(), before);
+            let error = lower_main_with_function_origins(sources.clone()).unwrap_err();
+            assert!(
+                error.starts_with("E-TYPED-UNSUPPORTED: function origin index"),
+                "{source}: {error}"
+            );
+            assert_eq!(rill::backend::emit(sources.program()).unwrap(), before);
+        }
+    }
+    for source in [
+        "type E = Empty | Has(i32)\nfn main() { Empty }",
+        "type Marker<a> = Marker\nfn take(x: Marker<i32>) { 42 }\nfn main() { take(Marker) }",
+    ] {
+        let tree = Tree::new(source);
+        let sources = tree.load();
+        let before = rill::backend::emit(sources.program()).unwrap();
+        let mapped = lower_main_with_function_origins(sources).unwrap();
+        assert_eq!(rill::typed::emit_c(mapped.typed()).unwrap(), before);
     }
 }

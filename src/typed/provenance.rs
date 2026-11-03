@@ -197,6 +197,34 @@ pub fn lower_main_with_function_origins(
 ) -> Result<FunctionOriginProgram, String> {
     lower_with_trace(sources, instances::Trace::default())
 }
+// Native values can be present only in an inactive variant or phantom
+// argument, without a raw expression type in the source checker. Inspect the
+// complete verified representation before publishing this narrower index.
+fn has_native_representation(typed: &TypedMain) -> bool {
+    typed.native.has_foreign()
+        || !typed.native.pointers.is_empty()
+        || typed.adts.iter().any(|adt| {
+            adt.arguments
+                .iter()
+                .chain(adt.variants.iter().flat_map(|variant| &variant.fields))
+                .any(|ty| ty.is_raw())
+        })
+        || typed.functions.iter().any(|function| {
+            function.result.is_raw()
+                || function.params.iter().any(|(_, ty, _)| ty.is_raw())
+                || super::any_expr(&function.body, &|kind| {
+                    matches!(
+                        kind,
+                        super::ExprKind::ForeignCall(..)
+                            | super::ExprKind::ForeignConst(..)
+                            | super::ExprKind::ForeignConvert(..)
+                            | super::ExprKind::NullPointer
+                            | super::ExprKind::IsNull(..)
+                    )
+                })
+        })
+}
+
 fn lower_with_trace(
     sources: SourceProgram,
     mut trace: instances::Trace,
@@ -210,6 +238,7 @@ fn lower_with_trace(
         || !sources.program().constants.is_empty()
         || !sources.program().native.includes.is_empty()
         || checked.has_c_values()
+        || has_native_representation(&typed)
     {
         return Err(
             "E-TYPED-UNSUPPORTED: function origin index does not map native programs".into(),

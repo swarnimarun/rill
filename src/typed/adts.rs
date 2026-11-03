@@ -5,6 +5,7 @@ use std::collections::{HashMap, HashSet};
 
 pub(super) struct Registry {
     pub types: Vec<AdtType>,
+    pub pointers: Vec<super::foreign::PointerType>,
     ids: HashMap<SourceType, Type>,
     active: HashSet<SourceType>,
 }
@@ -12,9 +13,11 @@ impl Registry {
     pub fn build(
         checked: &CheckedProgram<'_>,
         instances: &super::instances::Instances,
+        native: &super::NativeManifest,
     ) -> Result<Self, String> {
         let mut registry = Self {
             types: Vec::new(),
+            pointers: native.pointers.clone(),
             ids: HashMap::new(),
             active: HashSet::new(),
         };
@@ -45,6 +48,12 @@ impl Registry {
     ) -> Result<Type, String> {
         if let Some(ty) = self.ids.get(ty) {
             return Ok(*ty);
+        }
+        if let SourceType::CPointer { pointee, is_const } = ty {
+            let id = super::foreign::intern_pointer(&mut self.pointers, pointee, *is_const)?;
+            let result = Type::RawPointer(id);
+            self.ids.insert(ty.clone(), result);
+            return Ok(result);
         }
         if !matches!(ty, SourceType::Nominal(..)) {
             return super::primitive_type(ty);

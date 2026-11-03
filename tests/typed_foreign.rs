@@ -1,5 +1,4 @@
-//! F1 checks the existing i32/bool/unit/static-cstr boundary. Raw C values
-//! deliberately remain on the checked uniform route until F2.
+//! Scalar/static-cstr native contracts, retained alongside F2 raw transport.
 use std::{
     fs,
     path::PathBuf,
@@ -563,7 +562,7 @@ fn typed_evaluator_keeps_pure_paths_and_reached_native_error_precedence() {
 }
 
 #[test]
-fn runtime_raw_values_keep_checked_fallback_during_f1() {
+fn runtime_raw_values_use_checked_typed_transport() {
     for source in [
         "fn main() { u8(1) }",
         "fn main() { u32(1) }",
@@ -576,14 +575,14 @@ fn runtime_raw_values_keep_checked_fallback_during_f1() {
     ] {
         let program = rill::parser::parse(source).unwrap();
         let checked = rill::check::analyze(&program).unwrap();
-        assert!(rill::typed::lower_main(&checked).is_err(), "{source}");
+        let ir = rill::typed::lower_main(&checked).unwrap();
+        rill::typed::verify(&ir).unwrap();
         let c = rill::backend::emit(&program).unwrap();
-        assert!(c.contains("rl_value"), "{source}");
-        assert_eq!(
-            c,
-            rill::backend::emit_reference(&program).unwrap(),
-            "{source}"
-        );
+        assert!(!c.contains("rl_value"), "{source}");
+        assert_eq!(c, rill::typed::emit_c(&ir).unwrap(), "{source}");
+        assert!(rill::backend::emit_reference(&program)
+            .unwrap()
+            .contains("rl_value"));
     }
     for source in [
         "fn main() { u8(1 / 0) }",

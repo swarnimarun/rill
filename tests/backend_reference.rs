@@ -146,7 +146,7 @@ fn main() { 42 }
 }
 
 #[test]
-fn reference_and_raw_runtime_fallback_emit_identical_programs() {
+fn raw_runtime_uses_checked_typed_path_and_keeps_independent_reference() {
     for source in [
         "fn main() { u32(0) }",
         "@include(\"stdint.h\"); extern const UINT64_MAX: u64; fn main() { UINT64_MAX }",
@@ -154,6 +154,13 @@ fn reference_and_raw_runtime_fallback_emit_identical_programs() {
         let program = parser::parse(source).unwrap();
         let c = backend::emit_reference(&program).unwrap();
         assert!(c.contains("rl_value"));
-        assert_eq!(c, backend::emit(&program).unwrap(), "{source}");
+        let checked = rill::check::analyze(&program).unwrap();
+        let typed = rill::typed::lower_main(&checked).unwrap();
+        rill::typed::verify(&typed).unwrap();
+        let typed_c = rill::typed::emit_c(&typed).unwrap();
+        assert!(!typed_c.contains("rl_value"), "{source}");
+        assert!(!typed_c.contains("RL_CAP"), "{source}");
+        assert_eq!(typed_c, backend::emit(&program).unwrap(), "{source}");
+        assert_ne!(c, typed_c, "{source}");
     }
 }

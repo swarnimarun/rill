@@ -2,7 +2,7 @@
 //! `_Bool` belongs only to the ABI and converts to/from internal typed bool.
 use super::*;
 use crate::ast::ExternType;
-use crate::typed::{ForeignArg, ForeignConstantId, ForeignFunctionId};
+use crate::typed::{ForeignArg, ForeignConstantId, ForeignConvert, ForeignFunctionId};
 
 impl Emitter<'_> {
     pub(super) fn foreign_call(
@@ -39,7 +39,20 @@ impl Emitter<'_> {
             ExternType::Unit => {
                 writeln!(self.out, "{value}; rl_unit {result} = (rl_unit){{0}};").unwrap();
             }
-            _ => unreachable!("verified F1 native result"),
+            ExternType::U8
+            | ExternType::U32
+            | ExternType::U64
+            | ExternType::F32
+            | ExternType::Pointer { .. } => {
+                let ty = c_type(
+                    self.program
+                        .native
+                        .runtime_type(&function.result)
+                        .expect("verified native result"),
+                );
+                writeln!(self.out, "{ty} {result} = {value};").unwrap();
+            }
+            ExternType::CStr => unreachable!("verified native result"),
         }
     }
 
@@ -50,8 +63,41 @@ impl Emitter<'_> {
                 writeln!(self.out, "int32_t {result} = (int32_t)({});", constant.name).unwrap();
             }
             ExternType::Bool => self.foreign_bool(result, &constant.name),
-            _ => unreachable!("verified F1 native constant"),
+            ExternType::U8
+            | ExternType::U32
+            | ExternType::U64
+            | ExternType::F32
+            | ExternType::Pointer { .. } => {
+                let ty = c_type(
+                    self.program
+                        .native
+                        .runtime_type(&constant.ty)
+                        .expect("verified native constant"),
+                );
+                writeln!(self.out, "{ty} {result} = ({ty})({});", constant.name).unwrap();
+            }
+            ExternType::Unit | ExternType::CStr => unreachable!("verified native constant"),
         }
+    }
+
+    pub(super) fn foreign_convert(
+        &mut self,
+        result: &str,
+        ty: &str,
+        conversion: ForeignConvert,
+        input: &ExprNode,
+    ) {
+        let input = self.expr(input);
+        match conversion {
+            ForeignConvert::U8 => {
+                writeln!(self.out, "if ({input} < 0 || {input} > 255) rl_trap();").unwrap()
+            }
+            ForeignConvert::U32 | ForeignConvert::U64 => {
+                writeln!(self.out, "if ({input} < 0) rl_trap();").unwrap()
+            }
+            ForeignConvert::F32 => {}
+        }
+        writeln!(self.out, "{ty} {result} = ({ty}){input};").unwrap();
     }
 
     fn foreign_bool(&mut self, result: &str, value: &str) {

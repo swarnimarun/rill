@@ -33,8 +33,9 @@ captures and each whole/field use has an exact concrete type. Unused phantom
 shapes need no default type. This does not broaden generalization or ownership.
 The [checked-native increment](verification/2026-11-03-typed-native-integration.md)
 adds explicit typed scalar native calls/constants and static C-string arguments,
-with complete declaration checks and source-order captures. Raw foreign
-transport still uses the checked uniform fallback; P1 and P5 remain open.
+with complete declaration checks and source-order captures. The subsequent [raw transport integration](verification/2026-11-03-typed-native-raw-integration.md)
+adds existing unsigned/float/raw-pointer transport to that checked path. P1 and
+P5 remain open.
 
 ## Open the checkpoint
 
@@ -169,3 +170,11 @@ The combined scalar-native and function-origin checkpoint passed its
 [integrated matrix](verification/2026-11-03-typed-origin-integration.md), with
 584 default and 618 importer-enabled tests. The index remains optional and
 does not cover typed nodes or generated C ranges.
+
+
+The final [raw native integration and capture checkpoint](verification/2026-11-03-typed-native-raw-integration.md)
+passed 614 default and 648 importer-enabled tests, both strict Clippy checks and
+both Windows GNU compile checks. Twelve actual direct/generated/collector SDL3
+software captures agree across GCC/Clang and O0/O2. Use the opt-in
+[capture matrix](sdl3-capture-matrix.md) to reproduce the bounded visual gate;
+physical input and hardware rendering are not covered.

@@ -104,8 +104,10 @@ and exact concrete whole-value/field reconstruction. Unresolved real uses and
 weak monotypes still require a representable concrete layout. Existing native
 `i32`/`bool` calls and constants, `unit` results and direct static `cstr`
 arguments now use explicit typed operations and retain the full native manifest.
-Raw unsigned/float/pointer transport, owned records, stable resolved IDs for all
-source constructs and complete MIR coverage remain open. See the
+Existing unsigned/float/raw-pointer transport now also uses the checked typed
+path, with final integrated native and actual SDL capture evidence. Owned
+records, stable resolved IDs for all source constructs and complete MIR
+coverage remain open. See the
 [Copy-pattern verification](verification/2026-11-03-typed-copy-patterns.md),
 [generic-instance verification](verification/2026-11-03-typed-specialization.md),
 [root-loan verification](verification/2026-11-03-typed-copy-loans.md),
@@ -113,7 +115,8 @@ source constructs and complete MIR coverage remain open. See the
 [field-loan verification](verification/2026-11-03-typed-field-loans.md), and
 [Copy-vector verification](verification/2026-11-03-typed-vectors.md), and
 [local-value verification](verification/2026-11-03-typed-local-values.md), and
-[native-call verification](verification/2026-11-03-typed-native-calls.md).
+[native-call verification](verification/2026-11-03-typed-native-calls.md), and
+[raw native integration](verification/2026-11-03-typed-native-raw-integration.md).
 
 ## 4. Complete P3 and P4 contracts
 

@@ -329,14 +329,16 @@ and executes them. Rill checks inference and moves; the target C compiler
 checks signature compatibility. Header checking does not prove foreign pointer
 lifetimes, effects or resource cleanup. See [C interoperability](docs/c-interop.md)
 for supported exact types, raw pointers, compiler flags and manual linking.
-Existing `i32`/`bool` native calls, `unit` results, direct static `cstr`
-arguments and `i32`/`bool` constant reads now use explicit checked typed
-operations when the surrounding Copy program has a supported layout. Every
-native declaration and header check remains present, including unused raw ABI
-signatures. Runtime unsigned/float/pointer forms still use the checked uniform
-C fallback during this staged migration. The evaluator never invokes C: it
-rejects reached native operations while preserving earlier argument traps and
-successful pure paths. See the [bounded native-call verification](docs/verification/2026-11-03-typed-native-calls.md).
+Existing native calls/constants, `u8`/`u32`/`u64`/`f32` values and exact nullable
+raw pointers use explicit checked typed operations when the surrounding Copy
+program has a supported layout. This includes conversions, null tests, equality,
+concrete generics, records/enums, root/field loans and once-only local constant
+captures. Every native declaration and header check remains present, including
+unused signatures. Pointer-slot loans preserve pointee spelling and constness;
+they do not prove foreign lifetimes or pointee independence. Unrelated unsupported
+Copy layouts retain the checked uniform fallback. The evaluator never invokes
+C: it rejects reached native work while preserving pure paths and the reference
+error order. See the [bounded raw-transport verification](docs/verification/2026-11-03-typed-native-transport.md).
 
 Selected declaration import is available with the optional `c-import` feature;
 see [the importer workflow](docs/c-interop.md#import-selected-declarations).

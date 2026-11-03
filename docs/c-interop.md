@@ -75,15 +75,25 @@ A `cstr` argument is a direct NUL-free UTF-8 literal such as `c"Rill"`, with
 program-lifetime storage. Supported escapes are `\n`, `\r`, `\t`, `\\` and `\"`.
 Ordinary Rill strings permit embedded NUL and are a separate type.
 
-## Checked native-call increment
+## Checked Copy native transport
 
-The typed path now represents `i32`/`bool` native calls and constant reads,
-`unit` results and direct static `cstr` arguments explicitly. It carries the
-complete validated native configuration and declarations, including unused
-unsigned, float and pointer signatures/constants. The shared declaration emitter
-preserves every target-header assertion. Independent IR validation checks
-metadata, identities, operand kinds/types and the current enclosing Rill loans;
-it does not run the target compiler or establish foreign effects or lifetimes.
+The typed path explicitly represents all existing foreign scalars, exact raw
+pointers, native calls/constant reads, conversions, null operations and same-type
+equality when their surrounding Copy layouts are supported. This includes
+concrete generic instances, finite records/enums and root/field loans. It carries
+the complete native configuration and declarations, including unused entries.
+The shared declaration emitter preserves every target-header assertion.
+Independent IR validation checks metadata, pointer identities throughout storage,
+operand kinds/types and the current enclosing Rill loans. It does not run the
+target compiler or establish foreign effects or lifetimes.
+
+Raw pointer identity preserves exact pointee spelling plus constness, even when
+C typedef aliases are compatible. Header-provided names such as `_IO_FILE` are
+valid; the Rill-generated `rl_` namespace is reserved. A bounded registry holds
+at most 4096 distinct pointer identities. C typedefs make a `read ptr<T>` slot
+`const rl_cptr_N *` (a const pointer slot), rather than the incorrect
+`const T **`. An `inout` slot is `rl_cptr_N *`. Slot borrowing imposes no
+`restrict` or pointee-aliasing guarantee and does not manage the foreign resource.
 
 C emission evaluates scalar operands in written order into snapshots before
 the native call. `_Bool` ABI values convert explicitly to/from internal typed
@@ -92,15 +102,17 @@ Constant reads evaluate the header expression at that source position, rather
 than assuming purity or caching it. A generalized constructor/record initializer
 captures each constant leaf once, including unused shapes and aliases.
 
-This F1 increment retains whole-program checked uniform fallback for runtime
-`u8`/`u32`/`u64`/`f32`/raw-pointer forms and independently unsupported Copy layouts.
-Malformed typed IR is an error, not a reason to select fallback. Owner programs
-still reject foreign declarations, headers and raw C values; dependency flags
-alone retain their previous behavior. No host FFI is introduced: reached calls
-evaluate their scalar arguments first, then report `E-INTERP-FFI`; reached
-constants report `E-FFI`. Unused declarations and untaken native branches do not
-prevent pure evaluation. Raw-operation evaluator behavior and CLI native-run
-selection are unchanged. See [the verification report](verification/2026-11-03-typed-native-calls.md).
+This F2 increment retains whole-program checked uniform fallback for unrelated
+unsupported Copy layouts. Malformed typed IR is an error, not a reason to select
+fallback. Owner programs still reject foreign declarations, headers and raw C
+values; dependency flags alone retain their previous behavior. No host FFI is
+introduced: reached calls evaluate their ordinary arguments first, then report
+`E-INTERP-FFI`; reached constants report `E-FFI`. Conversions, null creation and
+null tests report the existing raw-value `E-FFI` before evaluating operands.
+Unused declarations and untaken native branches do not prevent pure evaluation.
+CLI native-run selection is unchanged. Native-only programs have C/C/target-ABI
+comparison evidence, not interpreter execution parity. See
+[the verification report](verification/2026-11-03-typed-native-transport.md).
 
 ## Reusable binding modules
 

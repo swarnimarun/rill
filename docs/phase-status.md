@@ -35,13 +35,16 @@ not a replacement for those gates.
   retain one initializer evaluation using private concrete capture records and
   no fabricated phantom types. Broader polymorphic representations,
   typed/backend source mapping, the complete verified MIR boundary and the full
-  acceptance suite remain open. The first checked native-call increment carries
-  all declaration/configuration metadata and lowers existing `i32`/`bool` calls
-  and constant reads, `unit` results and direct static `cstr` arguments to typed
-  C. It preserves unused header assertions, argument snapshots and reached-only
-  evaluator rejection. Raw foreign scalar/pointer transport still uses the
-  uniform Copy fallback. This is not P1 or P5 completion; see the
-  [F1 evidence and limits](verification/2026-11-03-typed-native-calls.md).
+  acceptance suite remain open. Checked native transport now carries all
+  declaration/configuration metadata and the existing scalar/static-cstr calls,
+  unsigned/float/raw-pointer values, conversions, null operations and same-type
+  equality. Closed Copy aggregates, concrete generics, root/field loans and
+  once-only native constant captures share this typed C path. It preserves
+  exact pointer identities, unused header assertions, snapshots and reached-only
+  evaluator rejection. Unrelated unsupported Copy layouts retain the uniform
+  fallback. This is not P1 or P5 completion; see the
+  [F2 evidence and limits](verification/2026-11-03-typed-native-transport.md) and
+  [final integrated checks and SDL captures](verification/2026-11-03-typed-native-raw-integration.md).
 - P2: initialized mutable locals, nominal records, and call-scoped shared `read`
   and exclusive `inout` loans of roots or record field paths up to 16 segments
   are supported.

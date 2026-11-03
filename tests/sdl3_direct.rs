@@ -98,29 +98,47 @@ fn run_sdl_game(generated: bool) {
     }
     let entry = dir.join("main.rill");
     fs::write(&entry, source).unwrap();
-    let executable = dir.join("game");
-    let output = Command::new(env!("CARGO_BIN_EXE_rill"))
-        .arg("build")
+    let emitted = Command::new(env!("CARGO_BIN_EXE_rill"))
+        .arg("emit-c")
         .arg(&entry)
-        .arg("-o")
-        .arg(&executable)
-        .output()
-        .expect("native build requires a C compiler");
-    assert!(
-        output.status.success(),
-        "build failed: {}",
-        String::from_utf8_lossy(&output.stderr)
-    );
-    let output = Command::new(&executable)
-        .env("SDL_VIDEODRIVER", "dummy")
         .output()
         .unwrap();
     assert!(
-        output.status.success(),
-        "SDL3 game failed: {}",
-        String::from_utf8_lossy(&output.stderr)
+        emitted.status.success(),
+        "SDL3 typed emission failed: {}",
+        String::from_utf8_lossy(&emitted.stderr)
     );
-    assert_eq!(output.stdout, b"0\n");
+    let c = String::from_utf8(emitted.stdout).unwrap();
+    assert!(
+        !c.contains("rl_value") && !c.contains("RL_CAP"),
+        "SDL3 must use checked typed native transport"
+    );
+    let executable = dir.join("game");
+    for optimization in ["-O0", "-O2"] {
+        let output = Command::new(env!("CARGO_BIN_EXE_rill"))
+            .arg("build")
+            .arg(&entry)
+            .args(["--c-arg", optimization])
+            .arg("-o")
+            .arg(&executable)
+            .output()
+            .expect("native build requires a C compiler");
+        assert!(
+            output.status.success(),
+            "build {optimization} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        let output = Command::new(&executable)
+            .env("SDL_VIDEODRIVER", "dummy")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "SDL3 game {optimization} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        assert_eq!(output.stdout, b"0\n");
+    }
     let output = Command::new(env!("CARGO_BIN_EXE_rill"))
         .arg("run")
         .arg(&entry)

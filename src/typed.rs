@@ -1,5 +1,5 @@
 //! A provisional typed IR for closed monomorphic scalar, static-string,
-//! fixed byte-buffer/vector, finite enum/record and scalar native-call programs.
+//! fixed byte-buffer/vector, finite enum/record and Copy native-transport programs.
 //!
 //! This is not the verified MIR in PLAN.md. Lowering requires an existing
 //! checked program. The C backend uses it for supported forms; owned-box
@@ -22,7 +22,9 @@ use copy_loans::{CopyLocals, CopySlot};
 mod copy_match_tests;
 mod foreign;
 use foreign::NativeManifest;
-pub use foreign::{ForeignArg, ForeignConstantId, ForeignFunctionId};
+pub use foreign::{
+    ForeignArg, ForeignConstantId, ForeignConvert, ForeignFunctionId, PointerTypeId,
+};
 mod field_loans;
 #[cfg(test)]
 mod field_loans_tests;
@@ -65,6 +67,11 @@ pub enum Type {
     Bool,
     Unit,
     StaticStr,
+    CU8,
+    CU32,
+    CU64,
+    CF32,
+    RawPointer(PointerTypeId),
     U8x16,
     Bytes(usize),
     OwnedI32,
@@ -73,6 +80,13 @@ pub enum Type {
 }
 
 impl Type {
+    fn is_raw(self) -> bool {
+        matches!(
+            self,
+            Self::CU8 | Self::CU32 | Self::CU64 | Self::CF32 | Self::RawPointer(_)
+        )
+    }
+
     fn is_owner(self) -> bool {
         matches!(
             self,
@@ -160,6 +174,9 @@ pub enum ExprKind {
     Call(usize, Vec<CallArg>),
     ForeignCall(ForeignFunctionId, Vec<ForeignArg>),
     ForeignConst(ForeignConstantId),
+    ForeignConvert(ForeignConvert, Box<ExprNode>),
+    NullPointer,
+    IsNull(Box<ExprNode>),
     Constructor {
         adt: usize,
         variant: usize,
@@ -263,6 +280,10 @@ fn primitive_type(ty: &InferredType) -> Result<Type, String> {
         InferredType::Bool => Ok(Type::Bool),
         InferredType::Unit => Ok(Type::Unit),
         InferredType::StaticStr => Ok(Type::StaticStr),
+        InferredType::CU8 => Ok(Type::CU8),
+        InferredType::CU32 => Ok(Type::CU32),
+        InferredType::CU64 => Ok(Type::CU64),
+        InferredType::CF32 => Ok(Type::CF32),
         InferredType::U8x16 => Ok(Type::U8x16),
         InferredType::Bytes(n) if *n <= 256 => Ok(Type::Bytes(*n)),
         InferredType::SystemBoxI32 => Ok(Type::OwnedI32),
@@ -303,11 +324,8 @@ fn lower_main_traced(
             "E-TYPED-OWNER: owner programs cannot use foreign declarations or values".into(),
         );
     }
-    if checked.has_c_values() {
-        return Err("E-TYPED-UNSUPPORTED: raw C runtime values await foreign transport".into());
-    }
     let instances = instances::Instances::discover_traced(checked, trace)?;
-    let registry = adts::Registry::build(checked, &instances)?;
+    let registry = adts::Registry::build(checked, &instances, &native)?;
     let mut lower = Lower {
         native: &native,
         registry,
@@ -395,6 +413,7 @@ fn lower_main_traced(
             param_cleanup,
         });
     }
+    result.native.pointers = lower.registry.pointers;
     result.adts = lower.registry.types;
     verify(&result)?;
     Ok((result, instances))
@@ -439,6 +458,18 @@ impl Lower<'_, '_> {
                 if !self.locals.contains_key(name) && self.native.constant_id(name).is_some() =>
             {
                 ExprKind::ForeignConst(self.native.constant_id(name).unwrap())
+            }
+            Expr::Call(name, args)
+                if ForeignConvert::from_name(name).is_some() && args.len() == 1 =>
+            {
+                ExprKind::ForeignConvert(
+                    ForeignConvert::from_name(name).unwrap(),
+                    Box::new(self.expr(&args[0])?),
+                )
+            }
+            Expr::Call(name, args) if name == "c_null" && args.is_empty() => ExprKind::NullPointer,
+            Expr::Call(name, args) if name == "is_null" && args.len() == 1 => {
+                ExprKind::IsNull(Box::new(self.expr(&args[0])?))
             }
             Expr::Record(_, fields) => self.record(expr, ty, fields)?,
             Expr::Field(root, _) => ExprKind::FieldRead(self.field_place(expr, root, false)?),
@@ -897,6 +928,15 @@ impl Lower<'_, '_> {
 pub fn verify(program: &TypedMain) -> Result<(), String> {
     program.native.verify()?;
     adts::verify(&program.adts)?;
+    for adt in &program.adts {
+        for &ty in adt
+            .arguments
+            .iter()
+            .chain(adt.variants.iter().flat_map(|v| &v.fields))
+        {
+            program.native.validate_type(ty)?;
+        }
+    }
     for function in &program.functions {
         let error = std::cell::RefCell::new(None);
         any_expr(&function.body, &|kind| {
@@ -949,9 +989,26 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
         });
     if has_owner {
         if program.native.has_foreign()
+            || program.adts.iter().any(|adt| {
+                adt.arguments
+                    .iter()
+                    .chain(adt.variants.iter().flat_map(|v| &v.fields))
+                    .any(|ty| ty.is_raw())
+            })
+            || program
+                .functions
+                .iter()
+                .any(|f| f.result.is_raw() || f.params.iter().any(|(_, ty, _)| ty.is_raw()))
             || program.functions.iter().any(|f| {
                 any_expr(&f.body, &|kind| {
-                    matches!(kind, ExprKind::ForeignCall(..) | ExprKind::ForeignConst(_))
+                    matches!(
+                        kind,
+                        ExprKind::ForeignCall(..)
+                            | ExprKind::ForeignConst(_)
+                            | ExprKind::ForeignConvert(..)
+                            | ExprKind::NullPointer
+                            | ExprKind::IsNull(_)
+                    )
                 })
             })
         {
@@ -969,12 +1026,14 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
     let mut ids = HashSet::new();
     for function in &program.functions {
         adts::validate_type(function.result, &program.adts)?;
+        program.native.validate_type(function.result)?;
         if matches!(function.result, Type::Bytes(n) if n > 256) {
             return Err("E-TYPED: invalid buffer capacity".into());
         }
         let mut scope = HashMap::new();
         for &(id, ty, mode) in &function.params {
             adts::validate_type(ty, &program.adts)?;
+            program.native.validate_type(ty)?;
             if matches!(ty, Type::Bytes(n) if n > 256) {
                 return Err("E-TYPED: invalid buffer capacity".into());
             }
@@ -1049,6 +1108,7 @@ fn verify_expr(
         return Err("E-TYPED-OWNER: unsupported owner result expression".into());
     }
     adts::validate_type(expr.ty, adts)?;
+    context.native.validate_type(expr.ty)?;
     use BinaryOp::*;
     if matches!(expr.ty, Type::Bytes(n) if n > 256) {
         return Err("E-TYPED: invalid buffer capacity".into());
@@ -1056,6 +1116,27 @@ fn verify_expr(
     let ty = match &expr.kind {
         ExprKind::ForeignCall(id, args) => foreign::verify_call(*id, args, scope, ids, context)?,
         ExprKind::ForeignConst(id) => foreign::verify_constant(*id, context.native)?,
+        ExprKind::ForeignConvert(conversion, input) => {
+            if verify_expr(input, scope, ids, context)? != Type::Int {
+                return Err("E-TYPED-FFI: conversion input must be i32".into());
+            }
+            conversion.result()
+        }
+        ExprKind::NullPointer => {
+            if !matches!(expr.ty, Type::RawPointer(_)) {
+                return Err("E-TYPED-FFI: null must have a concrete pointer type".into());
+            }
+            expr.ty
+        }
+        ExprKind::IsNull(input) => {
+            if !matches!(
+                verify_expr(input, scope, ids, context)?,
+                Type::RawPointer(_)
+            ) {
+                return Err("E-TYPED-FFI: null test needs a pointer".into());
+            }
+            Type::Bool
+        }
         ExprKind::Vector(op, args) => {
             let types = args
                 .iter()
@@ -1469,7 +1550,11 @@ fn verify_expr(
                 Add | Sub | Mul | Div | Rem if left == Type::Int && right == Type::Int => Type::Int,
                 Lt | Le | Gt | Ge if left == Type::Int && right == Type::Int => Type::Bool,
                 And | Or if left == Type::Bool && right == Type::Bool => Type::Bool,
-                Eq | Ne if left == right && matches!(left, Type::Int | Type::Bool | Type::Unit) => {
+                Eq | Ne
+                    if left == right
+                        && (matches!(left, Type::Int | Type::Bool | Type::Unit)
+                            || left.is_raw()) =>
+                {
                     Type::Bool
                 }
                 _ => return Err("E-TYPED: invalid binary operand types".into()),
@@ -1537,7 +1622,9 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
                 || any_expr(body, predicate)
         }
         ExprKind::OwnerBytesSet(_, a, b) => any_expr(a, predicate) || any_expr(b, predicate),
-        ExprKind::TryAlloc { input: value, .. }
+        ExprKind::ForeignConvert(_, value)
+        | ExprKind::IsNull(value)
+        | ExprKind::TryAlloc { input: value, .. }
         | ExprKind::OwnerBytesGet(_, value)
         | ExprKind::OwnerWrite(_, value)
         | ExprKind::Assign(_, value)
@@ -1619,7 +1706,9 @@ fn collect_calls(expr: &ExprNode, out: &mut Vec<usize>) {
             collect_calls(a, out);
             collect_calls(b, out);
         }
-        ExprKind::TryAlloc { input: value, .. }
+        ExprKind::ForeignConvert(_, value)
+        | ExprKind::IsNull(value)
+        | ExprKind::TryAlloc { input: value, .. }
         | ExprKind::OwnerBytesGet(_, value)
         | ExprKind::OwnerWrite(_, value)
         | ExprKind::Assign(_, value)
@@ -1805,6 +1894,10 @@ fn evaluate_expr(
         }
         ExprKind::ForeignConst(_) => {
             Err("E-FFI: imported C constants require native C emission".into())
+        }
+        ExprKind::ForeignConvert(..) | ExprKind::NullPointer | ExprKind::IsNull(_) => {
+            // The AST evaluator rejects raw operations before reaching operands.
+            Err("E-FFI: raw C values require native C emission".into())
         }
         ExprKind::Vector(op, args) => {
             vectors::evaluate(*op, args, locals, program, depth, state, owners)
@@ -2535,12 +2628,16 @@ mod tests {
     }
 
     #[test]
-    fn raw_c_values_remain_unsupported_until_native_migration() {
+    fn raw_c_values_use_explicit_checked_transport() {
         let p = parser::parse("fn main() { u32(0) }").unwrap();
         let checked = check::analyze(&p).unwrap();
-        assert!(lower_main(&checked)
-            .unwrap_err()
-            .contains("E-TYPED-UNSUPPORTED"));
+        let ir = lower_main(&checked).unwrap();
+        assert_eq!(ir.functions[ir.entry].result, Type::CU32);
+        assert!(matches!(
+            ir.functions[ir.entry].body.kind,
+            ExprKind::ForeignConvert(ForeignConvert::U32, _)
+        ));
+        assert!(!emit_c(&ir).unwrap().contains("rl_value"));
     }
 
     #[test]

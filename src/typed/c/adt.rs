@@ -194,6 +194,11 @@ pub(super) fn printers(emitter: &mut Emitter<'_>) {
 pub(super) fn print_value(emitter: &mut Emitter<'_>, ty: Type, value: &str) {
     match ty {
         Type::Int => writeln!(emitter.out, "printf(\"%\" PRId32, {value});").unwrap(),
+        Type::CU8 | Type::CU32 | Type::CU64 => {
+            writeln!(emitter.out, "printf(\"%\" PRIu64, (uint64_t)({value}));").unwrap()
+        }
+        Type::CF32 => writeln!(emitter.out, "printf(\"%.9g\", (double)({value}));").unwrap(),
+        Type::RawPointer(_) => writeln!(emitter.out, "printf(\"%p\", (void *)({value}));").unwrap(),
         Type::Bool => writeln!(
             emitter.out,
             "fputs({value} ? \"true\" : \"false\", stdout);"

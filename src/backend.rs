@@ -169,6 +169,9 @@ static rl_value rl_compare(int op, rl_value a, rl_value b) {
 "#;
 
 fn wrap_c(ty: &ExternType, value: &str) -> String {
+    // Header constants may be runtime-valued comma expressions. Keep the
+    // entire expansion a single operand, just as typed constant reads do.
+    let value = format!("({value})");
     match ty {
         ExternType::I32 => format!("rl_make(0, {value})"),
         ExternType::Bool => format!("rl_make(1, ({value}) != 0)"),

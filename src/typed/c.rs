@@ -58,6 +58,19 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         &program.native.constants,
         &mut out,
     );
+    for (id, pointer) in program.native.pointers.iter().enumerate() {
+        let pointer_type = crate::c_import::abi::c_type(&crate::ast::ExternType::Pointer {
+            pointee: pointer.pointee.clone(),
+            is_const: pointer.is_const,
+        });
+        // A read loan qualifies the pointer SLOT, not its foreign pointee.
+        writeln!(out, "typedef {pointer_type} rl_cptr_{id};").unwrap();
+        writeln!(
+            out,
+            "_Static_assert(sizeof(rl_cptr_{id}) <= 64, \"unsupported typed pointer layout\");"
+        )
+        .unwrap();
+    }
     let mut emitter = Emitter {
         out,
         next: 0,
@@ -67,7 +80,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         borrowed_copy: HashSet::new(),
         adt_costs: super::adts::layout_costs(&program.adts)?,
     };
-    emitter.out.push_str("_Static_assert(sizeof(int) <= 64 && sizeof(_Bool) <= 64 && sizeof(int32_t) <= 64 && sizeof(rl_unit) <= 64 && sizeof(rl_str) <= 64, \"unsupported typed value layout\");\n");
+    emitter.out.push_str("_Static_assert(sizeof(int) <= 64 && sizeof(_Bool) <= 64 && sizeof(int32_t) <= 64 && sizeof(rl_unit) <= 64 && sizeof(rl_str) <= 64 && sizeof(uint8_t) <= 64 && sizeof(uint32_t) <= 64 && sizeof(uint64_t) <= 64 && sizeof(float) <= 64, \"unsupported typed value layout\");\n");
     if program.adts.iter().any(|adt| adt.owned)
         || program.functions.iter().any(|function| {
             function.result.is_owner()
@@ -181,6 +194,10 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
     )
     .unwrap();
     match entry.result {
+        Type::CU8 | Type::CU32 | Type::CU64 | Type::CF32 | Type::RawPointer(_) => {
+            adt::print_value(&mut emitter, entry.result, "result");
+            emitter.out.push_str("fputc('\\n', stdout);\n");
+        }
         Type::Int => emitter
             .out
             .push_str("printf(\"%\" PRId32 \"\\n\", result);\n"),
@@ -206,6 +223,11 @@ fn c_type(ty: Type) -> String {
         Type::Bool => "int".into(),
         Type::Unit => "rl_unit".into(),
         Type::StaticStr => "rl_str".into(),
+        Type::CU8 => "uint8_t".into(),
+        Type::CU32 => "uint32_t".into(),
+        Type::CU64 => "uint64_t".into(),
+        Type::CF32 => "float".into(),
+        Type::RawPointer(id) => format!("rl_cptr_{}", id.0),
         Type::U8x16 => "rl_u8x16".into(),
         Type::Bytes(n) => format!("rl_bytes_{n}"),
         Type::OwnedI32 => "int32_t *".into(),
@@ -312,10 +334,13 @@ fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
             collect_expr(b, output);
             collect_expr(c, output);
         }
-        ExprKind::Assign(_, value) | ExprKind::ByteLen(value) | ExprKind::BytesLen(value) => {
-            collect_expr(value, output)
-        }
-        ExprKind::ForeignConst(_)
+        ExprKind::ForeignConvert(_, value)
+        | ExprKind::IsNull(value)
+        | ExprKind::Assign(_, value)
+        | ExprKind::ByteLen(value)
+        | ExprKind::BytesLen(value) => collect_expr(value, output),
+        ExprKind::NullPointer
+        | ExprKind::ForeignConst(_)
         | ExprKind::Int(_)
         | ExprKind::Bool(_)
         | ExprKind::Str(_)
@@ -366,9 +391,11 @@ fn contains_owner(expr: &ExprNode) -> bool {
         ExprKind::If(a, b, c) | ExprKind::BytesSet(a, b, c) => {
             contains_owner(a) || contains_owner(b) || contains_owner(c)
         }
-        ExprKind::Assign(_, value) | ExprKind::ByteLen(value) | ExprKind::BytesLen(value) => {
-            contains_owner(value)
-        }
+        ExprKind::ForeignConvert(_, value)
+        | ExprKind::IsNull(value)
+        | ExprKind::Assign(_, value)
+        | ExprKind::ByteLen(value)
+        | ExprKind::BytesLen(value) => contains_owner(value),
         _ => false,
     }
 }
@@ -407,6 +434,14 @@ impl Emitter<'_> {
         match &expr.kind {
             ExprKind::ForeignCall(id, args) => self.foreign_call(&result, *id, args),
             ExprKind::ForeignConst(id) => self.foreign_constant(&result, *id),
+            ExprKind::ForeignConvert(conversion, input) => {
+                self.foreign_convert(&result, &ty, *conversion, input)
+            }
+            ExprKind::NullPointer => writeln!(self.out, "{ty} {result} = NULL;").unwrap(),
+            ExprKind::IsNull(input) => {
+                let input = self.expr(input);
+                writeln!(self.out, "int {result} = ({input} == NULL);").unwrap();
+            }
             ExprKind::Vector(op, args) => self.vector(&result, &ty, *op, args),
             ExprKind::Record { fields, .. } => self.record(&result, &ty, fields),
             ExprKind::FieldRead(place) => {

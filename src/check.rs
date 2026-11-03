@@ -1422,7 +1422,7 @@ pub(crate) fn extern_type(ty: &ExternType) -> Type {
         },
     }
 }
-fn validate_extern_type(ty: &ExternType) -> Result<(), String> {
+pub(crate) fn validate_extern_type(ty: &ExternType) -> Result<(), String> {
     if let ExternType::Pointer { pointee, .. } = ty {
         let mut chars = pointee.chars();
         if !chars

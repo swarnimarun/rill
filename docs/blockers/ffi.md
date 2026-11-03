@@ -18,13 +18,15 @@ and constant declarations against the selected headers. Manual linking without
 headers still relies on the programmer's signature assertion. Neither path
 checks foreign effects, pointer lifetimes or library resource cleanup.
 
-The first checked typed native increment now covers existing `i32`/`bool`
-calls/constants, `unit` results and direct static C strings. It preserves the
-complete declaration manifest, target-header assertions and left-to-right
-argument/constant snapshots. The evaluator still rejects reached native work;
-it does not call host C. Runtime foreign unsigned/float/pointer transport
-remains a separate checked-typed migration step, with whole-program uniform
-fallback retained. See [F1 verification](../verification/2026-11-03-typed-native-calls.md).
+Checked typed native transport now covers the existing foreign scalar/pointer
+values, calls/constants, conversions, null operations and same-type equality,
+composed with supported closed Copy generics, aggregates and slot loans. It
+preserves the complete declaration manifest, target-header assertions and
+left-to-right snapshots, including once-only local constant captures. The
+evaluator rejects reached native work and does not call host C. Unrelated
+unsupported Copy layouts retain whole-program uniform fallback. Exact pointer
+identity and slot constness do not prove lifetime, effects or pointee independence.
+See [F2 verification](../verification/2026-11-03-typed-native-transport.md).
 
 ## Remaining work
 
