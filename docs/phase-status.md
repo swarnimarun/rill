@@ -87,8 +87,12 @@ suppresses its AST/map; lexical failures preserve unlexed bytes without recovery
 The optional AST origin map now covers all parsed structural node families with
 explicit desugaring provenance. An opt-in module loader now retains owned
 snapshots and validated structural origins through the existing resolution,
-renaming and native coalescing pass. Typed/backend mapping, finer recovery and
-editor integration remain open. See [module origins](module-source-origins.md),
+renaming and native coalescing pass. An immutable, snapshot-branded
+[function-instance origin index](typed-function-origins.md) now preserves resolved
+definitions, exact closed signatures and all specialization request sites. It
+does not map typed expressions, storage, captures, cleanup or generated C.
+Complete typed/backend mapping, finer recovery and editor integration remain
+open. See [module origins](module-source-origins.md),
 [source tooling](source-format.md) and its
 [fresh grammar verification](verification/2026-11-03-grammar-source-tree.md).
 

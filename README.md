@@ -56,6 +56,10 @@ compiler commands and `fmt` retain strict rejection. Its optional
 and explicit origins for both source and parser-generated nodes. The optional
 [source-preserving module loader](docs/module-source-origins.md) retains owned
 snapshots and origins through resolution, renaming and native coalescing.
+The opt-in [function-instance origin index](docs/typed-function-origins.md)
+retains resolved definitions, closed parameter/result types and every requesting
+source call for reachable typed functions. It is not a complete typed-node or
+generated-C source map.
 
 The primary syntax uses functions, braces and semicolon-separated statements:
 

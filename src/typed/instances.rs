@@ -2,6 +2,8 @@
 //! generic semantic check; this worklist only chooses concrete representations.
 use crate::ast::Expr;
 use crate::check::{CheckedProgram, Type};
+use crate::source_map::{AstPath, AstStep};
+use crate::syntax::AstDeclaration;
 use std::collections::{HashMap, HashSet};
 
 pub(super) type Substitution = HashMap<usize, Type>;
@@ -30,7 +32,15 @@ pub(super) struct Instances {
 }
 
 impl Instances {
+    #[cfg(test)]
     pub fn discover(checked: &CheckedProgram<'_>) -> Result<Self, String> {
+        Self::discover_traced(checked, None)
+    }
+
+    pub fn discover_traced(
+        checked: &CheckedProgram<'_>,
+        mut trace: Option<&mut Trace>,
+    ) -> Result<Self, String> {
         let functions = checked
             .program
             .functions
@@ -52,14 +62,25 @@ impl Instances {
             entry: 0,
             ids: HashMap::new(),
         };
-        result.insert(checked, entry_key.clone())?;
+        let entry = result.insert(checked, entry_key.clone())?;
+        if let Some(trace) = &mut trace {
+            trace.request(None, None, entry);
+        }
         let mut next = 0;
         while next < result.list.len() {
             let instance = &result.list[next];
             let context = instance.substitution.clone();
-            let function = &checked.program.functions[instance.source];
-            let mut pending = vec![&function.body];
-            while let Some(expr) = pending.pop() {
+            let source = instance.source;
+            let function = &checked.program.functions[source];
+            // A single mutable path and depth checkpoints avoid copying ancestor
+            // paths at every node. Only actual request edges retain a path.
+            let mut path = AstPath::root(AstDeclaration::Function(source));
+            let mut pending = vec![(&function.body, 0, ChildSteps::one(AstStep::FunctionBody))];
+            while let Some((expr, depth, steps)) = pending.pop() {
+                if trace.as_mut().is_some_and(|trace| trace.charge(1)) {
+                    path.steps.truncate(depth);
+                    steps.append(&mut path.steps);
+                }
                 let ty = expression_type(checked, expr, &context)?;
                 if let Expr::Call(name, args) = expr {
                     if let Some(&source) = result.functions.get(name) {
@@ -67,7 +88,7 @@ impl Instances {
                             .iter()
                             .map(|a| expression_type(checked, a, &context))
                             .collect::<Result<_, _>>()?;
-                        result.insert(
+                        let callee = result.insert(
                             checked,
                             Key {
                                 source,
@@ -75,14 +96,36 @@ impl Instances {
                                 result: ty,
                             },
                         )?;
+                        if let Some(trace) = &mut trace {
+                            trace.request(Some(next), Some(&path), callee);
+                        }
                     }
                 }
-                runtime_children(checked, expr, &mut pending);
+                let depth = path.steps.len();
+                runtime_children_with_steps(checked, expr, |child, steps| {
+                    pending.push((child, depth, steps));
+                });
             }
             next += 1;
         }
         // Source order keeps existing monomorphic identities stable, while each
         // function's concrete instances retain deterministic discovery order.
+        if let Some(trace) = &mut trace {
+            // Sort compact source slots, never clone whole signature trees just
+            // to recover the discovery-to-final permutation.
+            if trace.charge(result.list.len() * 2) {
+                let mut order = (0..result.list.len()).collect::<Vec<_>>();
+                order.sort_by_key(|&old| result.list[old].source);
+                let mut remap = vec![0; order.len()];
+                for (new, old) in order.into_iter().enumerate() {
+                    remap[old] = new;
+                }
+                for request in &mut trace.requests {
+                    request.callee = remap[request.callee];
+                    request.caller = request.caller.map(|old| remap[old]);
+                }
+            }
+        }
         result.list.sort_by_key(|instance| instance.source);
         result.ids.clear();
         for (id, instance) in result.list.iter().enumerate() {
@@ -99,9 +142,9 @@ impl Instances {
         Ok(result)
     }
 
-    fn insert(&mut self, checked: &CheckedProgram<'_>, key: Key) -> Result<(), String> {
-        if self.ids.contains_key(&key) {
-            return Ok(());
+    fn insert(&mut self, checked: &CheckedProgram<'_>, key: Key) -> Result<usize, String> {
+        if let Some(&id) = self.ids.get(&key) {
+            return Ok(id);
         }
         if self.list.len() >= MAX_INSTANCES {
             return Err("E-TYPED-INSTANCES: specialization limit exceeded".into());
@@ -131,7 +174,7 @@ impl Instances {
             substitution,
         });
         self.ids.insert(key, id);
-        Ok(())
+        Ok(id)
     }
 
     pub fn call(&self, name: &str, params: Vec<Type>, result: Type) -> Result<usize, String> {
@@ -237,9 +280,29 @@ pub(super) fn runtime_children<'a>(
     expr: &'a Expr,
     pending: &mut Vec<&'a Expr>,
 ) {
+    runtime_children_with_steps(checked, expr, |child, _| pending.push(child));
+}
+
+#[derive(Clone, Copy)]
+struct ChildSteps(AstStep, Option<AstStep>);
+impl ChildSteps {
+    fn one(step: AstStep) -> Self {
+        Self(step, None)
+    }
+    fn append(self, path: &mut Vec<AstStep>) {
+        path.push(self.0);
+        path.extend(self.1);
+    }
+}
+
+fn runtime_children_with_steps<'a>(
+    checked: &CheckedProgram<'_>,
+    expr: &'a Expr,
+    mut push: impl FnMut(&'a Expr, ChildSteps),
+) {
     if checked.polymorphic_local(expr).is_some() {
         if let Expr::Let(_, _, body) = expr {
-            pending.push(body);
+            push(body, ChildSteps::one(AstStep::LetBody));
             return;
         }
     }
@@ -248,40 +311,122 @@ pub(super) fn runtime_children<'a>(
     if let Expr::Call(name, args) = expr {
         if let Some(function) = checked.program.externs.iter().find(|f| f.name == *name) {
             if args.len() == function.params.len() {
-                for (arg, param) in args.iter().zip(&function.params).rev() {
+                for (index, (arg, param)) in args.iter().zip(&function.params).enumerate().rev() {
                     if !matches!((arg, &param.ty), (Expr::CStr(value), crate::ast::ExternType::CStr) if !value.as_bytes().contains(&0))
                     {
-                        pending.push(arg);
+                        push(arg, ChildSteps::one(AstStep::Argument(index)));
                     }
                 }
                 return;
             }
         }
     }
-    children(expr, pending);
+    children_with_steps(expr, push);
 }
 
-pub(super) fn children<'a>(expr: &'a Expr, pending: &mut Vec<&'a Expr>) {
+fn children_with_steps<'a>(expr: &'a Expr, mut push: impl FnMut(&'a Expr, ChildSteps)) {
+    use AstStep::*;
+    let one = ChildSteps::one;
     match expr {
-        Expr::Binary(_, a, b) | Expr::Let(_, a, b) | Expr::LetMut(_, a, b) | Expr::While(a, b) => {
-            pending.push(b);
-            pending.push(a);
+        Expr::Binary(_, a, b) => {
+            push(b, one(BinaryRight));
+            push(a, one(BinaryLeft));
+        }
+        Expr::Let(_, a, b) | Expr::LetMut(_, a, b) => {
+            push(b, one(LetBody));
+            push(a, one(LetValue));
+        }
+        Expr::While(a, b) => {
+            push(b, one(WhileBody));
+            push(a, one(Condition));
         }
         Expr::If(a, b, c) => {
-            pending.push(c);
-            pending.push(b);
-            pending.push(a);
+            push(c, one(Else));
+            push(b, one(Then));
+            push(a, one(Condition));
         }
-        Expr::Assign(_, v) | Expr::FieldAssign(_, _, v) => pending.push(v),
-        Expr::Call(_, args) => pending.extend(args.iter().rev()),
-        Expr::Match(value, arms) => {
-            for arm in arms.iter().rev() {
-                pending.push(&arm.body);
+        Expr::Assign(_, v) | Expr::FieldAssign(_, _, v) => push(v, one(AssignValue)),
+        Expr::Call(_, args) => {
+            for (i, arg) in args.iter().enumerate().rev() {
+                push(arg, one(Argument(i)));
             }
-            pending.push(value);
         }
-        Expr::Record(_, fields) => pending.extend(fields.iter().rev().map(|(_, value)| value)),
+        Expr::Match(value, arms) => {
+            for (i, arm) in arms.iter().enumerate().rev() {
+                push(&arm.body, ChildSteps(Arm(i), Some(ArmBody)));
+            }
+            push(value, one(MatchValue));
+        }
+        Expr::Record(_, fields) => {
+            for (i, (_, value)) in fields.iter().enumerate().rev() {
+                push(value, one(RecordField(i)));
+            }
+        }
         _ => {}
+    }
+}
+
+/// Private optional worklist observer. Failures latch while the ordinary
+/// compiler continues; only the opt-in API consults them after verification.
+pub(super) struct Trace {
+    pub requests: Vec<Request>,
+    pub failure: Option<String>,
+    work: usize,
+    max_requests: usize,
+}
+#[derive(Clone, Debug)]
+pub(super) struct Request {
+    pub caller: Option<usize>,
+    pub path: Option<AstPath>,
+    pub callee: usize,
+}
+impl Default for Trace {
+    fn default() -> Self {
+        Self::with_limits(1_000_000, 8_000_000)
+    }
+}
+impl Trace {
+    pub fn with_limits(max_requests: usize, work: usize) -> Self {
+        Self {
+            requests: Vec::new(),
+            failure: None,
+            work,
+            max_requests,
+        }
+    }
+    pub fn charge(&mut self, amount: usize) -> bool {
+        if self.failure.is_some() {
+            return false;
+        }
+        if let Some(remaining) = self.work.checked_sub(amount) {
+            self.work = remaining;
+            true
+        } else {
+            self.failure =
+                Some("E-TYPED-SOURCE-MAP-LIMIT: function origin work budget exceeded".into());
+            false
+        }
+    }
+    fn request(&mut self, caller: Option<usize>, path: Option<&AstPath>, callee: usize) {
+        if !self.charge(1 + path.map_or(0, |path| path.steps.len())) {
+            return;
+        }
+        if self.requests.len() >= self.max_requests {
+            self.failure =
+                Some("E-TYPED-SOURCE-MAP-LIMIT: function request budget exceeded".into());
+            return;
+        }
+        self.requests.push(Request {
+            caller,
+            path: path.cloned(),
+            callee,
+        });
+    }
+    pub fn check(&self) -> Result<(), String> {
+        match &self.failure {
+            Some(error) => Err(error.clone()),
+            None => Ok(()),
+        }
     }
 }
 
@@ -289,6 +434,26 @@ pub(super) fn children<'a>(expr: &'a Expr, pending: &mut Vec<&'a Expr>) {
 mod tests {
     use super::*;
     use crate::{check, parser, typed};
+
+    #[test]
+    fn discovery_trace_work_limit_has_an_exact_boundary() {
+        let program = parser::parse("fn id(x) { x } fn main() { id(42) }").unwrap();
+        let checked = check::analyze(&program).unwrap();
+        // Entry (1), three visits (3), one retained one-step call path (2),
+        // and the two compact permutation arrays for two instances (4).
+        let mut exact = Trace::with_limits(2, 10);
+        let instances = Instances::discover_traced(&checked, Some(&mut exact)).unwrap();
+        exact.check().unwrap();
+        assert_eq!(instances.list.len(), 2);
+        assert_eq!(exact.requests.len(), 2);
+        let mut short = Trace::with_limits(2, 9);
+        let ordinary = Instances::discover_traced(&checked, Some(&mut short)).unwrap();
+        assert_eq!(ordinary.list.len(), 2);
+        assert!(short
+            .check()
+            .unwrap_err()
+            .starts_with("E-TYPED-SOURCE-MAP-LIMIT:"));
+    }
 
     #[test]
     fn worklist_matches_independent_uniform_layout_instances() {

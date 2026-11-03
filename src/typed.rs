@@ -33,6 +33,7 @@ mod initialization;
 mod initialization_tests;
 mod instances;
 mod places;
+pub mod provenance;
 pub use initialization::{Cleanup, CleanupTree, Initialization};
 pub use places::Place;
 mod local_values;
@@ -287,6 +288,14 @@ struct Local {
 /// The C backend uses this result for supported programs; other checked
 /// programs use the existing AST backend.
 pub fn lower_main(checked: &CheckedProgram<'_>) -> Result<TypedMain, String> {
+    lower_main_traced(checked, None).map(|(typed, _)| typed)
+}
+
+// One lowering path; optional discovery metadata cannot change semantic errors.
+fn lower_main_traced(
+    checked: &CheckedProgram<'_>,
+    trace: Option<&mut instances::Trace>,
+) -> Result<(TypedMain, instances::Instances), String> {
     let program = checked.program;
     let native = NativeManifest::from_checked(checked)?;
     if checked.has_owned() && (native.has_foreign() || checked.has_c_values()) {
@@ -297,7 +306,7 @@ pub fn lower_main(checked: &CheckedProgram<'_>) -> Result<TypedMain, String> {
     if checked.has_c_values() {
         return Err("E-TYPED-UNSUPPORTED: raw C runtime values await foreign transport".into());
     }
-    let instances = instances::Instances::discover(checked)?;
+    let instances = instances::Instances::discover_traced(checked, trace)?;
     let registry = adts::Registry::build(checked, &instances)?;
     let mut lower = Lower {
         native: &native,
@@ -388,7 +397,7 @@ pub fn lower_main(checked: &CheckedProgram<'_>) -> Result<TypedMain, String> {
     }
     result.adts = lower.registry.types;
     verify(&result)?;
-    Ok(result)
+    Ok((result, instances))
 }
 
 struct Lower<'a, 'b> {

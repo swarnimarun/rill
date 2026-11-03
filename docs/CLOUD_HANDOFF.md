@@ -154,3 +154,18 @@ owned result for the exact flattened program, preserving structural origins
 through the existing resolver/rewriter and all compatible native contributors.
 Ordinary loading/checking and errors are unchanged. Typed/backend mapping and
 source-aware checker diagnostics remain open.
+
+The [function-instance origin index](typed-function-origins.md) adds a separate
+opt-in result owning the exact source snapshots and ordinary verified typed
+program. It brands query handles to that result and records complete closed
+function signatures, all requesting source calls and explicitly uninstantiated
+definitions. This is not a complete typed-node/generated-C source map and does
+not expand native or owner-language support. Existing compilation APIs remain
+unchanged; broader origin coverage needs separate construction-site tracing.
+See its [fresh verification record](verification/2026-11-03-typed-function-origins.md)
+for the exact author-tested source and remaining combined-native integration gate.
+
+The combined scalar-native and function-origin checkpoint passed its
+[integrated matrix](verification/2026-11-03-typed-origin-integration.md), with
+584 default and 618 importer-enabled tests. The index remains optional and
+does not cover typed nodes or generated C ranges.
