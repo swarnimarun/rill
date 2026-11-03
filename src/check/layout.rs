@@ -265,3 +265,24 @@ pub(super) fn max_inline_nodes(checked: &CheckedProgram<'_>) -> Result<usize, St
     analyzer.instance("main", vec![], result)?;
     Ok(analyzer.max)
 }
+
+/// Test-only oracle retained while the typed worklist replaces uniform layout
+/// specialization. This traverses the old analyzer, not the new implementation.
+#[cfg(test)]
+pub(super) fn reference_instance_keys(
+    checked: &CheckedProgram<'_>,
+) -> Result<HashSet<super::ConcreteInstanceKey>, String> {
+    let result = substitute(&checked.functions["main"].result, &Substitution::new())?;
+    let mut analyzer = Analyzer {
+        checked,
+        visited: HashSet::new(),
+        max: 1,
+    };
+    analyzer.instance("main", vec![], result)?;
+    // The old analyzer also records builtin calls; only source bodies become
+    // typed function instances.
+    analyzer
+        .visited
+        .retain(|(name, _, _)| checked.program.functions.iter().any(|f| f.name == *name));
+    Ok(analyzer.visited)
+}

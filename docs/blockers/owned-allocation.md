@@ -36,9 +36,14 @@ direct local initializers. An owner can also be transferred to an inferred
 owner value parameter with a direct `move owner` argument; the callee takes
 the cleanup obligation and may forward it to another function. All functions
 in an owner program must be monomorphic and form an acyclic call graph. A
-function can borrow an owner root with `read` or `inout`; borrowed non-owner
-user-function parameters remain unsupported in owner programs. A function may
-return an owned local or value parameter with a tail `move owner`, or forward
+function can borrow an owner root with `read` or `inout`. Borrowed Copy scalar,
+string, buffer, vector, finite-enum and finite Copy-record roots and computed read
+temporaries are also supported. Copy records can be constructed, read, updated,
+passed and returned inside restricted owner programs. Copy field-loan operands
+also use checked typed paths with prefix-overlap verification and original-slot
+forwarding. Borrowed owner-bearing enums and owner-bearing records remain
+unsupported; owner programs never use the copying fallback.
+A function may return an owned local or value parameter with a tail `move owner`, or forward
 an owner-returning call as its tail expression. Returned owners can initialize
 locals or enum fields, including through nested lexical lets and branches.
 A bare allocation as a function body, an implicit
@@ -57,7 +62,8 @@ allowed. Loops and short-circuit operands must preserve enclosing ownership
 state. Owners allocated within a branch or iteration may move between locals
 or transfer to a consuming call. Normal cleanup needs no runtime drop flag
 under these rules. Differing branch states, owner reassignment, owned records,
-borrowed enum matching, foreign declarations and vectors remain unsupported.
+borrowed enum matching and foreign declarations remain unsupported. Copy vectors
+and their checked operations can coexist with restricted owners.
 See [borrowed owners](owner-borrows.md). This is not yet general affine
 ownership or a stable allocator API.
 

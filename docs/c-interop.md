@@ -41,8 +41,8 @@ Headers, packages and libraries must exist for the selected target. Rill passes
 arguments directly to processes, without evaluating a shell. Header names and
 dependency names are restricted to prevent directive or option injection.
 
-Declare each selected function and constant explicitly. Rill does not yet parse
-headers to import declarations automatically. Function compatibility checks
+Declare each selected function and constant explicitly, or generate a binding
+module with the optional selected-declaration importer below. Function compatibility checks
 compare C types against the actual header prototype, including widths,
 signedness, bool, pointer pointees and constness. Constants also require a
 compatible declared type. Merely matching size does not establish ABI
@@ -114,7 +114,121 @@ Conflicting signatures, pointer constness or function/constant kinds report
 
 The [direct SDL3 example](../examples/sdl3-direct/README.md) separates its game
 from [a reusable SDL binding](../examples/sdl3-direct/sdl.rill). Binding modules
-still require explicit declarations and manual foreign resource cleanup.
+contain selected declarations and still require manual foreign resource cleanup.
+
+## Import selected declarations
+
+Build the optional importer and install libclang 12 or newer:
+
+```sh
+cargo build --locked --features c-import
+cargo run --locked --features c-import -- import-c \
+  --header api.h --function api_add --constant API_FLAG \
+  --c-arg -I --c-arg /path/to/headers -o native.rill
+```
+
+The default compiler build needs no libclang. `clang-sys` 1.8.1 discovers the
+shared library at runtime; set `LIBCLANG_PATH` when it is outside normal paths.
+If Clang's builtin headers are not found, pass
+`--clang-resource-dir /path/to/clang/resource-directory` (the result of
+`clang -print-resource-dir`, not its `include` subdirectory). This option affects
+only libclang's builtin headers; it does not select a target or sysroot.
+
+Repeat `--header`, `--function`, `--constant`, `--pkg-config` and `--link` as
+needed. Selection is explicit and limited to 256 unique symbols. `-o` publishes
+an ordinary binding module atomically after all checks pass; omitted `-o`
+writes the complete checked module to stdout. An existing file is not changed
+on extraction, validation, or write failure. No synthetic `main` is published.
+Parameter names are generated as `arg0`, `arg1`, etc. so unnamed or keyword C
+parameters cannot break the Rill parser.
+
+The importer uses structural libclang queries, real preprocessing and canonical
+C types. It accepts only types represented by the existing foreign subset:
+exact target `int32_t`, `uint8_t`, `uint32_t`, `uint64_t`, `float`, `_Bool`,
+`void` results, static `const char *` arguments, and one-level pointers to
+supported scalars, `void`, or named record typedefs. Record pointee identity and
+constness are retained. Equal size does not make `unsigned long long`
+compatible with `uint64_t` when the latter is `unsigned long`.
+
+By-value aggregates, enum parameters/results, callbacks, variadics,
+unprototyped functions, static functions, non-default calling conventions,
+volatile/restrict or address-space-qualified types, nested pointers, array
+parameters and struct-tag-only pointers are rejected. A small C shim remains
+the explicit workaround. A rejected selection reports its name and source
+location where available.
+
+Constants are object macros or enum constants with a frontend-foldable
+integer/bool expression. Function-like macros, runtime variables, pointer and
+floating constants are not imported. Clang determines their type and value;
+the selected target compiler must agree on both at generation time. This is
+stronger than manually written integer constants, whose existing checks accept
+any representable integer expression. An enum constant may therefore import
+as `i32` even if an API consumes `u32`; use an explicit `u32(...)` conversion.
+
+Package preprocessing flags and `--c-arg` values are passed in the same order
+to libclang and the selected C compiler (`--cc`, `CC`, or `--zig-cc`). The
+supported import flags are `-I`, `-D`, `-U` (joined or separate), `-isystem`,
+`-iquote`, `-idirafter`, `-include`, `-imacros`, `-isysroot`, `--sysroot`,
+`-target`, `--target`, `-arch`, `-m32`, `-m64`, `-march=`, `-mcpu=`, `-mabi=`,
+`-mfpu=`, `-mfloat-abi=`, `-fshort-wchar`, `-fshort-enums`, `-fsigned-char`,
+`-funsigned-char`, `-fms-extensions`, `-nostdinc`, `-pthread` and `-std=c11`.
+Other flags are rejected rather than silently dropped. In particular `-E`,
+output flags, response files and extra C inputs cannot bypass semantic checks.
+Use structured arguments for paths with spaces, as in the example above.
+
+Generated modules do not store arbitrary compiler flags or freeze the header
+configuration. Use the **same target, sysroot, defines and include paths** for
+subsequent checks/builds; regenerate after changing them. Generation checks
+frontend/target scalar and pointer widths, exact function signatures and exact
+constant types/values, then validates the module as an imported library through
+Rill's normal resolver/checker. This is not a portable binding-package format.
+Future checks retain the ordinary native-module contract, including
+representability checks for integer constants.
+
+### CLI worker isolation and limits
+
+On Unix, `import-c` runs the complete generation operation in a separate
+instance of the same Rill executable: package resolution, libclang parsing,
+Rill module checking and final target-C checking. The parent publishes nothing
+until it receives a complete, valid response and the worker exits successfully.
+A crash, malformed/truncated/trailing response, timeout or output-limit error
+leaves existing output untouched. There is no worker executable searched on
+`PATH`, worker-path environment override, or unbounded in-process fallback.
+
+The default wall deadline is **30,000 ms**. Use `--timeout-ms N` to select
+**1 through 600,000 ms**; it covers package lookup and the target compiler too.
+The parent uses nonblocking pipes and stops the worker's process group on a
+timeout, error or normal worker exit, including remaining ordinary descendants.
+It retains the unreaped leader until group cleanup so a reused process ID cannot
+be mistaken for that group. SIGINT and SIGTERM request the same cleanup and an
+`E-C-IMPORT` cancellation error. A parent-owned private temporary directory is
+removed on these paths, including temporary target-check objects; worker core
+dumps are disabled. Relative compiler/header/resource paths retain the caller's
+working directory and raw Unix path bytes.
+
+The private, versioned IPC protocol bounds requests to **1 MiB**, generated
+modules to **1 MiB**, each request list to **1,024 items**, and captured worker
+diagnostics to **64 KiB**. Generated declaration lines are limited to **64 KiB**.
+Selected declarations remain limited to 256 symbols and 128 function parameters;
+frontend diagnostics and cursor traversal retain their own limits. Continuous
+output and children that never read input cannot block deadline checks. The
+parent rejects output outside the shallow generated-extern subset before its
+final Rill check. The timeout covers worker execution, not initial CLI argument
+parsing, bounded parent protocol validation or final output publication. OS
+scheduling and process termination are not a realtime timing guarantee.
+
+This is **not a memory, CPU, filesystem or security sandbox**. Headers and
+configured compilers remain trusted toolchain inputs; no total memory or disk
+quota is enforced. A descendant deliberately escaping its process group is
+outside this boundary. SIGKILL of the parent, host failure or filesystem errors
+can prevent cleanup. Non-Unix `import-c` currently reports that isolation is
+unsupported rather than silently running without the boundary; ordinary
+compiler commands and default builds remain available.
+
+The public `c_import::selected::generate` library API deliberately remains
+in-process, with no hard deadline or crash isolation. Library callers must
+provide their own process boundary if they need one. Neither API infers foreign
+ownership, lifetimes, effects or resource cleanup, and P5 remains open.
 
 ## Check, build and run
 

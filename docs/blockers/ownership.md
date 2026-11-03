@@ -47,19 +47,38 @@ The checker assigns a distinct identity to each parameter, local and pattern
 binding, and tracks root and field-index paths during call argument analysis.
 Same-spelled shadows have distinct identities. Two paths with the same root
 conflict when either is a prefix of the other and at least one is exclusive. The
-interpreter and C backend use checked field metadata and preserve sibling
-updates when fields are borrowed. C field writeback must re-find the field in
-the current root value because a sibling's variable-sized ADT payload can
-change its offset. An exclusive field argument currently uses a copied
-temporary and writes it back on normal return; C writeback can copy the entire
-containing record. This relies on the current Copy-only record subset and does
-not establish correct move or destructor behavior. `tests/field_loans.rs`
-exercises one-field cases; `tests/nested_field_loans.rs` covers prefix
-conflicts, nested forwarding and variable-size sibling writeback at multiple
-levels, with interpreter/C agreement at `-O0` and `-O2`.
+checked AST oracle and fallback backend preserve sibling updates by copying
+projected temporaries and writing them back on normal return. That legacy C
+writeback re-finds the field because variable-sized sibling payloads can change
+its uniform-layout offset. It does not establish owner move/drop behavior.
+`tests/field_loans.rs` and `tests/nested_field_loans.rs` retain source-level
+prefix, forwarding and sibling-update cases at `-O0` and `-O2`.
 
-The checker still passes an AST and checked metadata to the execution paths;
-this is not the verified MIR described in the plan. The current checker aborts
+Supported scalar, buffer, vector, finite-enum and Copy-record instances now
+share an independently checked typed path, including primitive/nested Copy
+matches and root loans inside owner programs. Typed call operands distinguish
+shared/exclusive roots, shared/exclusive fields and computed read temporaries.
+The verifier checks loans through later arguments and nested calls, allowing repeated shared
+reads and rejecting overlapping exclusive access independently of source
+checking. Nested calls restore the enclosing loan state. Interpreter cells
+are shared only for explicit loans; ordinary values and returns are snapshots.
+C uses const/non-const typed pointers without `restrict` claims. Record
+construction evaluates fields in written order; projections use independently
+checked nominal paths of at most 16 steps. Field assignment resolves the path
+in the original root after its right-hand side, preserving replaced siblings
+and prefixes. Rust cell borrows never span evaluation or Rill calls. Direct
+field call operands retain actual-place identity rather than becoming computed
+temporaries. Their checked intervals use prefix overlap; disjoint siblings and
+repeated shared paths remain legal. Projected interpreter handles retain the
+original cell and compose paths when forwarded. Each operand retains the
+16-step limit; composing valid operands adds no new source limit. C passes the
+actual compact struct field address. This also works inside restricted owner
+programs. Owned records, partial moves and escaping views remain open.
+See [root-loan evidence](../verification/2026-11-03-typed-copy-loans.md),
+[Copy-record evidence](../verification/2026-11-03-typed-copy-records.md), and
+[field-loan evidence](../verification/2026-11-03-typed-field-loans.md).
+This is not the complete verified MIR described
+in the plan. The current checker aborts
 analysis on its first error. Its temporary loan snapshot is not restored on
 every error exit before returning. If error recovery is added, restore the
 snapshot before continuing so one error cannot create false conflicts later.

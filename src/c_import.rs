@@ -1,8 +1,10 @@
 //! Source-selected C headers and libraries. Tool arguments never pass through a shell.
 use std::ffi::{OsStr, OsString};
-use std::io::Write;
+use std::io::{Read, Write};
 use std::process::{Command, Stdio};
 use std::sync::atomic::{AtomicU64, Ordering};
+
+pub mod selected;
 
 struct CheckDirectory(std::path::PathBuf);
 impl CheckDirectory {
@@ -101,21 +103,65 @@ impl Config {
 }
 
 fn pkg_config(option: &str, packages: &[String]) -> Result<Vec<OsString>, String> {
-    let output = Command::new("pkg-config")
+    let mut child = Command::new("pkg-config")
         .args([option, "--"])
         .args(packages)
-        .output()
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
         .map_err(|e| format!("E-C-IMPORT: cannot start pkg-config: {e}"))?;
-    if !output.status.success() {
+    let stdout = child.stdout.take().expect("piped pkg-config output");
+    let stderr = child.stderr.take().expect("piped pkg-config diagnostics");
+    let (status, stdout, stderr) = std::thread::scope(|scope| {
+        let out = scope.spawn(|| read_bounded(stdout));
+        let err = scope.spawn(|| read_bounded(stderr));
+        (
+            child.wait(),
+            out.join().expect("pkg-config reader panicked"),
+            err.join().expect("pkg-config reader panicked"),
+        )
+    });
+    let status = status.map_err(|e| format!("E-C-IMPORT: cannot wait for pkg-config: {e}"))?;
+    let (stdout, out_truncated) =
+        stdout.map_err(|e| format!("E-C-IMPORT: cannot read pkg-config output: {e}"))?;
+    let (stderr, err_truncated) =
+        stderr.map_err(|e| format!("E-C-IMPORT: cannot read pkg-config diagnostics: {e}"))?;
+    if !status.success() {
         return Err(format!(
-            "E-C-IMPORT: pkg-config {}: {}",
+            "E-C-IMPORT: pkg-config {}: {}{}",
             packages.join(" "),
-            String::from_utf8_lossy(&output.stderr).trim()
+            String::from_utf8_lossy(&stderr).trim(),
+            if err_truncated {
+                "\n[diagnostics truncated]"
+            } else {
+                ""
+            }
         ));
     }
-    let flags = std::str::from_utf8(&output.stdout)
-        .map_err(|_| "E-C-IMPORT: pkg-config output is not UTF-8")?;
+    if out_truncated {
+        return Err("E-C-IMPORT: pkg-config output exceeds 64 KiB".into());
+    }
+    let flags =
+        std::str::from_utf8(&stdout).map_err(|_| "E-C-IMPORT: pkg-config output is not UTF-8")?;
     split_flags(flags).map(|flags| flags.into_iter().map(OsString::from).collect())
+}
+
+/// Retain at most 64 KiB, but keep draining to avoid blocking a verbose child.
+fn read_bounded(mut input: impl Read) -> std::io::Result<(Vec<u8>, bool)> {
+    const LIMIT: usize = 64 * 1024;
+    let mut output = Vec::new();
+    let mut truncated = false;
+    let mut buffer = [0; 8192];
+    loop {
+        let count = input.read(&mut buffer)?;
+        if count == 0 {
+            break;
+        }
+        let kept = count.min(LIMIT - output.len());
+        output.extend_from_slice(&buffer[..kept]);
+        truncated |= kept != count;
+    }
+    Ok((output, truncated))
 }
 
 /// Decode pkg-config's shell-style quoting without evaluating substitutions,
@@ -201,18 +247,31 @@ pub fn validate_c(
     let mut stdin = child.stdin.take().expect("piped C compiler input");
     // Drain diagnostics while sending input, including when a bad header makes
     // the compiler reject a large translation unit before reading all of it.
-    let (output, written) = std::thread::scope(|scope| {
+    let stderr = child.stderr.take().expect("piped C compiler diagnostics");
+    let (status, diagnostics, written) = std::thread::scope(|scope| {
         let writer = scope.spawn(move || stdin.write_all(source.as_bytes()));
-        let output = child.wait_with_output();
+        let reader = scope.spawn(move || read_bounded(stderr));
+        let status = child.wait();
         let written = writer.join().expect("C input writer panicked");
-        (output, written)
+        (
+            status,
+            reader.join().expect("C diagnostic reader panicked"),
+            written,
+        )
     });
-    let output = output.map_err(|e| format!("E-C-IMPORT: cannot wait for C compiler: {e}"))?;
+    let status = status.map_err(|e| format!("E-C-IMPORT: cannot wait for C compiler: {e}"))?;
+    let (diagnostics, truncated) =
+        diagnostics.map_err(|e| format!("E-C-IMPORT: cannot read C diagnostics: {e}"))?;
     drop(check_directory);
-    if !output.status.success() {
+    if !status.success() {
         return Err(format!(
-            "E-C-IMPORT: target C header/type checking failed:\n{}",
-            String::from_utf8_lossy(&output.stderr)
+            "E-C-IMPORT: target C header/type checking failed:\n{}{}",
+            String::from_utf8_lossy(&diagnostics),
+            if truncated {
+                "\n[diagnostics truncated]"
+            } else {
+                ""
+            }
         ));
     }
     written.map_err(|e| format!("E-C-IMPORT: cannot send C declarations: {e}"))
@@ -221,6 +280,16 @@ pub fn validate_c(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn diagnostics_are_bounded_but_fully_drained() {
+        let data = vec![b'x'; 100_000];
+        let mut input = std::io::Cursor::new(&data);
+        let (retained, truncated) = read_bounded(&mut input).unwrap();
+        assert_eq!(retained.len(), 64 * 1024);
+        assert!(truncated);
+        assert_eq!(input.position(), data.len() as u64);
+    }
 
     #[test]
     fn package_flags_are_words_without_shell_execution() {

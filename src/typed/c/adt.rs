@@ -14,18 +14,30 @@ pub(super) fn drop_value(ty: Type, value: &str) -> String {
 }
 pub(super) fn layouts(emitter: &mut Emitter<'_>) {
     for (id, adt) in emitter.program.adts.iter().enumerate() {
-        writeln!(emitter.out, "typedef struct {{ int tag; union {{").unwrap();
-        for (tag, variant) in adt.variants.iter().enumerate() {
-            emitter.out.push_str("struct { ");
-            if variant.fields.is_empty() {
-                emitter.out.push_str("rl_unit unused;");
-            }
-            for (field, ty) in variant.fields.iter().enumerate() {
-                write!(emitter.out, "{} f{field}; ", c_type(*ty)).unwrap();
-            }
-            writeln!(emitter.out, "}} v{tag};").unwrap();
+        if adt.record_fields.is_some() {
+            records::layout(emitter, id);
+            continue;
         }
-        writeln!(emitter.out, "}} payload; }} rl_adt_{id};").unwrap();
+        emitter.out.push_str("typedef struct { int tag; ");
+        if adt
+            .variants
+            .iter()
+            .any(|variant| !variant.fields.is_empty())
+        {
+            emitter.out.push_str("union {\n");
+            for (tag, variant) in adt.variants.iter().enumerate() {
+                if variant.fields.is_empty() {
+                    continue;
+                }
+                emitter.out.push_str("struct { ");
+                for (field, ty) in variant.fields.iter().enumerate() {
+                    write!(emitter.out, "{} f{field}; ", c_type(*ty)).unwrap();
+                }
+                writeln!(emitter.out, "}} v{tag};").unwrap();
+            }
+            emitter.out.push_str("} payload; ");
+        }
+        writeln!(emitter.out, "}} rl_adt_{id};").unwrap();
         // The same layout limit used for scalar values bounds target padding.
         writeln!(
             emitter.out,
@@ -59,7 +71,11 @@ pub(super) fn layouts(emitter: &mut Emitter<'_>) {
     }
 }
 impl Emitter<'_> {
-    pub(super) fn drop_local(&mut self, id: LocalId) {
+    pub(super) fn drop_cleanup(&mut self, cleanup: &super::super::Cleanup) {
+        // Verification currently admits only atomic owner cleanup. Owned
+        // record source guards stay closed until both consumers support it.
+        assert_eq!(cleanup.tree, super::super::CleanupTree::DropWholeOwner);
+        let id = cleanup.local;
         let ty = self.owners[&id];
         self.out
             .push_str(&drop_value(ty, &format!("rl_l_{}", id.0)));
@@ -123,7 +139,7 @@ impl Emitter<'_> {
             }
             let body = self.expr(&arm.body);
             for id in &arm.cleanup {
-                self.drop_local(*id);
+                self.drop_cleanup(id);
             }
             writeln!(self.out, "{result} = {body}; break; }}").unwrap();
         }
@@ -137,6 +153,10 @@ impl Emitter<'_> {
 pub(super) fn printers(emitter: &mut Emitter<'_>) {
     for (id, adt) in emitter.program.adts.iter().enumerate() {
         if adt.owned {
+            continue;
+        }
+        if adt.record_fields.is_some() {
+            records::printer(emitter, id);
             continue;
         }
         writeln!(
@@ -160,15 +180,7 @@ pub(super) fn printers(emitter: &mut Emitter<'_>) {
                     emitter.out.push_str("fputs(\", \", stdout);\n");
                 }
                 let value = format!("value->payload.v{tag}.f{field}");
-                match ty{
-                    Type::Int=>writeln!(emitter.out,"printf(\"%\" PRId32, {value});").unwrap(),
-                    Type::Bool=>writeln!(emitter.out,"fputs({value} ? \"true\" : \"false\", stdout);").unwrap(),
-                    Type::Unit=>emitter.out.push_str("fputs(\"()\", stdout);\n"),
-                    Type::StaticStr=>writeln!(emitter.out,"fwrite({value}.data, 1, {value}.len, stdout);").unwrap(),
-                    Type::Bytes(n)=>writeln!(emitter.out,"fputs(\"bytes[\", stdout); for(size_t i=0;i<{n};++i) {{ if(i) fputs(\", \", stdout); printf(\"%u\", (unsigned){value}.data[i]); }} fputc(']', stdout);").unwrap(),
-                    Type::Adt{id,..}=>writeln!(emitter.out,"rl_print_adt_{id}(&({value}));").unwrap(),
-                    _=>unreachable!("verified Copy enum cannot contain owner")
-                }
+                print_value(emitter, *ty, &value);
             }
             if !variant.fields.is_empty() {
                 emitter.out.push_str("fputc(')', stdout);\n");
@@ -176,5 +188,26 @@ pub(super) fn printers(emitter: &mut Emitter<'_>) {
             emitter.out.push_str("break;\n");
         }
         emitter.out.push_str("default: rl_trap(); } }\n");
+    }
+}
+
+pub(super) fn print_value(emitter: &mut Emitter<'_>, ty: Type, value: &str) {
+    match ty {
+        Type::Int => writeln!(emitter.out, "printf(\"%\" PRId32, {value});").unwrap(),
+        Type::Bool => writeln!(
+            emitter.out,
+            "fputs({value} ? \"true\" : \"false\", stdout);"
+        )
+        .unwrap(),
+        Type::Unit => emitter.out.push_str("fputs(\"()\", stdout);\n"),
+        Type::StaticStr => {
+            writeln!(emitter.out, "fwrite({value}.data, 1, {value}.len, stdout);").unwrap()
+        }
+        Type::U8x16 => writeln!(emitter.out, "rl_print_vector({value});").unwrap(),
+        Type::Bytes(n) => {
+            writeln!(emitter.out,"fputs(\"bytes[\", stdout); for(size_t i=0;i<{n};++i) {{ if(i) fputs(\", \", stdout); printf(\"%u\", (unsigned){value}.data[i]); }} fputc(']', stdout);").unwrap();
+        }
+        Type::Adt { id, .. } => writeln!(emitter.out, "rl_print_adt_{id}(&({value}));").unwrap(),
+        _ => unreachable!("verified Copy aggregate cannot contain owner"),
     }
 }

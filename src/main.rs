@@ -1,3 +1,6 @@
+#[cfg(all(feature = "c-import", unix))]
+mod import_worker;
+
 use std::{
     env,
     ffi::{OsStr, OsString},
@@ -17,6 +20,19 @@ fn main() {
 fn run() -> Result<(), String> {
     let mut args = env::args_os().skip(1);
     let command = args.next().ok_or_else(usage)?;
+    #[cfg(all(feature = "c-import", unix))]
+    if command == OsStr::new(import_worker::COMMAND) {
+        if args.next().is_some() {
+            return Err("E-C-IMPORT: worker does not accept command-line arguments".into());
+        }
+        return import_worker::run();
+    }
+    if command == OsStr::new("fmt") {
+        return format_source(args);
+    }
+    if command == OsStr::new("import-c") {
+        return import_c(args);
+    }
     let path = args.next().ok_or_else(usage)?;
     if !matches!(command.to_str(), Some("check" | "run" | "emit-c" | "build")) {
         return Err(usage());
@@ -91,6 +107,112 @@ fn run() -> Result<(), String> {
         _ => return Err(usage()),
     }
     Ok(())
+}
+
+fn format_source(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
+    let path = args.next().ok_or_else(usage)?;
+    let check = match args.next().as_deref() {
+        None => false,
+        Some(option) if option == OsStr::new("--check") => true,
+        _ => return Err(usage()),
+    };
+    if args.next().is_some() {
+        return Err(usage());
+    }
+    let source = std::fs::read_to_string(&path)
+        .map_err(|error| format!("E-FMT-IO: cannot read {}: {error}", path.to_string_lossy()))?;
+    let formatted = rill::formatter::format(&source)?;
+    if check {
+        if source == formatted {
+            Ok(())
+        } else {
+            Err(format!(
+                "E-FMT-CHECK: {} needs formatting",
+                path.to_string_lossy()
+            ))
+        }
+    } else {
+        std::io::stdout()
+            .lock()
+            .write_all(formatted.as_bytes())
+            .map_err(|error| format!("E-FMT-IO: cannot write formatted source: {error}"))
+    }
+}
+
+fn import_c(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
+    let mut selection = rill::c_import::selected::Selection::default();
+    let mut output = None;
+    let mut compiler = None;
+    let mut zig_cc = false;
+    let mut timeout_ms = None;
+    while let Some(option) = args.next() {
+        let value = |args: &mut dyn Iterator<Item = OsString>| {
+            args.next()
+                .ok_or_else(|| format!("{} requires a value", option.to_string_lossy()))
+        };
+        let text = |args: &mut dyn Iterator<Item = OsString>| {
+            value(args)?
+                .into_string()
+                .map_err(|_| format!("{} requires UTF-8", option.to_string_lossy()))
+        };
+        match option.to_str() {
+            Some("--timeout-ms") if timeout_ms.is_none() => {
+                let timeout = text(&mut args)?
+                    .parse::<u64>()
+                    .map_err(|_| "E-C-IMPORT: --timeout-ms requires an integer from 1 to 600000")?;
+                if !(1..=600_000).contains(&timeout) {
+                    return Err(
+                        "E-C-IMPORT: --timeout-ms requires an integer from 1 to 600000".into(),
+                    );
+                }
+                timeout_ms = Some(timeout);
+            }
+            Some("--header") => selection.native.includes.push(text(&mut args)?),
+            Some("--function") => selection.functions.push(text(&mut args)?),
+            Some("--constant") => selection.constants.push(text(&mut args)?),
+            Some("--link") => selection.native.links.push(text(&mut args)?),
+            Some("--pkg-config") => selection.native.packages.push(text(&mut args)?),
+            Some("--c-arg") => selection.c_args.push(value(&mut args)?),
+            Some("--clang-resource-dir") if selection.resource_dir.is_none() => {
+                selection.resource_dir = Some(value(&mut args)?.into())
+            }
+            Some("-o") if output.is_none() => output = Some(value(&mut args)?),
+            Some("--cc") if compiler.is_none() && !zig_cc => compiler = Some(value(&mut args)?),
+            Some("--zig-cc") if compiler.is_none() && !zig_cc => {
+                compiler = Some("zig".into());
+                zig_cc = true;
+            }
+            _ => {
+                return Err(format!(
+                    "invalid or repeated import-c option {option:?}\n{}",
+                    usage()
+                ))
+            }
+        }
+    }
+    let compiler = compiler.unwrap_or_else(|| env::var_os("CC").unwrap_or_else(|| "cc".into()));
+    let timeout = std::time::Duration::from_millis(timeout_ms.unwrap_or(30_000));
+    #[cfg(all(feature = "c-import", unix))]
+    let module = import_worker::generate(&selection, &compiler, zig_cc, timeout)?;
+    #[cfg(not(all(feature = "c-import", unix)))]
+    let module = {
+        let _ = timeout;
+        #[cfg(feature = "c-import")]
+        {
+            let _ = (&selection, &compiler, zig_cc);
+            Err::<String, String>("E-C-IMPORT: isolated import-c is currently supported only on Unix; the library generate API remains in-process".into())?
+        }
+        #[cfg(not(feature = "c-import"))]
+        rill::c_import::selected::generate(&selection, &compiler, zig_cc)?
+    };
+    if let Some(path) = output {
+        rill::c_import::selected::write_atomic(Path::new(&path), &module)
+    } else {
+        std::io::stdout()
+            .lock()
+            .write_all(module.as_bytes())
+            .map_err(|e| format!("E-C-IMPORT: cannot write bindings: {e}"))
+    }
 }
 
 fn build_c(
@@ -250,6 +372,6 @@ impl BuildOptions {
 }
 
 fn usage() -> String {
-    "usage: rill <check|emit-c> <source.rill> [--cc <compiler> | --zig-cc] [--c-arg <arg>]...\n       rill run <source.rill> [--native] [compiler options]\n       rill build <source.rill> -o <executable> [--cc <compiler> | --zig-cc] [--simd scalar|neon] [--c-arg <arg>]... [--link-arg <arg>]..."
+    "usage: rill fmt <source.rill> [--check]\n       rill <check|emit-c> <source.rill> [--cc <compiler> | --zig-cc] [--c-arg <arg>]...\n       rill run <source.rill> [--native] [compiler options]\n       rill build <source.rill> -o <executable> [--cc <compiler> | --zig-cc] [--simd scalar|neon] [--c-arg <arg>]... [--link-arg <arg>]...\n       rill import-c --header <header> [--function <name>]... [--constant <name>]... [-o <bindings.rill>] [--pkg-config <package>]... [--link <library>]... [--cc <compiler> | --zig-cc] [--c-arg <arg>]... [--clang-resource-dir <path>] [--timeout-ms <1..600000>]"
         .into()
 }

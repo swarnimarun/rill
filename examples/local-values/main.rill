@@ -1,0 +1,20 @@
+// One immutable value, independently instantiated at integer and boolean uses.
+type Option<a> = None | Some(a)
+type Stored<a> = { payload: i32; tag: Option<a> }
+
+fn integers(read value: Stored<i32>) { value.payload }
+fn booleans(read value: Stored<bool>) { value.payload }
+fn absent(read value: Option<bool>) {
+    match value { None => true | Some(_) => false }
+}
+
+fn main() {
+    let mut live = 20;
+    let snapshot = live;
+    let value = record Stored { tag = None; payload = snapshot };
+    let alias = value;
+    live <- 1;
+    if absent(value.tag) {
+        integers(alias) + booleans(value) + live + 1
+    } else { 0 }
+}

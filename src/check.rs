@@ -5,10 +5,13 @@ use crate::ast::{
 use std::collections::{HashMap, HashSet};
 
 mod alloc;
+mod exhaustiveness;
 mod graph;
 mod layout;
 mod owned_types;
 mod ownership;
+mod solver;
+mod type_cursor;
 pub use owned_types::CheckedVariant;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -30,11 +33,11 @@ pub enum Type {
     SystemBytes,
     Nominal(String, Vec<Type>),
 }
-#[derive(Clone)]
 struct Scheme {
     quantified: Vec<usize>,
     ty: Type,
     mutable: bool,
+    borrowed: bool,
     local_id: usize,
 }
 
@@ -51,6 +54,9 @@ pub struct FunctionType {
     pub result: Type,
 }
 
+#[cfg(test)]
+pub(crate) type ConcreteInstanceKey = (String, Vec<Type>, Type);
+
 /// Inferred expression and function types. The borrow keeps expression identities
 /// valid until a consumer finishes lowering this exact program.
 pub struct CheckedProgram<'a> {
@@ -59,6 +65,9 @@ pub struct CheckedProgram<'a> {
     expression_types: HashMap<*const Expr, Type>,
     field_info: HashMap<*const Expr, Vec<FieldInfo>>,
     record_info: HashMap<*const Expr, RecordInfo>,
+    // Source binding identities, not names; no cloned type trees are retained.
+    polymorphic_locals: HashMap<*const Expr, usize>,
+    local_uses: HashMap<*const Expr, usize>,
     has_owned: bool,
     owned_type_cache: std::sync::Mutex<HashMap<Type, bool>>,
     adt_variant_cache: std::sync::Mutex<HashMap<Type, Vec<CheckedVariant>>>,
@@ -101,9 +110,23 @@ impl CheckedProgram<'_> {
         self.record_info.get(&(expression as *const Expr))
     }
 
+    pub(crate) fn polymorphic_local(&self, expression: &Expr) -> Option<usize> {
+        self.polymorphic_locals
+            .get(&(expression as *const Expr))
+            .copied()
+    }
+    pub(crate) fn local_use(&self, expression: &Expr) -> Option<usize> {
+        self.local_uses.get(&(expression as *const Expr)).copied()
+    }
+
     /// Compute a sound inline capacity over all reachable specializations.
     pub fn max_inline_nodes(&self) -> Result<usize, String> {
         layout::max_inline_nodes(self)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn reference_instance_keys(&self) -> Result<HashSet<ConcreteInstanceKey>, String> {
+        layout::reference_instance_keys(self)
     }
 }
 #[derive(Clone)]
@@ -115,7 +138,8 @@ struct Constructor {
 }
 struct Checker {
     allocation_types: Option<crate::ast::AllocationTypes>,
-    bindings: Vec<Option<Type>>,
+    solver: solver::Solver,
+    level: usize,
     functions: HashMap<String, FunctionType>,
     parameter_modes: HashMap<String, Vec<ParamMode>>,
     next_local: usize,
@@ -129,6 +153,9 @@ struct Checker {
     expression_types: HashMap<*const Expr, Type>,
     field_info: HashMap<*const Expr, Vec<FieldInfo>>,
     record_info: HashMap<*const Expr, RecordInfo>,
+    // Source binding identities, not names; no cloned type trees are retained.
+    polymorphic_locals: HashMap<*const Expr, usize>,
+    local_uses: HashMap<*const Expr, usize>,
     has_owned: bool,
 }
 impl Checker {
@@ -145,111 +172,218 @@ impl Checker {
         id
     }
     fn fresh(&mut self) -> Type {
-        let id = self.bindings.len();
-        self.bindings.push(None);
-        Type::Var(id)
+        self.solver.fresh(self.level)
     }
-    fn resolve(&self, ty: Type) -> Type {
-        match ty {
-            Type::Var(id) => match &self.bindings[id] {
-                Some(t) => self.resolve(t.clone()),
-                None => Type::Var(id),
-            },
-            Type::Nominal(n, args) => {
-                Type::Nominal(n, args.into_iter().map(|t| self.resolve(t)).collect())
-            }
-            other => other,
-        }
+    fn resolve(&self, ty: &Type) -> Result<Type, String> {
+        self.solver.resolve(ty)
     }
-    fn occurs(&self, id: usize, ty: Type) -> bool {
-        match self.resolve(ty) {
-            Type::Var(i) => i == id,
-            Type::Nominal(_, args) => args.into_iter().any(|t| self.occurs(id, t)),
-            _ => false,
-        }
+    fn copy_type(&self, ty: &Type) -> Result<Type, String> {
+        self.solver.copy_type(ty)
+    }
+    fn copy_scheme(&self, scheme: &Scheme) -> Result<Scheme, String> {
+        Ok(Scheme {
+            quantified: scheme.quantified.clone(),
+            ty: self.copy_type(&scheme.ty)?,
+            mutable: scheme.mutable,
+            borrowed: scheme.borrowed,
+            local_id: scheme.local_id,
+        })
+    }
+    fn copy_function(&self, scheme: &FunctionType) -> Result<FunctionType, String> {
+        Ok(FunctionType {
+            quantified: scheme.quantified.clone(),
+            params: scheme
+                .params
+                .iter()
+                .map(|ty| self.copy_type(ty))
+                .collect::<Result<_, _>>()?,
+            result: self.copy_type(&scheme.result)?,
+        })
     }
     fn unify(&mut self, left: Type, right: Type) -> Result<(), String> {
-        let left = self.resolve(left);
-        let right = self.resolve(right);
-        match (left, right) {
-            (a, b) if a == b => Ok(()),
-            (Type::Var(id), t) | (t, Type::Var(id)) => {
-                if self.occurs(id, t.clone()) {
-                    return Err("E-TYPE: infinite type".into());
-                }
-                self.bindings[id] = Some(t);
-                Ok(())
-            }
-            (Type::Nominal(a, aa), Type::Nominal(b, bb)) if a == b && aa.len() == bb.len() => {
-                for (a, b) in aa.into_iter().zip(bb) {
-                    self.unify(a, b)?;
-                }
-                Ok(())
-            }
-            (a, b) => Err(format!("E-TYPE: incompatible types {a:?} and {b:?}")),
-        }
+        self.solver.unify(left, right)
     }
-    fn substitute(&self, ty: Type, replacements: &HashMap<usize, Type>) -> Type {
-        match self.resolve(ty) {
-            Type::Var(id) => replacements.get(&id).cloned().unwrap_or(Type::Var(id)),
-            Type::Nominal(n, args) => Type::Nominal(
-                n,
-                args.into_iter()
-                    .map(|t| self.substitute(t, replacements))
-                    .collect(),
-            ),
-            t => t,
-        }
+    fn substitute(&self, ty: &Type, replacements: &HashMap<usize, Type>) -> Result<Type, String> {
+        self.solver.substitute(ty, replacements)
     }
-    fn instantiate(&mut self, scheme: &Scheme) -> Type {
+    fn instantiate(&mut self, scheme: &Scheme) -> Result<Type, String> {
         let repl = scheme
             .quantified
             .iter()
             .map(|id| (*id, self.fresh()))
             .collect();
-        self.substitute(scheme.ty.clone(), &repl)
+        self.substitute(&scheme.ty, &repl)
     }
-    fn instantiate_function(&mut self, scheme: &FunctionType) -> (Vec<Type>, Type) {
+    fn instantiate_function(&mut self, scheme: &FunctionType) -> Result<(Vec<Type>, Type), String> {
         let repl = scheme
             .quantified
             .iter()
             .map(|id| (*id, self.fresh()))
             .collect();
-        (
+        Ok((
             scheme
                 .params
                 .iter()
-                .map(|t| self.substitute(t.clone(), &repl))
-                .collect(),
-            self.substitute(scheme.result.clone(), &repl),
-        )
+                .map(|t| self.substitute(t, &repl))
+                .collect::<Result<_, _>>()?,
+            self.substitute(&scheme.result, &repl)?,
+        ))
     }
-    fn free_type(&self, ty: Type, out: &mut HashSet<usize>) {
-        match self.resolve(ty) {
-            Type::Var(id) => {
-                out.insert(id);
+    fn free_type(&self, ty: &Type, out: &mut HashSet<usize>) {
+        self.solver.free_type(ty, out);
+    }
+    fn generalize(
+        &mut self,
+        mut free: HashSet<usize>,
+        environment: &HashSet<usize>,
+    ) -> Result<Vec<usize>, String> {
+        // Pending raw pointer obligations remain monomorphic until a concrete
+        // foreign context determines pointee identity and constness.
+        let mut pointers = HashSet::new();
+        for ty in &self.pointer_types {
+            if let Type::Var(id) = self.resolve(ty)? {
+                pointers.insert(id);
             }
-            Type::Nominal(_, args) => {
-                for t in args {
-                    self.free_type(t, out)
+        }
+        free.retain(|id| !pointers.contains(id));
+        // A captured environment may have acquired new representatives or
+        // structural bindings since its free variable IDs were collected.
+        let mut current_environment = HashSet::new();
+        for id in environment {
+            self.free_type(&Type::Var(*id), &mut current_environment);
+        }
+        let mut quantified = Vec::new();
+        for id in free {
+            let by_level = self.solver.level(id) > self.level;
+            let by_environment = !current_environment.contains(&id);
+            if by_level != by_environment {
+                return Err(
+                    "E-INTERNAL-TYPE: generalization level/environment disagreement".into(),
+                );
+            }
+            if by_level {
+                quantified.push(id);
+            }
+        }
+        for id in pointers {
+            self.solver.lower_variable(id, self.level);
+        }
+        // This is the only construction point for nonempty private schemes.
+        // Consumers rely on sorted IDs for subquadratic membership checks.
+        quantified.sort_unstable();
+        Ok(quantified)
+    }
+    /// The initial value restriction is intentionally syntactic. In particular,
+    /// a pure-looking call or branch is not evidence of safe generalization.
+    /// Names follow the same checked declaration/local precedence as inference.
+    fn nonexpansive(&self, value: &Expr, locals: &HashMap<String, Scheme>) -> bool {
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            match value {
+                Expr::Int(_) | Expr::Bool(_) | Expr::Unit | Expr::Str(_) => {}
+                Expr::Var(name) => {
+                    if let Some(binding) = locals.get(name) {
+                        if binding.mutable
+                            || binding.borrowed
+                            || self
+                                .active_loans
+                                .iter()
+                                .any(|loan| loan.root == binding.local_id)
+                        {
+                            return false;
+                        }
+                    } else if !self.constants.contains_key(name)
+                        && !self.constructors.get(name).is_some_and(|constructor| {
+                            constructor.record_fields.is_none() && constructor.fields.is_empty()
+                        })
+                    {
+                        return false;
+                    }
+                }
+                Expr::Call(name, arguments) => {
+                    if !self
+                        .constructors
+                        .get(name)
+                        .is_some_and(|constructor| constructor.record_fields.is_none())
+                    {
+                        return false;
+                    }
+                    pending.extend(arguments);
+                }
+                Expr::Record(_, fields) => {
+                    // Successful inference recorded the resolved nominal constructor.
+                    if !self.record_info.contains_key(&(value as *const Expr)) {
+                        return false;
+                    }
+                    pending.extend(fields.iter().map(|(_, value)| value));
+                }
+                _ => return false,
+            }
+        }
+        true
+    }
+
+    /// Exclude known owners even in inactive variants or phantom arguments.
+    /// Unresolved variables still obey the independent environment/level test;
+    /// later owner instantiations retain the existing monomorphic owner checks.
+    fn has_owner_dependency(&self, ty: &Type) -> Result<bool, String> {
+        let resolved = self.resolve(ty)?;
+        let mut types = vec![&resolved];
+        let mut declarations = Vec::new();
+        while let Some(ty) = types.pop() {
+            match ty {
+                Type::SystemBoxI32 | Type::SystemBytes => return Ok(true),
+                Type::Nominal(name, arguments) => {
+                    declarations.push(name.as_str());
+                    types.extend(arguments);
+                }
+                _ => {}
+            }
+        }
+        // All arguments, including phantom arguments, count as dependencies.
+        // That conservative rule lets us inspect each declaration once without
+        // expanding generic fields into potentially enormous substituted trees.
+        let mut visited = HashSet::new();
+        while let Some(name) = declarations.pop() {
+            if !visited.insert(name) {
+                continue;
+            }
+            for variant in &self.variants[name] {
+                let constructor = &self.constructors[variant];
+                let parameters: HashSet<_> = constructor.params.iter().collect();
+                let mut fields: Vec<_> = constructor.fields.iter().collect();
+                while let Some(field) = fields.pop() {
+                    if parameters.contains(&field.name)
+                        || matches!(field.name.as_str(), "ptr" | "const_ptr")
+                    {
+                        continue;
+                    }
+                    if matches!(field.name.as_str(), "SystemBoxI32" | "SystemBytes") {
+                        return Ok(true);
+                    }
+                    if self.variants.contains_key(&field.name) {
+                        declarations.push(field.name.as_str());
+                    }
+                    fields.extend(&field.args);
                 }
             }
-            _ => {}
         }
+        Ok(false)
     }
+
     fn free_scheme(&self, scheme: &Scheme, out: &mut HashSet<usize>) {
         let mut v = HashSet::new();
-        self.free_type(scheme.ty.clone(), &mut v);
-        v.retain(|i| !scheme.quantified.contains(i));
+        self.free_type(&scheme.ty, &mut v);
+        v.retain(|i| scheme.quantified.binary_search(i).is_err());
         out.extend(v);
     }
     fn free_functions(&self, out: &mut HashSet<usize>) {
         for f in self.functions.values() {
             let mut v = HashSet::new();
             for t in f.params.iter().chain(std::iter::once(&f.result)) {
-                self.free_type(t.clone(), &mut v)
+                self.free_type(t, &mut v)
             }
-            v.retain(|i| !f.quantified.contains(i));
+            v.retain(|i| f.quantified.binary_search(i).is_err());
             out.extend(v);
         }
     }
@@ -261,7 +395,7 @@ impl Checker {
                     t.name
                 ));
             }
-            return Ok(ty.clone());
+            return self.copy_type(ty);
         }
         if matches!(t.name.as_str(), "ptr" | "const_ptr") {
             if t.args.len() != 1 || !t.args[0].args.is_empty() {
@@ -327,7 +461,7 @@ impl Checker {
         let mut args = Vec::new();
         for p in &c.params {
             let t = self.fresh();
-            vars.insert(p.clone(), t.clone());
+            vars.insert(p.clone(), self.copy_type(&t)?);
             args.push(t);
         }
         let fields = c
@@ -338,17 +472,19 @@ impl Checker {
         Ok((fields, Type::Nominal(c.owner, args)))
     }
     fn record_field(
-        &self,
+        &mut self,
         binding: &Scheme,
         fields: &[String],
     ) -> Result<(Vec<FieldInfo>, Type), String> {
         if fields.is_empty() || fields.len() > 16 {
             return Err("E-RECORD: field path must contain 1 to 16 fields".into());
         }
-        let mut ty = binding.ty.clone();
+        // Project from this use's instance, never the quantified scheme itself.
+        // Mutable and borrowed roots have empty schemes and retain their type.
+        let mut ty = self.instantiate(binding)?;
         let mut path = Vec::with_capacity(fields.len());
         for field in fields {
-            let Type::Nominal(record, args) = self.resolve(ty) else {
+            let Type::Nominal(record, args) = self.resolve(&ty)? else {
                 return Err(
                     "E-RECORD: field access requires a known record type (annotate the parameter)"
                         .into(),
@@ -398,6 +534,7 @@ impl Checker {
                         quantified: vec![],
                         ty: expected,
                         mutable: false,
+                        borrowed: false,
                         local_id,
                     },
                 );
@@ -459,7 +596,7 @@ impl Checker {
             return Ok(Type::Bytes(*capacity as usize));
         }
         let buffer = self.infer(&args[0], locals)?;
-        let buffer = self.resolve(buffer);
+        let buffer = self.resolve(&buffer)?;
         if !matches!(buffer, Type::Bytes(_)) {
             return Err("E-BUFFER: expected a byte buffer with a known capacity".into());
         }
@@ -525,7 +662,8 @@ impl Checker {
         };
         let binding = locals
             .get(root)
-            .cloned()
+            .map(|binding| self.copy_scheme(binding))
+            .transpose()?
             .ok_or_else(|| format!("E-NAME: unknown owner '{root}'"))?;
         if exclusive && !binding.mutable {
             return Err(format!("E-LOAN: {name} root '{root}' must be mutable"));
@@ -538,7 +676,7 @@ impl Checker {
         } else {
             Type::SystemBytes
         };
-        self.unify(binding.ty.clone(), owner_type)?;
+        self.unify(self.copy_type(&binding.ty)?, owner_type)?;
         self.expression_types
             .insert(&args[0] as *const Expr, binding.ty);
         let enclosing = self.active_loans.clone();
@@ -574,7 +712,7 @@ impl Checker {
         }
         let first = self.infer(&args[0], locals)?;
         if name == "u8x16_load" {
-            if !matches!(self.resolve(first), Type::Bytes(_)) {
+            if !matches!(self.resolve(&first)?, Type::Bytes(_)) {
                 return Err("E-VECTOR: load requires a byte buffer with a known capacity".into());
             }
         } else {
@@ -601,7 +739,7 @@ impl Checker {
     fn infer(&mut self, expr: &Expr, locals: &mut HashMap<String, Scheme>) -> Result<Type, String> {
         let ty = self.infer_inner(expr, locals)?;
         self.expression_types
-            .insert(expr as *const Expr, ty.clone());
+            .insert(expr as *const Expr, self.copy_type(&ty)?);
         Ok(ty)
     }
 
@@ -629,7 +767,8 @@ impl Checker {
             Expr::Move(name) => {
                 let binding = locals
                     .get(name)
-                    .cloned()
+                    .map(|binding| self.copy_scheme(binding))
+                    .transpose()?
                     .ok_or_else(|| format!("E-NAME: unknown owner '{name}'"))?;
                 if self.conflicts(binding.local_id, &[], true) {
                     return Err(format!("E-LOAN: cannot move borrowed root '{name}'"));
@@ -638,16 +777,21 @@ impl Checker {
                 Ok(binding.ty)
             }
             Expr::Var(n) => {
-                if let Some(s) = locals.get(n).cloned() {
+                if let Some(s) = locals
+                    .get(n)
+                    .map(|binding| self.copy_scheme(binding))
+                    .transpose()?
+                {
+                    self.local_uses.insert(expr as *const Expr, s.local_id);
                     if self.conflicts(s.local_id, &[], false) {
                         return Err(format!(
                             "E-LOAN: cannot read exclusively borrowed root '{n}'"
                         ));
                     }
-                    return Ok(self.instantiate(&s));
+                    return self.instantiate(&s);
                 }
                 if let Some(ty) = self.constants.get(n) {
-                    return Ok(ty.clone());
+                    return self.copy_type(ty);
                 }
                 if self.constructors.contains_key(n) {
                     if self.constructors[n].record_fields.is_some() {
@@ -693,7 +837,7 @@ impl Checker {
                         return Err(format!("E-RECORD: duplicate field '{field}'"));
                     }
                     let ty = self.infer(value, locals)?;
-                    self.unify(ty, types[index].clone())?;
+                    self.unify(ty, self.copy_type(&types[index])?)?;
                     indices.push(index);
                 }
                 self.record_info.insert(
@@ -708,8 +852,11 @@ impl Checker {
             Expr::Field(root, field) => {
                 let binding = locals
                     .get(root)
-                    .cloned()
+                    .map(|binding| self.copy_scheme(binding))
+                    .transpose()?
                     .ok_or_else(|| format!("E-NAME: unknown record root '{root}'"))?;
+                self.local_uses
+                    .insert(expr as *const Expr, binding.local_id);
                 let (info, ty) = self.record_field(&binding, field)?;
                 let indices: Vec<_> = info.iter().map(|step| step.index).collect();
                 if self.conflicts(binding.local_id, &indices, false) {
@@ -723,7 +870,8 @@ impl Checker {
             Expr::FieldAssign(root, field, value) => {
                 let binding = locals
                     .get(root)
-                    .cloned()
+                    .map(|binding| self.copy_scheme(binding))
+                    .transpose()?
                     .ok_or_else(|| format!("E-NAME: unknown record root '{root}'"))?;
                 if !binding.mutable {
                     return Err(format!(
@@ -764,7 +912,7 @@ impl Checker {
                         Ok(Type::Bool)
                     }
                     BinaryOp::Eq | BinaryOp::Ne => {
-                        self.unify(a.clone(), b)?;
+                        self.unify(self.copy_type(&a)?, b)?;
                         self.equality_types.push(a);
                         Ok(Type::Bool)
                     }
@@ -775,8 +923,8 @@ impl Checker {
                 self.unify(c, Type::Bool)?;
                 let a = self.infer(a, locals)?;
                 let b = self.infer(b, locals)?;
-                self.unify(a.clone(), b)?;
-                Ok(self.resolve(a))
+                self.unify(self.copy_type(&a)?, b)?;
+                self.resolve(&a)
             }
             Expr::While(condition, body) => {
                 let condition = self.infer(condition, locals)?;
@@ -786,28 +934,39 @@ impl Checker {
                 Ok(Type::Unit)
             }
             Expr::Let(n, value, body) => {
-                let ty = self.infer(value, locals)?;
+                self.level += 1;
+                let inferred = self.infer(value, locals);
+                self.level -= 1;
+                let ty = inferred?;
                 let mut free = HashSet::new();
-                self.free_type(ty.clone(), &mut free);
+                self.free_type(&ty, &mut free);
                 let mut env = HashSet::new();
                 for s in locals.values() {
                     self.free_scheme(s, &mut env)
                 }
                 self.free_functions(&mut env);
-                free.retain(|id| {
-                    !env.contains(id)
-                        && !self
-                            .pointer_types
-                            .iter()
-                            .any(|ty| self.resolve(ty.clone()) == Type::Var(*id))
-                });
+                // Keep the level/environment cross-check independent of the
+                // value restriction. Rejected candidates become weak variables
+                // at this boundary, so immutable aliases cannot generalize them.
+                let mut quantified = self.generalize(free.clone(), &env)?;
+                if !self.nonexpansive(value, locals) || self.has_owner_dependency(&ty)? {
+                    for id in free {
+                        self.solver.lower_variable(id, self.level);
+                    }
+                    quantified.clear();
+                }
                 let local_id = self.local_id();
+                if !quantified.is_empty() {
+                    self.polymorphic_locals
+                        .insert(expr as *const Expr, local_id);
+                }
                 let old = locals.insert(
                     n.clone(),
                     Scheme {
-                        quantified: free.into_iter().collect(),
+                        quantified,
                         ty,
                         mutable: false,
+                        borrowed: false,
                         local_id,
                     },
                 );
@@ -831,6 +990,7 @@ impl Checker {
                         quantified: Vec::new(),
                         ty,
                         mutable: true,
+                        borrowed: false,
                         local_id,
                     },
                 );
@@ -848,7 +1008,8 @@ impl Checker {
             Expr::Assign(n, value) => {
                 let binding = locals
                     .get(n)
-                    .cloned()
+                    .map(|binding| self.copy_scheme(binding))
+                    .transpose()?
                     .ok_or_else(|| format!("E-NAME: unknown variable '{n}'"))?;
                 if !binding.mutable {
                     return Err(format!("E-MUT: cannot assign to immutable binding '{n}'"));
@@ -879,7 +1040,7 @@ impl Checker {
                         return Err("E-ARITY: c_null expects no arguments".into());
                     }
                     let ty = self.fresh();
-                    self.pointer_types.push(ty.clone());
+                    self.pointer_types.push(self.copy_type(&ty)?);
                     return Ok(ty);
                 }
                 if n == "is_null" {
@@ -937,9 +1098,10 @@ impl Checker {
                     let s = self
                         .functions
                         .get(n)
-                        .cloned()
+                        .map(|signature| self.copy_function(signature))
+                        .transpose()?
                         .ok_or_else(|| format!("E-NAME: unknown function '{n}'"))?;
-                    self.instantiate_function(&s)
+                    self.instantiate_function(&s)?
                 };
                 if params.len() != args.len() {
                     return Err(format!(
@@ -967,7 +1129,8 @@ impl Checker {
                         };
                         let binding = locals
                             .get(name)
-                            .cloned()
+                            .map(|binding| self.copy_scheme(binding))
+                            .transpose()?
                             .ok_or_else(|| format!("E-NAME: unknown variable '{name}'"))?;
                         if !binding.mutable {
                             return Err(format!("E-LOAN: inout root '{name}' must be mutable"));
@@ -978,14 +1141,14 @@ impl Checker {
                             self.field_info.insert(a as *const Expr, info);
                             (indices, ty)
                         } else {
-                            (Vec::new(), binding.ty.clone())
+                            (Vec::new(), self.copy_type(&binding.ty)?)
                         };
                         if self.conflicts(binding.local_id, &place_path, true) {
                             return Err(format!(
                                 "E-LOAN: cannot exclusively borrow borrowed root '{name}'"
                             ));
                         }
-                        self.unify(ty.clone(), p)?;
+                        self.unify(self.copy_type(&ty)?, p)?;
                         self.expression_types.insert(a as *const Expr, ty);
                         self.active_loans.push(Loan {
                             root: binding.local_id,
@@ -1046,106 +1209,22 @@ impl Checker {
                 let result = self.fresh();
                 let mut patterns = Vec::new();
                 for arm in arms {
-                    let mut scope = locals.clone();
-                    self.infer_pattern(&arm.pattern, ty.clone(), &mut scope, &mut HashSet::new())?;
+                    let mut scope = locals
+                        .iter()
+                        .map(|(name, binding)| Ok((name.clone(), self.copy_scheme(binding)?)))
+                        .collect::<Result<HashMap<_, _>, String>>()?;
+                    self.infer_pattern(
+                        &arm.pattern,
+                        self.copy_type(&ty)?,
+                        &mut scope,
+                        &mut HashSet::new(),
+                    )?;
                     let body = self.infer(&arm.body, &mut scope)?;
-                    self.unify(result.clone(), body)?;
+                    self.unify(self.copy_type(&result)?, body)?;
                     patterns.push(arm.pattern.clone());
                 }
                 self.pending_matches.push((ty, patterns));
                 Ok(result)
-            }
-        }
-    }
-    // Pattern-matrix specialization checks nested constructor payloads, not just tags.
-    fn exhaustive(&self, types: &[Type], rows: &[Vec<Pattern>]) -> bool {
-        if types.is_empty() {
-            return !rows.is_empty();
-        }
-        let first = self.resolve(types[0].clone());
-        let rest = &types[1..];
-        match first {
-            Type::Nominal(name, args) => {
-                let Some(constructors) = self.variants.get(&name) else {
-                    return false;
-                };
-                constructors.iter().all(|constructor| {
-                    let info = &self.constructors[constructor];
-                    let vars: HashMap<_, _> = info
-                        .params
-                        .iter()
-                        .cloned()
-                        .zip(args.iter().cloned())
-                        .collect();
-                    let Ok(fields) = info
-                        .fields
-                        .iter()
-                        .map(|f| self.declared_type(f, &vars))
-                        .collect::<Result<Vec<_>, _>>()
-                    else {
-                        return false;
-                    };
-                    let mut next_types = fields.clone();
-                    next_types.extend_from_slice(rest);
-                    let mut next_rows = Vec::new();
-                    for row in rows {
-                        let head = &row[0];
-                        let mut prefix = match head {
-                            Pattern::Wildcard | Pattern::Binding(_) => {
-                                vec![Pattern::Wildcard; fields.len()]
-                            }
-                            Pattern::Constructor(n, ps) if n == constructor => ps.clone(),
-                            _ => continue,
-                        };
-                        prefix.extend_from_slice(&row[1..]);
-                        next_rows.push(prefix);
-                    }
-                    self.exhaustive(&next_types, &next_rows)
-                })
-            }
-            Type::Bool => [false, true].into_iter().all(|b| {
-                let next: Vec<_> = rows
-                    .iter()
-                    .filter(|row| {
-                        matches!(&row[0], Pattern::Wildcard | Pattern::Binding(_))
-                            || matches!(&row[0],Pattern::Bool(v) if *v==b)
-                    })
-                    .map(|row| row[1..].to_vec())
-                    .collect();
-                self.exhaustive(rest, &next)
-            }),
-            Type::Unit => {
-                let next: Vec<_> = rows
-                    .iter()
-                    .filter(|row| {
-                        matches!(
-                            &row[0],
-                            Pattern::Wildcard | Pattern::Binding(_) | Pattern::Unit
-                        )
-                    })
-                    .map(|row| row[1..].to_vec())
-                    .collect();
-                self.exhaustive(rest, &next)
-            }
-            Type::SystemBoxI32
-            | Type::SystemBytes
-            | Type::Int
-            | Type::Var(_)
-            | Type::CStr
-            | Type::CU8
-            | Type::CU32
-            | Type::CU64
-            | Type::CF32
-            | Type::CPointer { .. }
-            | Type::StaticStr
-            | Type::Bytes(_)
-            | Type::U8x16 => {
-                let next: Vec<_> = rows
-                    .iter()
-                    .filter(|row| matches!(&row[0], Pattern::Wildcard | Pattern::Binding(_)))
-                    .map(|row| row[1..].to_vec())
-                    .collect();
-                self.exhaustive(rest, &next)
             }
         }
     }
@@ -1414,7 +1493,8 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
     alloc::validate(program)?;
     let mut checker = Checker {
         allocation_types: program.allocation_types.clone(),
-        bindings: Vec::new(),
+        solver: solver::Solver::default(),
+        level: 0,
         functions: HashMap::new(),
         parameter_modes: HashMap::new(),
         next_local: 0,
@@ -1428,6 +1508,8 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         expression_types: HashMap::new(),
         field_info: HashMap::new(),
         record_info: HashMap::new(),
+        polymorphic_locals: HashMap::new(),
+        local_uses: HashMap::new(),
         has_owned: false,
     };
     program.native.validate()?;
@@ -1694,7 +1776,11 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             edges[i].push(*j);
         }
     }
+    // Retain only completed components' monomorphic free variables. Scanning
+    // all earlier generic signatures for each component would be quadratic.
+    let mut environment = HashSet::new();
     for group in graph::components(&edges) {
+        checker.level += 1;
         for &i in &group {
             let f = &program.functions[i];
             let params = f.params.iter().map(|_| checker.fresh()).collect();
@@ -1710,11 +1796,11 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         }
         for &i in &group {
             let f = &program.functions[i];
-            let signature = checker.functions[&f.name].clone();
+            let signature = checker.copy_function(&checker.functions[&f.name])?;
             for (param, ty) in f.params.iter().zip(&signature.params) {
                 if let Some(annotation) = &param.annotation {
                     let declared = checker.declared_type(annotation, &HashMap::new())?;
-                    checker.unify(ty.clone(), declared)?;
+                    checker.unify(checker.copy_type(ty)?, declared)?;
                 }
             }
             let mut locals = HashMap::new();
@@ -1726,6 +1812,7 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
                         quantified: Vec::new(),
                         ty,
                         mutable: param.mode == ParamMode::Inout,
+                        borrowed: param.mode != ParamMode::Value,
                         local_id,
                     },
                 );
@@ -1733,36 +1820,43 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             let body = checker.infer(&f.body, &mut locals)?;
             checker.unify(body, signature.result)?;
         }
+        checker.level -= 1;
         for &i in &group {
             let name = &program.functions[i].name;
-            let mut signature = checker.functions[name].clone();
+            let mut signature = checker.copy_function(&checker.functions[name])?;
             let mut free = HashSet::new();
             for ty in signature
                 .params
                 .iter()
                 .chain(std::iter::once(&signature.result))
             {
-                checker.free_type(ty.clone(), &mut free);
+                checker.free_type(ty, &mut free);
             }
-            free.retain(|id| {
-                !checker
-                    .pointer_types
-                    .iter()
-                    .any(|ty| checker.resolve(ty.clone()) == Type::Var(*id))
-            });
-            signature.quantified = free.into_iter().collect();
+            signature.quantified = checker.generalize(free, &environment)?;
             checker.functions.insert(name.clone(), signature);
+        }
+        for &i in &group {
+            let signature = &checker.functions[&program.functions[i].name];
+            let mut free = HashSet::new();
+            for ty in signature
+                .params
+                .iter()
+                .chain(std::iter::once(&signature.result))
+            {
+                checker.free_type(ty, &mut free);
+            }
+            free.retain(|id| signature.quantified.binary_search(id).is_err());
+            environment.extend(free);
         }
     }
     for (ty, patterns) in &checker.pending_matches {
-        let rows: Vec<_> = patterns.iter().cloned().map(|p| vec![p]).collect();
-        if !checker.exhaustive(std::slice::from_ref(ty), &rows) {
+        if !checker.exhaustive(ty, patterns)? {
             return Err("E-MATCH: non-exhaustive match".into());
         }
     }
     for ty in &checker.equality_types {
         if !matches!(
-            checker.resolve(ty.clone()),
+            checker.resolve(ty)?,
             Type::Int
                 | Type::Bool
                 | Type::Unit
@@ -1776,39 +1870,41 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         }
     }
     for ty in &checker.pointer_types {
-        if !matches!(checker.resolve(ty.clone()), Type::CPointer { .. }) {
+        if !matches!(checker.resolve(ty)?, Type::CPointer { .. }) {
             return Err("E-FFI: c_null/is_null requires a concrete raw C pointer context".into());
         }
     }
     let expression_types = checker
         .expression_types
         .iter()
-        .map(|(expr, ty)| (*expr, checker.resolve(ty.clone())))
-        .collect();
+        .map(|(expr, ty)| Ok((*expr, checker.resolve(ty)?)))
+        .collect::<Result<_, String>>()?;
     let functions = checker
         .functions
         .iter()
         .map(|(name, signature)| {
-            (
+            Ok((
                 name.clone(),
                 FunctionType {
                     quantified: signature.quantified.clone(),
                     params: signature
                         .params
                         .iter()
-                        .map(|t| checker.resolve(t.clone()))
-                        .collect(),
-                    result: checker.resolve(signature.result.clone()),
+                        .map(|t| checker.resolve(t))
+                        .collect::<Result<_, _>>()?,
+                    result: checker.resolve(&signature.result)?,
                 },
-            )
+            ))
         })
-        .collect();
+        .collect::<Result<_, String>>()?;
     let mut checked = CheckedProgram {
         program,
         functions,
         expression_types,
         field_info: checker.field_info,
         record_info: checker.record_info,
+        polymorphic_locals: checker.polymorphic_locals,
+        local_uses: checker.local_uses,
         has_owned: checker.has_owned,
         owned_type_cache: std::sync::Mutex::new(HashMap::new()),
         adt_variant_cache: std::sync::Mutex::new(HashMap::new()),

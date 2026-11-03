@@ -1,7 +1,10 @@
-//! C lowering for the provisional scalar, string and fixed-buffer IR.
+//! C lowering for the provisional scalar, string, vector and finite-value IR.
 mod adt;
 mod allocation;
-use std::collections::{BTreeSet, HashMap};
+mod copy_match;
+mod records;
+mod vectors;
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
 use super::{CallArg, ExprKind, ExprNode, LocalId, OwnerInit, Type, TypedMain};
@@ -52,6 +55,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         frame_cost: 0,
         program,
         owners: HashMap::new(),
+        borrowed_copy: HashSet::new(),
         adt_costs: super::adts::layout_costs(&program.adts)?,
     };
     emitter.out.push_str("_Static_assert(sizeof(int) <= 64 && sizeof(int32_t) <= 64 && sizeof(rl_unit) <= 64 && sizeof(rl_str) <= 64, \"unsupported typed value layout\");\n");
@@ -95,6 +99,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         writeln!(emitter.out, "static int32_t rl_bytes_{n}_get(rl_bytes_{n} b, int32_t i) {{ if (i < 0 || i >= {n}) rl_trap(); return b.data[i]; }}").unwrap();
         writeln!(emitter.out, "static rl_bytes_{n} rl_bytes_{n}_set(rl_bytes_{n} b, int32_t i, int32_t v) {{ if (i < 0 || i >= {n} || v < 0 || v > 255) rl_trap(); b.data[i] = (unsigned char)v; return b; }}").unwrap();
     }
+    emitter.out.push_str(vectors::RUNTIME);
     adt::layouts(&mut emitter);
     adt::printers(&mut emitter);
     for (id, function) in program.functions.iter().enumerate() {
@@ -111,14 +116,18 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
             if i > 0 {
                 emitter.out.push_str(", ");
             }
-            let param_type = owner_param_type(*ty, *mode);
+            let param_type = parameter_type(*ty, *mode);
             write!(emitter.out, "{param_type} rl_l_{}", local.0).unwrap();
         }
         emitter.out.push_str(");\n");
     }
     for (id, function) in program.functions.iter().enumerate() {
         emitter.owners.clear();
-        for (local, ty, _) in &function.params {
+        emitter.borrowed_copy.clear();
+        for (local, ty, mode) in &function.params {
+            if !ty.is_owner() && *mode != ParamMode::Value {
+                emitter.borrowed_copy.insert(*local);
+            }
             if ty.is_owner() {
                 emitter.owners.insert(*local, *ty);
             }
@@ -136,7 +145,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
             if i > 0 {
                 emitter.out.push_str(", ");
             }
-            let param_type = owner_param_type(*ty, *mode);
+            let param_type = parameter_type(*ty, *mode);
             write!(emitter.out, "{param_type} rl_l_{}", local.0).unwrap();
         }
         emitter.out.push_str(") {\nrl_enter();\n");
@@ -150,7 +159,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
             return Err("E-C-STACK: estimated typed frame exceeds 1 MiB limit".into());
         }
         for local in &function.param_cleanup {
-            emitter.drop_local(*local);
+            emitter.drop_cleanup(local);
         }
         writeln!(emitter.out, "rl_leave(); return {result};\n}}").unwrap();
     }
@@ -173,6 +182,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         Type::StaticStr => emitter
             .out
             .push_str("fwrite(result.data, 1, result.len, stdout); fputc('\\n', stdout);\n"),
+        Type::U8x16 => emitter.out.push_str("rl_print_vector(result); fputc('\\n', stdout);\n"),
         Type::Adt{id,..} => writeln!(emitter.out,"rl_print_adt_{id}(&result); fputc('\\n', stdout);").unwrap(),
         Type::OwnedI32 | Type::OwnedBytes => return Err("E-TYPED-OWNER: owner result cannot escape".into()),
         Type::Bytes(n) => writeln!(emitter.out, "fputs(\"bytes[\", stdout); for (size_t i = 0; i < {n}; ++i) {{ if (i) fputs(\", \", stdout); printf(\"%u\", (unsigned)result.data[i]); }} puts(\"]\");").unwrap(),
@@ -187,17 +197,19 @@ fn c_type(ty: Type) -> String {
         Type::Bool => "int".into(),
         Type::Unit => "rl_unit".into(),
         Type::StaticStr => "rl_str".into(),
+        Type::U8x16 => "rl_u8x16".into(),
         Type::Bytes(n) => format!("rl_bytes_{n}"),
         Type::OwnedI32 => "int32_t *".into(),
         Type::OwnedBytes => "rl_owned_bytes *".into(),
         Type::Adt { id, .. } => format!("rl_adt_{id}"),
     }
 }
-fn owner_param_type(ty: Type, mode: ParamMode) -> String {
-    if ty.is_owner() && mode == ParamMode::Read {
-        format!("const {}", c_type(ty))
-    } else {
-        c_type(ty)
+fn parameter_type(ty: Type, mode: ParamMode) -> String {
+    match mode {
+        ParamMode::Read if !ty.is_owner() => format!("const {} *", c_type(ty)),
+        ParamMode::Inout if !ty.is_owner() => format!("{} *", c_type(ty)),
+        ParamMode::Read => format!("const {}", c_type(ty)),
+        _ => c_type(ty),
     }
 }
 fn type_cost(ty: Type, costs: &[usize]) -> usize {
@@ -216,7 +228,25 @@ fn collect_type(ty: Type, output: &mut BTreeSet<usize>) {
 fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
     collect_type(expr.ty, output);
     match &expr.kind {
+        ExprKind::Vector(_, args) => {
+            for arg in args {
+                collect_expr(arg, output);
+            }
+        }
         ExprKind::TryAlloc { input, .. } => collect_expr(input, output),
+        ExprKind::CopyMatch { value, arms } => {
+            collect_expr(value, output);
+            for arm in arms {
+                collect_expr(&arm.body, output);
+            }
+        }
+        ExprKind::Record { fields, .. } => {
+            for (_, field) in fields {
+                collect_expr(field, output);
+            }
+        }
+        ExprKind::FieldAssign(_, value) => collect_expr(value, output),
+        ExprKind::FieldRead(_) => {}
         ExprKind::Constructor { fields, .. } => {
             for field in fields {
                 collect_expr(field, output);
@@ -248,7 +278,7 @@ fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
         ExprKind::OwnerRead(_) | ExprKind::OwnerBytesLen(_) | ExprKind::OwnerMove(_) => {}
         ExprKind::Call(_, args) => {
             for arg in args {
-                if let CallArg::Value(value) = arg {
+                if let CallArg::Value(value) | CallArg::ReadTemporary(value) = arg {
                     collect_expr(value, output);
                 }
             }
@@ -283,6 +313,10 @@ fn contains_owner(expr: &ExprNode) -> bool {
         return true;
     }
     match &expr.kind {
+        ExprKind::Vector(_, args) => args.iter().any(contains_owner),
+        ExprKind::CopyMatch { value, arms } => {
+            contains_owner(value) || arms.iter().any(|a| contains_owner(&a.body))
+        }
         ExprKind::Constructor { fields, .. } => fields.iter().any(contains_owner),
         ExprKind::Match { value, arms } => {
             contains_owner(value) || arms.iter().any(|a| contains_owner(&a.body))
@@ -294,8 +328,14 @@ fn contains_owner(expr: &ExprNode) -> bool {
         | ExprKind::OwnerBytesLen(_)
         | ExprKind::OwnerBytesGet(..)
         | ExprKind::OwnerBytesSet(..) => true,
+        ExprKind::Record { fields, .. } => fields.iter().any(|(_, field)| contains_owner(field)),
+        ExprKind::FieldAssign(_, value) => contains_owner(value),
         ExprKind::Call(_, args) => args.iter().any(|arg| match arg {
-            CallArg::Value(value) => contains_owner(value),
+            CallArg::Value(value) | CallArg::ReadTemporary(value) => contains_owner(value),
+            CallArg::ReadCopy(_)
+            | CallArg::InoutCopy(_)
+            | CallArg::ReadField(_)
+            | CallArg::InoutField(_) => false,
             CallArg::Move(_) | CallArg::ReadOwner(_) | CallArg::InoutOwner(_) => true,
         }),
         ExprKind::Let { value, body, .. }
@@ -319,9 +359,17 @@ struct Emitter<'a> {
     frame_cost: usize,
     program: &'a TypedMain,
     owners: HashMap<LocalId, Type>,
+    borrowed_copy: HashSet<LocalId>,
     adt_costs: Vec<usize>,
 }
 impl Emitter<'_> {
+    fn copy_place(&self, id: LocalId) -> String {
+        if self.borrowed_copy.contains(&id) {
+            format!("(*rl_l_{})", id.0)
+        } else {
+            format!("rl_l_{}", id.0)
+        }
+    }
     fn add_cost(&mut self, ty: Type) {
         self.frame_cost = self
             .frame_cost
@@ -337,11 +385,27 @@ impl Emitter<'_> {
         let ty = c_type(expr.ty);
         self.add_cost(expr.ty);
         match &expr.kind {
+            ExprKind::Vector(op, args) => self.vector(&result, &ty, *op, args),
+            ExprKind::Record { fields, .. } => self.record(&result, &ty, fields),
+            ExprKind::FieldRead(place) => {
+                let value = self.field_place(place);
+                writeln!(self.out, "{ty} {result} = {value};").unwrap();
+            }
+            ExprKind::FieldAssign(place, value) => {
+                let value = self.expr(value);
+                let place = self.field_place(place);
+                writeln!(
+                    self.out,
+                    "{place} = {value}; {ty} {result} = (rl_unit){{0}};"
+                )
+                .unwrap();
+            }
             ExprKind::TryAlloc {
                 kind,
                 input,
                 layout,
             } => self.try_allocation(&result, *kind, input, layout),
+            ExprKind::CopyMatch { value, arms } => self.match_copy(&result, &ty, value, arms),
             ExprKind::Constructor {
                 adt,
                 variant,
@@ -410,7 +474,10 @@ impl Emitter<'_> {
                 writeln!(self.out, "{ty} {result} = {};", i32::from(*value)).unwrap()
             }
             ExprKind::Unit => writeln!(self.out, "{ty} {result} = (rl_unit){{0}};").unwrap(),
-            ExprKind::Read(id) => writeln!(self.out, "{ty} {result} = rl_l_{};", id.0).unwrap(),
+            ExprKind::Read(id) => {
+                let place = self.copy_place(*id);
+                writeln!(self.out, "{ty} {result} = {place};").unwrap();
+            }
             ExprKind::Call(id, args) => {
                 let mut values = Vec::new();
                 for (arg, (_, arg_ty, mode)) in args.iter().zip(&self.program.functions[*id].params)
@@ -420,10 +487,34 @@ impl Emitter<'_> {
                             values.push(self.expr(arg));
                             self.add_cost(arg.ty);
                         }
+                        CallArg::ReadCopy(local) | CallArg::InoutCopy(local) => {
+                            let temporary = self.temp();
+                            self.add_cost(*arg_ty);
+                            let param_ty = parameter_type(*arg_ty, *mode);
+                            let place = self.copy_place(*local);
+                            writeln!(self.out, "{param_ty} {temporary} = &({place});").unwrap();
+                            values.push(temporary);
+                        }
+                        CallArg::ReadField(place) | CallArg::InoutField(place) => {
+                            let temporary = self.temp();
+                            self.add_cost(*arg_ty);
+                            let param_ty = parameter_type(*arg_ty, *mode);
+                            let place = self.field_place(place);
+                            writeln!(self.out, "{param_ty} {temporary} = &({place});").unwrap();
+                            values.push(temporary);
+                        }
+                        CallArg::ReadTemporary(value) => {
+                            let value = self.expr(value);
+                            let temporary = self.temp();
+                            self.add_cost(*arg_ty);
+                            let param_ty = parameter_type(*arg_ty, *mode);
+                            writeln!(self.out, "{param_ty} {temporary} = &{value};").unwrap();
+                            values.push(temporary);
+                        }
                         CallArg::ReadOwner(local) | CallArg::InoutOwner(local) => {
                             let temporary = self.temp();
                             self.add_cost(*arg_ty);
-                            let param_ty = owner_param_type(*arg_ty, *mode);
+                            let param_ty = parameter_type(*arg_ty, *mode);
                             writeln!(self.out, "{param_ty} {temporary} = rl_l_{};", local.0)
                                 .unwrap();
                             values.push(temporary);
@@ -505,7 +596,7 @@ impl Emitter<'_> {
                 }
                 let value = self.expr(body);
                 if let Some(id) = cleanup {
-                    self.drop_local(*id);
+                    self.drop_cleanup(id);
                 }
                 writeln!(self.out, "{ty} {result} = {value};").unwrap();
             }
@@ -565,10 +656,10 @@ impl Emitter<'_> {
             }
             ExprKind::Assign(id, value) => {
                 let value_temp = self.expr(value);
+                let place = self.copy_place(*id);
                 writeln!(
                     self.out,
-                    "rl_l_{} = {value_temp}; {ty} {result} = (rl_unit){{0}};",
-                    id.0
+                    "{place} = {value_temp}; {ty} {result} = (rl_unit){{0}};"
                 )
                 .unwrap();
             }

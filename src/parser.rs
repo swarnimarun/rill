@@ -4,30 +4,26 @@ use crate::ast::{
     Param, ParamMode, Pattern, Program, TypeDecl, TypeExpr, VariantDecl,
 };
 use crate::lexer::{lex, Kind, Token};
+use crate::syntax::{AstDeclaration, Builder, DiagnosticCode, Marker, SyntaxKind};
+use std::cell::Cell;
 
 pub fn parse(source: &str) -> Result<Program, String> {
-    Parser {
-        tokens: lex(source)?,
-        pos: 0,
-        depth: 0,
-        module_mode: false,
-        block_id: 0,
-    }
-    .program()
-    .map(|module| module.program)
+    Parser::new(lex(source)?, false, None)
+        .program()
+        .map(|m| m.program)
 }
 
 /// Parse module syntax without resolving imports or checking visibility.
-/// A successful parse does not make the module safe to compile.
 pub fn parse_module(source: &str) -> Result<ParsedModule, String> {
-    Parser {
-        tokens: lex(source)?,
-        pos: 0,
-        depth: 0,
-        module_mode: true,
-        block_id: 0,
-    }
-    .program()
+    Parser::new(lex(source)?, true, None).program()
+}
+
+pub(crate) fn source_tree(source: crate::source::SourceFile<'_>) -> crate::syntax::SyntaxTree<'_> {
+    let mut parser = Parser::new(source.clone().into_tokens(), true, Some(Builder::default()));
+    let module = parser
+        .program()
+        .expect("source recovery handles syntax failures");
+    parser.syntax.take().unwrap().build(source, module)
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -55,9 +51,54 @@ struct Parser {
     depth: usize,
     module_mode: bool,
     block_id: usize,
+    syntax: Option<Builder>,
+    failure: Cell<Option<(usize, DiagnosticCode)>>,
 }
 const MAX_DEPTH: usize = 64;
 impl Parser {
+    fn new(tokens: Vec<Token>, module_mode: bool, syntax: Option<Builder>) -> Self {
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+            module_mode,
+            block_id: 0,
+            syntax,
+            failure: Cell::new(None),
+        }
+    }
+    fn mark(&self) -> Option<Marker> {
+        self.syntax.as_ref().map(|s| s.mark(self.pos))
+    }
+    fn finish(
+        &mut self,
+        marker: Option<Marker>,
+        kind: SyntaxKind,
+    ) -> Option<crate::syntax::NodeId> {
+        marker.and_then(|m| self.syntax.as_mut().unwrap().finish(m, self.pos, kind))
+    }
+    fn node<T>(
+        &mut self,
+        kind: SyntaxKind,
+        parse: impl FnOnce(&mut Self) -> Result<T, String>,
+    ) -> Result<T, String> {
+        let marker = self.mark();
+        let result = parse(self);
+        self.finish(
+            marker,
+            if result.is_ok() {
+                kind
+            } else {
+                SyntaxKind::Error
+            },
+        );
+        result
+    }
+    fn error_at(&self, pos: usize, code: DiagnosticCode, message: String) -> String {
+        self.failure.set(Some((pos, code)));
+        message
+    }
+
     fn guarded<T>(&mut self, parse: fn(&mut Self) -> Result<T, String>) -> Result<T, String> {
         if self.depth >= MAX_DEPTH {
             return Err(self.error("E-PARSE-DEPTH: syntax nesting exceeds 64"));
@@ -79,7 +120,15 @@ impl Parser {
     }
     fn error(&self, message: &str) -> String {
         let t = &self.tokens[self.pos];
-        format!("{}:{}: {} (found {:?})", t.line, t.column, message, t.kind)
+        self.error_at(
+            self.pos,
+            if message.starts_with("E-PARSE-DEPTH:") {
+                DiagnosticCode::Depth
+            } else {
+                DiagnosticCode::Syntax
+            },
+            format!("{}:{}: {} (found {:?})", t.line, t.column, message, t.kind),
+        )
     }
     fn expect(&mut self, kind: Kind) -> Result<(), String> {
         if self.peek() == &kind {
@@ -90,6 +139,9 @@ impl Parser {
         }
     }
     fn name(&mut self) -> Result<String, String> {
+        self.node(SyntaxKind::Name, Self::name_syntax)
+    }
+    fn name_syntax(&mut self) -> Result<String, String> {
         if let Kind::Ident(s) = self.peek().clone() {
             self.take();
             Ok(s)
@@ -97,178 +149,306 @@ impl Parser {
             Err(self.error("expected identifier"))
         }
     }
-    fn program(mut self) -> Result<ParsedModule, String> {
-        let mut native = crate::c_import::Config::default();
-        let mut constants = Vec::new();
-        let mut types = Vec::new();
-        let mut externs = Vec::new();
-        let mut functions = Vec::new();
-        let mut exports = Vec::new();
-        loop {
-            if *self.peek() == Kind::At {
-                self.native_directive(&mut native)?;
-            } else if self.module_mode
-                && matches!(self.peek(), Kind::Ident(name) if name == "import")
+    fn program(&mut self) -> Result<ParsedModule, String> {
+        let mut module = ParsedModule {
+            program: Program {
+                native: crate::c_import::Config::default(),
+                constants: Vec::new(),
+                allocation_types: None,
+                types: Vec::new(),
+                externs: Vec::new(),
+                functions: Vec::new(),
+            },
+            exports: Vec::new(),
+        };
+        let mut declarations_started = false;
+        while *self.peek() != Kind::Eof {
+            let start = self.pos;
+            let marker = self.mark();
+            let kind = self.item_kind();
+            let lengths = (
+                module.program.native.includes.len(),
+                module.program.native.links.len(),
+                module.program.native.packages.len(),
+            );
+            match self.item(&mut module, &mut declarations_started) {
+                Ok(declaration) => {
+                    let node = self.finish(marker, kind);
+                    if let (Some(builder), Some(node), Some(declaration)) =
+                        (&mut self.syntax, node, declaration)
+                    {
+                        builder.map_declaration(declaration, node);
+                    }
+                }
+                Err(message) => {
+                    if self.syntax.is_none() {
+                        return Err(message);
+                    }
+                    // A failed native directive must not poison later validation.
+                    module.program.native.includes.truncate(lengths.0);
+                    module.program.native.links.truncate(lengths.1);
+                    module.program.native.packages.truncate(lengths.2);
+                    let (token, code) = self
+                        .failure
+                        .take()
+                        .unwrap_or((self.pos, DiagnosticCode::Syntax));
+                    self.syntax
+                        .as_mut()
+                        .unwrap()
+                        .diagnostic(token, code, message);
+                    self.syntax.as_mut().unwrap().rewind(marker.unwrap());
+                    self.recover_item(start, token);
+                    self.finish(marker, SyntaxKind::Error);
+                    if self.syntax.as_ref().unwrap().at_error_limit() && *self.peek() != Kind::Eof {
+                        let rest = self.mark();
+                        self.syntax.as_mut().unwrap().diagnostic(
+                            self.pos,
+                            DiagnosticCode::RecoveryLimit,
+                            "E-PARSE-RECOVERY-LIMIT: stopped after 63 syntax errors".into(),
+                        );
+                        self.pos = self.tokens.len() - 1;
+                        self.finish(rest, SyntaxKind::Error);
+                    }
+                }
+            }
+        }
+        Ok(module)
+    }
+    fn item_kind(&self) -> SyntaxKind {
+        let offset =
+            usize::from(self.module_mode && matches!(self.peek(), Kind::Ident(n) if n == "export"));
+        match &self.tokens[self.pos + offset].kind {
+            Kind::At => SyntaxKind::NativeDirective,
+            Kind::Ident(n) if n == "import" && self.module_mode => SyntaxKind::Import,
+            Kind::Type => SyntaxKind::TypeDeclaration,
+            Kind::Extern
+                if self
+                    .tokens
+                    .get(self.pos + offset + 1)
+                    .is_some_and(|t| t.kind == Kind::Const) =>
             {
+                SyntaxKind::ExternConstant
+            }
+            Kind::Extern => SyntaxKind::ExternFunction,
+            _ => SyntaxKind::Function,
+        }
+    }
+    fn item(
+        &mut self,
+        module: &mut ParsedModule,
+        declarations_started: &mut bool,
+    ) -> Result<Option<AstDeclaration>, String> {
+        let start = self.pos;
+        if !*declarations_started {
+            if *self.peek() == Kind::At {
+                self.native_directive(&mut module.program.native)?;
+                return Ok(None);
+            }
+            if self.module_mode && matches!(self.peek(), Kind::Ident(n) if n == "import") {
                 self.take();
                 self.name()?;
                 while *self.peek() == Kind::Dot {
                     self.take();
                     self.name()?;
                 }
-                if matches!(self.peek(), Kind::Ident(name) if name == "as") {
+                if matches!(self.peek(), Kind::Ident(n) if n == "as") {
                     self.take();
                     self.name()?;
                 }
                 self.expect(Kind::Semi)?;
-            } else {
-                break;
+                return Ok(None);
             }
         }
-        while *self.peek() != Kind::Eof {
-            if *self.peek() == Kind::At {
-                return Err(self.error("native directives must precede declarations"));
-            }
-            let exported =
-                self.module_mode && matches!(self.peek(), Kind::Ident(name) if name == "export");
-            if exported {
+        *declarations_started = true;
+        if *self.peek() == Kind::At {
+            return Err(self.error("native directives must precede declarations"));
+        }
+        let exported =
+            self.module_mode && matches!(self.peek(), Kind::Ident(name) if name == "export");
+        if exported {
+            self.take();
+        }
+        if *self.peek() == Kind::Extern {
+            if self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|token| token.kind == Kind::Const)
+            {
                 self.take();
-            }
-            if *self.peek() == Kind::Extern {
-                if self
-                    .tokens
-                    .get(self.pos + 1)
-                    .is_some_and(|token| token.kind == Kind::Const)
-                {
-                    self.take();
-                    self.take();
-                    let name = self.name()?;
-                    self.expect(Kind::Colon)?;
-                    let ty = self.extern_type()?;
-                    self.expect(Kind::Semi)?;
-                    if exported {
-                        exports.push(Export {
-                            name: name.clone(),
-                            kind: ExportKind::Constant,
-                        });
-                    }
-                    constants.push(ExternConst { name, ty });
-                } else {
-                    let declaration = self.extern_decl()?;
-                    if exported {
-                        exports.push(Export {
-                            name: declaration.name.clone(),
-                            kind: ExportKind::Function,
-                        });
-                    }
-                    externs.push(declaration);
-                }
-                continue;
-            }
-            if *self.peek() == Kind::Type {
-                let decl = self.type_decl()?;
-                if exported {
-                    exports.push(Export {
-                        name: decl.name.clone(),
-                        kind: ExportKind::Type,
-                    });
-                }
-                types.push(decl);
-                if *self.peek() == Kind::Semi {
-                    self.take();
-                }
-                continue;
-            }
-            if *self.peek() == Kind::Fn {
                 self.take();
                 let name = self.name()?;
-                let params = self.fn_params()?;
-                let body = self.block()?;
-                self.check_expr_depth(&body)?;
-                if *self.peek() == Kind::Semi {
-                    self.take();
-                }
+                self.expect(Kind::Colon)?;
+                let ty = self.extern_type()?;
+                self.expect(Kind::Semi)?;
                 if exported {
-                    exports.push(Export {
+                    module.exports.push(Export {
                         name: name.clone(),
+                        kind: ExportKind::Constant,
+                    });
+                }
+                module.program.constants.push(ExternConst { name, ty });
+            } else {
+                let declaration = self.extern_decl()?;
+                if exported {
+                    module.exports.push(Export {
+                        name: declaration.name.clone(),
                         kind: ExportKind::Function,
                     });
                 }
-                functions.push(Function { name, params, body });
-                continue;
+                module.program.externs.push(declaration);
             }
-            self.expect(Kind::Let)?;
-            let name = self.name()?;
-            let mut params = Vec::new();
-            while matches!(self.peek(), Kind::Ident(_) | Kind::LParen) {
-                if *self.peek() == Kind::LParen {
-                    self.take();
-                    let mode = match self.peek() {
-                        Kind::Inout => {
-                            self.take();
-                            ParamMode::Inout
-                        }
-                        Kind::Read => {
-                            self.take();
-                            ParamMode::Read
-                        }
-                        _ => ParamMode::Value,
-                    };
-                    let name = self.name()?;
-                    let annotation = if *self.peek() == Kind::Colon {
-                        self.take();
-                        Some(self.type_expr()?)
-                    } else {
-                        if mode == ParamMode::Value {
-                            return Err(self.error(
-                                "value parameter in parentheses requires a type annotation",
-                            ));
-                        }
-                        None
-                    };
-                    self.expect(Kind::RParen)?;
-                    params.push(Param {
-                        name,
-                        mode,
-                        annotation,
-                    });
+            return Ok(Some(
+                if self.tokens[if exported { start + 2 } else { start + 1 }].kind == Kind::Const {
+                    AstDeclaration::Constant(module.program.constants.len() - 1)
                 } else {
-                    params.push(Param {
-                        name: self.name()?,
-                        mode: ParamMode::Value,
-                        annotation: None,
-                    });
-                }
+                    AstDeclaration::ExternFunction(module.program.externs.len() - 1)
+                },
+            ));
+        }
+        if *self.peek() == Kind::Type {
+            let decl = self.type_decl()?;
+            if exported {
+                module.exports.push(Export {
+                    name: decl.name.clone(),
+                    kind: ExportKind::Type,
+                });
             }
-            self.expect(Kind::Equal)?;
-            let body = self.expr()?;
+            module.program.types.push(decl);
+            if *self.peek() == Kind::Semi {
+                self.take();
+            }
+            return Ok(Some(AstDeclaration::Type(module.program.types.len() - 1)));
+        }
+        if *self.peek() == Kind::Fn {
+            self.take();
+            let name = self.name()?;
+            let params = self.fn_params()?;
+            let body = self.block()?;
+            self.check_expr_depth(&body)?;
             if *self.peek() == Kind::Semi {
                 self.take();
             }
             if exported {
-                exports.push(Export {
+                module.exports.push(Export {
                     name: name.clone(),
                     kind: ExportKind::Function,
                 });
             }
-            functions.push(Function { name, params, body });
+            module
+                .program
+                .functions
+                .push(Function { name, params, body });
+            return Ok(Some(AstDeclaration::Function(
+                module.program.functions.len() - 1,
+            )));
         }
-        Ok(ParsedModule {
-            program: Program {
-                native,
-                constants,
-                allocation_types: None,
-                types,
-                externs,
-                functions,
-            },
-            exports,
-        })
+        self.expect(Kind::Let)?;
+        let name = self.name()?;
+        let mut params = Vec::new();
+        let parameters = self.mark();
+        while matches!(self.peek(), Kind::Ident(_) | Kind::LParen) {
+            let parameter = self.mark();
+            if *self.peek() == Kind::LParen {
+                self.take();
+                let mode = match self.peek() {
+                    Kind::Inout => {
+                        self.take();
+                        ParamMode::Inout
+                    }
+                    Kind::Read => {
+                        self.take();
+                        ParamMode::Read
+                    }
+                    _ => ParamMode::Value,
+                };
+                let name = self.name()?;
+                let annotation = if *self.peek() == Kind::Colon {
+                    self.take();
+                    Some(self.type_expr()?)
+                } else {
+                    if mode == ParamMode::Value {
+                        return Err(
+                            self.error("value parameter in parentheses requires a type annotation")
+                        );
+                    }
+                    None
+                };
+                self.expect(Kind::RParen)?;
+                params.push(Param {
+                    name,
+                    mode,
+                    annotation,
+                });
+            } else {
+                params.push(Param {
+                    name: self.name()?,
+                    mode: ParamMode::Value,
+                    annotation: None,
+                });
+            }
+            self.finish(parameter, SyntaxKind::Parameter);
+        }
+        self.finish(parameters, SyntaxKind::Parameters);
+        self.expect(Kind::Equal)?;
+        let body = self.expr()?;
+        if *self.peek() == Kind::Semi {
+            self.take();
+        }
+        if exported {
+            module.exports.push(Export {
+                name: name.clone(),
+                kind: ExportKind::Function,
+            });
+        }
+        module
+            .program
+            .functions
+            .push(Function { name, params, body });
+        Ok(Some(AstDeclaration::Function(
+            module.program.functions.len() - 1,
+        )))
+    }
+    // Recovery is tooling-only. Delimiters give ordinary boundaries. A later
+    // line at the item's indentation may recover an unambiguous declaration
+    // even after its prefix was consumed by the failed production.
+    fn recover_item(&mut self, start: usize, failure: usize) {
+        let mut braces = 0usize;
+        let mut parens = 0usize;
+        for index in start..self.tokens.len() - 1 {
+            let token = &self.tokens[index];
+            let unambiguous = matches!(token.kind, Kind::Fn | Kind::Type | Kind::Extern)
+                || matches!(&token.kind, Kind::Ident(n) if n == "export");
+            let item = unambiguous
+                || matches!(token.kind, Kind::Let | Kind::At)
+                || matches!(&token.kind, Kind::Ident(n) if n == "import");
+            if index > start
+                && item
+                && ((index >= failure && braces == 0 && parens == 0)
+                    || (unambiguous
+                        && token.line > self.tokens[start].line
+                        && token.column <= self.tokens[start].column))
+            {
+                self.pos = index;
+                return;
+            }
+            match token.kind {
+                Kind::LBrace => braces += 1,
+                Kind::RBrace => braces = braces.saturating_sub(1),
+                Kind::LParen => parens += 1,
+                Kind::RParen => parens = parens.saturating_sub(1),
+                _ => {}
+            }
+        }
+        self.pos = self.tokens.len() - 1;
     }
     fn fn_params(&mut self) -> Result<Vec<Param>, String> {
+        self.node(SyntaxKind::Parameters, Self::fn_params_syntax)
+    }
+    fn fn_params_syntax(&mut self) -> Result<Vec<Param>, String> {
         self.expect(Kind::LParen)?;
         let mut params = Vec::new();
         while *self.peek() != Kind::RParen {
+            let parameter = self.mark();
             let mode = match self.peek() {
                 Kind::Read => {
                     self.take();
@@ -292,6 +472,7 @@ impl Parser {
                 mode,
                 annotation,
             });
+            self.finish(parameter, SyntaxKind::Parameter);
             if *self.peek() != Kind::Comma {
                 break;
             }
@@ -301,6 +482,9 @@ impl Parser {
         Ok(params)
     }
     fn block(&mut self) -> Result<Expr, String> {
+        self.node(SyntaxKind::Block, Self::block_syntax)
+    }
+    fn block_syntax(&mut self) -> Result<Expr, String> {
         if *self.peek() != Kind::LBrace {
             return Err(self.error("expected '{' to start block"));
         }
@@ -319,6 +503,7 @@ impl Parser {
         if *self.peek() == Kind::Eof {
             return Err(self.error("expected '}' to close block"));
         }
+        let marker = self.mark();
         if *self.peek() == Kind::Let {
             self.take();
             let mutable = if *self.peek() == Kind::Mut {
@@ -334,6 +519,7 @@ impl Parser {
                 return Err(self.error("expected ';' after local binding"));
             }
             self.take();
+            self.finish(marker, SyntaxKind::LocalBinding);
             let body = self.guarded(Self::block_body)?;
             return Ok(if mutable {
                 Expr::LetMut(name, Box::new(value), Box::new(body))
@@ -354,6 +540,7 @@ impl Parser {
             );
         }
         self.take();
+        self.finish(marker, SyntaxKind::ExpressionStatement);
         // '$' is excluded from source identifiers, so this binding cannot shadow user code.
         let name = format!("$block{}", self.block_id);
         self.block_id += 1;
@@ -386,14 +573,17 @@ impl Parser {
         self.expect(Kind::Extern)?;
         self.expect(Kind::Fn)?;
         let name = self.name()?;
+        let parameters = self.mark();
         self.expect(Kind::LParen)?;
         let mut params = Vec::new();
         if *self.peek() != Kind::RParen {
             loop {
+                let parameter = self.mark();
                 let name = self.name()?;
                 self.expect(Kind::Colon)?;
                 let ty = self.extern_type()?;
                 params.push(ExternParam { name, ty });
+                self.finish(parameter, SyntaxKind::Parameter);
                 if *self.peek() != Kind::Comma {
                     break;
                 }
@@ -401,6 +591,7 @@ impl Parser {
             }
         }
         self.expect(Kind::RParen)?;
+        self.finish(parameters, SyntaxKind::Parameters);
         self.expect(Kind::ThinArrow)?;
         let result = self.extern_type()?;
         self.expect(Kind::Semi)?;
@@ -411,6 +602,9 @@ impl Parser {
         })
     }
     fn extern_type(&mut self) -> Result<ExternType, String> {
+        self.node(SyntaxKind::ForeignType, Self::extern_type_syntax)
+    }
+    fn extern_type_syntax(&mut self) -> Result<ExternType, String> {
         let start = self.pos;
         let name = self.name()?;
         match name.as_str() {
@@ -433,9 +627,13 @@ impl Parser {
             }
             _ => {
                 let token = &self.tokens[start];
-                Err(format!(
-                    "{}:{}: E-FFI: unsupported foreign type {name:?}",
-                    token.line, token.column
+                Err(self.error_at(
+                    start,
+                    DiagnosticCode::ForeignType,
+                    format!(
+                        "{}:{}: E-FFI: unsupported foreign type {name:?}",
+                        token.line, token.column
+                    ),
                 ))
             }
         }
@@ -446,9 +644,13 @@ impl Parser {
         let name = self.name()?;
         if !matches!(name.as_str(), "include" | "link" | "pkg_config") {
             let token = &self.tokens[directive_start];
-            return Err(format!(
-                "{}:{}: unknown native directive @{name}",
-                token.line, token.column
+            return Err(self.error_at(
+                directive_start,
+                DiagnosticCode::NativeDirective,
+                format!(
+                    "{}:{}: unknown native directive @{name}",
+                    token.line, token.column
+                ),
             ));
         }
         self.expect(Kind::LParen)?;
@@ -470,7 +672,11 @@ impl Parser {
         }
         native.validate().map_err(|message| {
             let token = &self.tokens[start];
-            format!("{}:{}: {message}", token.line, token.column)
+            self.error_at(
+                start,
+                DiagnosticCode::NativeDirective,
+                format!("{}:{}: {message}", token.line, token.column),
+            )
         })
     }
     fn type_decl(&mut self) -> Result<TypeDecl, String> {
@@ -478,6 +684,7 @@ impl Parser {
         let name = self.name()?;
         let mut params = Vec::new();
         if *self.peek() == Kind::Lt {
+            let parameters = self.mark();
             self.take();
             loop {
                 params.push(self.name()?);
@@ -487,6 +694,7 @@ impl Parser {
                 self.take();
             }
             self.expect(Kind::Gt)?;
+            self.finish(parameters, SyntaxKind::TypeParameters);
         }
         self.expect(Kind::Equal)?;
         if *self.peek() == Kind::LBrace {
@@ -494,6 +702,7 @@ impl Parser {
             let mut names = Vec::new();
             let mut fields = Vec::new();
             while *self.peek() != Kind::RBrace {
+                let field = self.mark();
                 names.push(self.name()?);
                 self.expect(Kind::Colon)?;
                 fields.push(self.type_expr()?);
@@ -502,6 +711,7 @@ impl Parser {
                 } else if *self.peek() != Kind::RBrace {
                     return Err(self.error("expected semicolon between record fields"));
                 }
+                self.finish(field, SyntaxKind::RecordField);
             }
             self.expect(Kind::RBrace)?;
             return Ok(TypeDecl {
@@ -516,6 +726,7 @@ impl Parser {
         }
         let mut variants = Vec::new();
         loop {
+            let variant = self.mark();
             let name = self.name()?;
             let mut fields = Vec::new();
             if *self.peek() == Kind::LParen {
@@ -532,6 +743,7 @@ impl Parser {
                 self.expect(Kind::RParen)?;
             }
             variants.push(VariantDecl { name, fields });
+            self.finish(variant, SyntaxKind::Variant);
             if *self.peek() != Kind::Pipe {
                 break;
             }
@@ -545,6 +757,9 @@ impl Parser {
         })
     }
     fn type_expr(&mut self) -> Result<TypeExpr, String> {
+        self.node(SyntaxKind::TypeExpression, Self::type_expr_syntax)
+    }
+    fn type_expr_syntax(&mut self) -> Result<TypeExpr, String> {
         self.guarded(Self::type_expr_inner)
     }
     fn type_expr_inner(&mut self) -> Result<TypeExpr, String> {
@@ -565,7 +780,14 @@ impl Parser {
         Ok(TypeExpr { name, args })
     }
     fn expr(&mut self) -> Result<Expr, String> {
-        let expr = self.guarded(Self::expr_inner)?;
+        let kind = match self.peek() {
+            Kind::While => SyntaxKind::WhileExpression,
+            Kind::Match => SyntaxKind::MatchExpression,
+            Kind::Let => SyntaxKind::LetExpression,
+            Kind::If => SyntaxKind::IfExpression,
+            _ => SyntaxKind::Expression,
+        };
+        let expr = self.node(kind, |p| p.guarded(Self::expr_inner))?;
         self.check_expr_depth(&expr)?;
         Ok(expr)
     }
@@ -593,10 +815,12 @@ impl Parser {
                 }
                 let mut arms = Vec::new();
                 loop {
+                    let arm = self.mark();
                     let pattern = self.pattern()?;
                     self.expect(Kind::Arrow)?;
                     let body = self.expr()?;
                     arms.push(MatchArm { pattern, body });
+                    self.finish(arm, SyntaxKind::MatchArm);
                     if *self.peek() != Kind::Pipe {
                         break;
                     }
@@ -639,16 +863,19 @@ impl Parser {
                 Ok(Expr::If(Box::new(cond), Box::new(yes), Box::new(no)))
             }
             _ => {
+                let marker = self.mark();
                 let left = self.binary(0)?;
                 if *self.peek() == Kind::Assign {
                     self.take();
-                    match left {
+                    let result = match left {
                         Expr::Var(name) => Ok(Expr::Assign(name, Box::new(self.expr()?))),
                         Expr::Field(root, field) => {
                             Ok(Expr::FieldAssign(root, field, Box::new(self.expr()?)))
                         }
                         _ => Err(self.error("assignment target must be a local name or field")),
-                    }
+                    };
+                    self.finish(marker, SyntaxKind::AssignmentExpression);
+                    result
                 } else {
                     Ok(left)
                 }
@@ -656,6 +883,9 @@ impl Parser {
         }
     }
     fn pattern(&mut self) -> Result<Pattern, String> {
+        self.node(SyntaxKind::Pattern, Self::pattern_syntax)
+    }
+    fn pattern_syntax(&mut self) -> Result<Pattern, String> {
         self.guarded(Self::pattern_inner)
     }
     fn pattern_inner(&mut self) -> Result<Pattern, String> {
@@ -706,6 +936,7 @@ impl Parser {
         }
     }
     fn binary(&mut self, min: u8) -> Result<Expr, String> {
+        let marker = self.mark();
         let mut left = self.atom()?;
         let mut operators = 0;
         loop {
@@ -735,11 +966,34 @@ impl Parser {
             self.take();
             let right = self.binary(precedence + 1)?;
             left = Expr::Binary(op, Box::new(left), Box::new(right));
+            self.finish(marker, SyntaxKind::BinaryExpression);
         }
         Ok(left)
     }
     fn atom(&mut self) -> Result<Expr, String> {
-        self.guarded(Self::atom_inner)
+        let marker = self.mark();
+        let first = self.peek().clone();
+        let unit = first == Kind::LParen
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|t| t.kind == Kind::RParen);
+        let result = self.guarded(Self::atom_inner);
+        let kind = match (&first, &result) {
+            (_, Err(_)) => SyntaxKind::Error,
+            (Kind::LBrace, _) => return result,
+            (Kind::LParen, _) if unit => SyntaxKind::UnitExpression,
+            (Kind::LParen, _) => SyntaxKind::ParenthesizedExpression,
+            (Kind::Minus, _) => SyntaxKind::UnaryExpression,
+            (_, Ok(Expr::Call(..))) => SyntaxKind::CallExpression,
+            (_, Ok(Expr::Field(..))) => SyntaxKind::FieldExpression,
+            (_, Ok(Expr::Var(..))) => SyntaxKind::NameExpression,
+            (_, Ok(Expr::Record(..))) => SyntaxKind::RecordExpression,
+            (_, Ok(Expr::Move(..))) => SyntaxKind::MoveExpression,
+            _ => SyntaxKind::LiteralExpression,
+        };
+        self.finish(marker, kind);
+        result
     }
     fn atom_inner(&mut self) -> Result<Expr, String> {
         if *self.peek() == Kind::LBrace {
@@ -754,6 +1008,7 @@ impl Parser {
                 self.expect(Kind::LBrace)?;
                 let mut fields = Vec::new();
                 while *self.peek() != Kind::RBrace {
+                    let marker = self.mark();
                     let field = self.name()?;
                     self.expect(Kind::Equal)?;
                     fields.push((field, self.expr()?));
@@ -762,6 +1017,7 @@ impl Parser {
                     } else if *self.peek() != Kind::RBrace {
                         return Err(self.error("expected semicolon between record fields"));
                     }
+                    self.finish(marker, SyntaxKind::RecordField);
                 }
                 self.expect(Kind::RBrace)?;
                 Ok(Expr::Record(name, fields))
@@ -803,6 +1059,7 @@ impl Parser {
                 let mut args = Vec::new();
                 if *self.peek() != Kind::RParen {
                     loop {
+                        let argument = self.mark();
                         if *self.peek() == Kind::Inout {
                             self.take();
                             let root = self.name()?;
@@ -815,6 +1072,7 @@ impl Parser {
                         } else {
                             args.push(self.expr()?);
                         }
+                        self.finish(argument, SyntaxKind::Argument);
                         if *self.peek() != Kind::Comma {
                             break;
                         }
@@ -835,9 +1093,13 @@ impl Parser {
             }
             other => {
                 let token = &self.tokens[start];
-                Err(format!(
-                    "{}:{}: expected expression (found {other:?})",
-                    token.line, token.column
+                Err(self.error_at(
+                    start,
+                    DiagnosticCode::Syntax,
+                    format!(
+                        "{}:{}: expected expression (found {other:?})",
+                        token.line, token.column
+                    ),
                 ))
             }
         }

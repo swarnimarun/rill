@@ -1,0 +1,245 @@
+//! Bounded, explicitly selected declaration import. No header text is parsed here.
+use super::Config;
+use std::collections::HashSet;
+use std::ffi::{OsStr, OsString};
+use std::io::Write;
+use std::path::Path;
+use std::sync::atomic::{AtomicU64, Ordering};
+
+#[cfg(feature = "c-import")]
+mod clang;
+
+#[derive(Clone, Debug, Default)]
+pub struct Selection {
+    pub native: Config,
+    pub functions: Vec<String>,
+    pub constants: Vec<String>,
+    pub c_args: Vec<OsString>,
+    /// Optional Clang builtin-header directory. Not a target/sysroot override.
+    pub resource_dir: Option<std::path::PathBuf>,
+}
+
+impl Selection {
+    fn validate(&self) -> Result<(), String> {
+        self.native.validate()?;
+        if self.native.includes.is_empty() {
+            return Err("E-C-IMPORT: import-c requires at least one --header".into());
+        }
+        let count = self.functions.len() + self.constants.len();
+        if count == 0 || count > 256 {
+            return Err("E-C-IMPORT: select between 1 and 256 functions/constants".into());
+        }
+        let mut names = HashSet::new();
+        for name in self.functions.iter().chain(&self.constants) {
+            if !identifier(name) || name.len() > 256 {
+                return Err(format!("E-C-IMPORT: invalid selected identifier {name:?}"));
+            }
+            if !names.insert(name) {
+                return Err(format!("E-C-IMPORT: duplicate selection {name}"));
+            }
+        }
+        Ok(())
+    }
+}
+
+pub(super) fn identifier(name: &str) -> bool {
+    let mut bytes = name.bytes();
+    bytes
+        .next()
+        .is_some_and(|b| b.is_ascii_alphabetic() || b == b'_')
+        && bytes.all(|b| b.is_ascii_alphanumeric() || b == b'_')
+}
+
+/// Generate and validate everything before returning output to the caller.
+/// Neither this API nor the CLI publishes a partial module on failure.
+/// This library API runs libclang and external tools in the caller process
+/// without a hard timeout. The Unix CLI uses a separate supervised worker.
+pub fn generate(selection: &Selection, compiler: &OsStr, zig_cc: bool) -> Result<String, String> {
+    selection.validate()?;
+    #[cfg(not(feature = "c-import"))]
+    {
+        let _ = (compiler, zig_cc);
+        Err("E-C-IMPORT: import-c requires a build with --features c-import and libclang 12 or newer".into())
+    }
+    #[cfg(feature = "c-import")]
+    {
+        let resolved = selection.native.resolve()?;
+        let mut flags = resolved.cflags;
+        flags.extend(selection.c_args.iter().cloned());
+        validate_flags(&flags)?;
+        let imported = clang::extract(selection, &flags)?;
+        let program = crate::modules::compile::check_binding_source(&imported.module)
+            .map_err(|e| format!("E-C-IMPORT: generated binding module: {e}"))?;
+        let mut c = crate::backend::emit(&program)?;
+        c.push_str(&imported.assertions);
+        super::validate_c(&c, compiler, zig_cc, &flags)?;
+        Ok(imported.module)
+    }
+}
+
+/// Accept only target/preprocessing options whose effect is shared by both
+/// frontends. In particular -E, -S, -o, response files and extra source inputs
+/// must never turn the final semantic check into preprocessing or another job.
+#[cfg(feature = "c-import")]
+fn validate_flags(flags: &[OsString]) -> Result<(), String> {
+    if flags.len() > 1024 {
+        return Err("E-C-IMPORT: too many C arguments (maximum 1024)".into());
+    }
+    let mut args = flags.iter();
+    while let Some(arg) = args.next() {
+        let Some(text) = arg.to_str() else {
+            return Err(
+                "E-C-IMPORT: a C option must be UTF-8 (path operands may be non-UTF-8)".into(),
+            );
+        };
+        if [
+            "-I",
+            "-D",
+            "-U",
+            "-isystem",
+            "-iquote",
+            "-idirafter",
+            "-include",
+            "-imacros",
+            "-isysroot",
+            "--sysroot",
+            "-target",
+            "--target",
+            "-arch",
+        ]
+        .contains(&text)
+        {
+            let operand = args
+                .next()
+                .ok_or_else(|| format!("E-C-IMPORT: missing operand for {text}"))?;
+            if operand.is_empty() {
+                return Err(format!("E-C-IMPORT: empty operand for {text}"));
+            }
+        } else if [
+            "-m32",
+            "-m64",
+            "-fshort-wchar",
+            "-fshort-enums",
+            "-fsigned-char",
+            "-funsigned-char",
+            "-fms-extensions",
+            "-nostdinc",
+            "-pthread",
+            "-std=c11",
+        ]
+        .contains(&text)
+            || [
+                "-I",
+                "-D",
+                "-U",
+                "--sysroot=",
+                "--target=",
+                "-march=",
+                "-mcpu=",
+                "-mabi=",
+                "-mfpu=",
+                "-mfloat-abi=",
+                "-resource-dir=",
+            ]
+            .iter()
+            .any(|prefix| text.starts_with(prefix) && text.len() > prefix.len())
+        {
+            // Preserved verbatim and in order, not interpreted by a shell.
+        } else {
+            return Err(format!("E-C-IMPORT: unsupported import C argument {arg:?}; only documented target/preprocessing flags are accepted"));
+        }
+    }
+    Ok(())
+}
+
+/// Publish in the destination directory after validation. A failed write/rename
+/// leaves an existing destination untouched and cleans up the temporary file.
+pub fn write_atomic(path: &Path, module: &str) -> Result<(), String> {
+    static NEXT: AtomicU64 = AtomicU64::new(0);
+    struct Temporary(std::path::PathBuf);
+    impl Drop for Temporary {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_file(&self.0);
+        }
+    }
+    let parent = path
+        .parent()
+        .filter(|p| !p.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let (temporary, mut file) = loop {
+        let candidate = parent.join(format!(
+            ".rill-import-{}-{}.tmp",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        match std::fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .open(&candidate)
+        {
+            Ok(file) => break (Temporary(candidate), file),
+            Err(e) if e.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(e) => {
+                return Err(format!(
+                    "E-C-IMPORT: cannot prepare output {}: {e}",
+                    path.display()
+                ))
+            }
+        }
+    };
+    file.write_all(module.as_bytes())
+        .and_then(|()| file.sync_all())
+        .map_err(|e| format!("E-C-IMPORT: cannot write output {}: {e}", path.display()))?;
+    drop(file);
+    std::fs::rename(&temporary.0, path)
+        .map_err(|e| format!("E-C-IMPORT: cannot publish output {}: {e}", path.display()))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    #[test]
+    fn selections_are_bounded_and_unique() {
+        let mut s = Selection {
+            native: Config {
+                includes: vec!["api.h".into()],
+                ..Config::default()
+            },
+            ..Selection::default()
+        };
+        assert!(s.validate().is_err());
+        s.functions.push("add".into());
+        assert!(s.validate().is_ok());
+        s.constants.push("add".into());
+        assert!(s.validate().is_err());
+        s.constants = vec!["FLAG);\n#error injected".into()];
+        assert!(s.validate().is_err());
+    }
+    #[cfg(feature = "c-import")]
+    #[test]
+    fn check_mode_cannot_be_overridden() {
+        for flag in [
+            "-E",
+            "-S",
+            "-c",
+            "-o",
+            "-x",
+            "-xc++",
+            "-std=c++17",
+            "--",
+            "@args",
+            "extra.c",
+            "-Xclang",
+            "-Wp,-P",
+        ] {
+            assert!(validate_flags(&[flag.into()]).is_err(), "{flag}");
+        }
+        assert!(validate_flags(&[
+            "-I".into(),
+            "a path with spaces".into(),
+            "-DVALUE=2".into(),
+            "--target=aarch64-linux-gnu".into()
+        ])
+        .is_ok());
+    }
+}

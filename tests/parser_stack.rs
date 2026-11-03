@@ -37,6 +37,13 @@ fn deep_input_reports_error_without_process_abort() {
             for source in inputs {
                 let err = rill::parser::parse(&source).unwrap_err();
                 assert!(err.contains("E-PARSE-DEPTH"), "{err}");
+                let tree = rill::syntax::SyntaxTree::parse(&source);
+                assert_eq!(tree.reconstruct(), source);
+                assert!(tree.parsed_module().is_none());
+                assert_eq!(
+                    tree.diagnostics()[0].code,
+                    rill::syntax::DiagnosticCode::Depth
+                );
             }
             assert!(rill::parser::parse("let main = (1 + 2) * 3").is_ok());
         })

@@ -132,6 +132,8 @@ fn match_coverage_payload_cleanup_and_scope_are_validated() {
 #[test]
 fn inline_layout_cost_rejects_exponential_expansion() {
     let mut types = vec![AdtType {
+        origin: super::AdtOrigin::Source,
+        record_fields: None,
         name: "Leaf".into(),
         arguments: vec![],
         variants: vec![AdtVariant {
@@ -142,6 +144,8 @@ fn inline_layout_cost_rejects_exponential_expansion() {
     }];
     for id in 1..30 {
         types.push(AdtType {
+            origin: super::AdtOrigin::Source,
+            record_fields: None,
             name: format!("Tree{id}"),
             arguments: vec![],
             variants: vec![AdtVariant {
@@ -172,6 +176,8 @@ fn independent_nominal_layouts_emit_deterministically() {
 fn metadata_names_cannot_escape_c_string_literals() {
     let mut program = sample();
     program.adts.push(AdtType {
+        origin: super::AdtOrigin::Source,
+        record_fields: None,
         name: "Copy".into(),
         arguments: vec![],
         variants: vec![AdtVariant {
@@ -186,7 +192,7 @@ fn metadata_names_cannot_escape_c_string_literals() {
 }
 
 #[test]
-fn primitive_matches_keep_the_nonowner_backend_fallback() {
+fn primitive_matches_use_the_shared_typed_path() {
     for source in [
         "let main = match 42 { 42 => 7 | _ => 0 }",
         "let main = match true { true => 7 | false => 0 }",
@@ -195,9 +201,14 @@ fn primitive_matches_keep_the_nonowner_backend_fallback() {
         let program = crate::parser::parse(source).unwrap();
         let checked = crate::check::analyze(&program).unwrap();
         assert!(!checked.has_owned());
-        assert!(lower_main(&checked)
-            .unwrap_err()
-            .starts_with("E-TYPED-UNSUPPORTED:"));
-        assert!(crate::backend::emit(&program).is_ok());
+        let typed = lower_main(&checked).unwrap();
+        assert_eq!(
+            evaluate(&typed),
+            crate::interpreter::run_reference(&program)
+        );
+        assert_eq!(
+            crate::backend::emit(&program).unwrap(),
+            emit_c(&typed).unwrap()
+        );
     }
 }

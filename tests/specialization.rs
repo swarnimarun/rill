@@ -43,9 +43,15 @@ fn generic_calls_with_distinct_nested_instances_match_c() {
 }
 
 #[test]
-fn unresolved_polymorphic_local_is_rejected() {
+fn polymorphic_local_gets_a_concrete_type_at_its_use() {
     let source =
         "type Option<a> = None | Some(a)\nlet main = let n = None in if true then Some(1) else n";
-    let error = rill::compile(source).unwrap_err();
-    assert!(error.contains("local specialization"), "{error}");
+    let c = rill::compile(source).unwrap();
+    assert!(!c.contains("rl_value"));
+    assert_eq!(
+        interpreter::run(&parser::parse(source).unwrap())
+            .unwrap()
+            .to_string(),
+        "Some(1)"
+    );
 }

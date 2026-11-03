@@ -28,12 +28,15 @@ pub(super) fn verify(checked: &CheckedProgram<'_>) -> Result<(), String> {
         }
         for (param, ty) in function.params.iter().zip(&sig.params) {
             if param.mode != ParamMode::Value
-                && (!checked.type_is_owner(ty)? || matches!(ty, Type::Nominal(..)))
+                && checked.type_is_owner(ty)?
+                && matches!(ty, Type::Nominal(..))
             {
-                return Err("E-OWNED: borrowed scalar and enum parameters are unsupported in owner programs".into());
+                return Err(
+                    "E-OWNED: borrowed owner-bearing enum parameters are unsupported".into(),
+                );
             }
-            if checked.is_record_type(ty) {
-                return Err("E-OWNED: record parameters are unsupported in owner programs".into());
+            if checked.is_record_type(ty) && checked.type_is_owner(ty)? {
+                return Err("E-OWNED: owner-bearing record parameters are unsupported".into());
             }
         }
         if function.name == "main" && checked.type_is_owner(&sig.result)? {
@@ -163,10 +166,8 @@ fn scoped<F: FnOnce(&mut Scope) -> Result<(), String>>(
 }
 fn visit(checked: &CheckedProgram<'_>, expr: &Expr, scope: &mut Scope) -> Result<(), String> {
     if let Some(ty) = checked.expression_type(expr) {
-        if matches!(ty, Type::U8x16) || checked.is_record_type(ty) {
-            return Err(
-                "E-OWNED: vector and record values are unsupported in owner programs".into(),
-            );
+        if checked.is_record_type(ty) && checked.type_is_owner(ty)? {
+            return Err("E-OWNED: owner-bearing record values are unsupported".into());
         }
     }
     match expr {
@@ -287,7 +288,20 @@ fn visit(checked: &CheckedProgram<'_>, expr: &Expr, scope: &mut Scope) -> Result
             }
             if matches!(
                 name.as_str(),
-                "bytes_new" | "bytes_len" | "bytes_get" | "bytes_set" | "byte_len" | "byte_at"
+                "bytes_new"
+                    | "bytes_len"
+                    | "bytes_get"
+                    | "bytes_set"
+                    | "byte_len"
+                    | "byte_at"
+                    | "u8x16_load"
+                    | "u8x16_lane"
+                    | "u8x16_and"
+                    | "u8x16_or"
+                    | "u8x16_xor"
+                    | "u8x16_eq"
+                    | "u8x16_any"
+                    | "u8x16_all"
             ) {
                 for arg in args {
                     visit(checked, arg, scope)?;
@@ -372,8 +386,13 @@ fn visit(checked: &CheckedProgram<'_>, expr: &Expr, scope: &mut Scope) -> Result
             let ty = checked
                 .expression_type(scrutinee)
                 .ok_or("E-OWNED: missing match type")?;
-            let variants = checked.adt_variants(ty)?;
-            if checked.type_is_owner(ty)? && !matches!(scrutinee.as_ref(), Expr::Move(_)) {
+            let owned = checked.type_is_owner(ty)?;
+            let variants = if owned {
+                checked.adt_variants(ty)?
+            } else {
+                Vec::new()
+            };
+            if owned && !matches!(scrutinee.as_ref(), Expr::Move(_)) {
                 return Err("E-OWNED: an owner enum match must consume a direct moved root".into());
             }
             visit(checked, scrutinee, scope)?;
@@ -383,47 +402,62 @@ fn visit(checked: &CheckedProgram<'_>, expr: &Expr, scope: &mut Scope) -> Result
             for arm in arms {
                 let mut arm_scope = before.clone();
                 let mut shadows = Vec::new();
-                let bindings: Vec<(&String, bool)> = match &arm.pattern {
-                    Pattern::Constructor(name, patterns) => {
-                        let variant = variants
-                            .iter()
-                            .find(|variant| variant.name == *name)
-                            .ok_or("E-OWNED: pattern constructor belongs to another enum")?;
-                        if !seen.insert(name.clone()) || patterns.len() != variant.fields.len() {
-                            return Err(
+                let bindings: Vec<(&String, bool)> = if !owned {
+                    // Type checking has established that every subpattern is
+                    // Copy and the complete matrix is exhaustive. These arms
+                    // borrow no owner and introduce only ordinary bindings.
+                    let mut bindings = Vec::new();
+                    let mut pending = vec![&arm.pattern];
+                    while let Some(pattern) = pending.pop() {
+                        match pattern {
+                            Pattern::Binding(name) => bindings.push((name, false)),
+                            Pattern::Constructor(_, fields) => pending.extend(fields.iter().rev()),
+                            _ => {}
+                        }
+                    }
+                    bindings
+                } else {
+                    match &arm.pattern {
+                        Pattern::Constructor(name, patterns) => {
+                            let variant = variants
+                                .iter()
+                                .find(|variant| variant.name == *name)
+                                .ok_or("E-OWNED: pattern constructor belongs to another enum")?;
+                            if !seen.insert(name.clone()) || patterns.len() != variant.fields.len()
+                            {
+                                return Err(
                                 "E-OWNED: enum match constructor is duplicate or has wrong arity"
                                     .into(),
                             );
-                        }
-                        let mut bindings = Vec::new();
-                        for (pattern, field_ty) in patterns.iter().zip(&variant.fields) {
-                            match pattern {
+                            }
+                            let mut bindings = Vec::new();
+                            for (pattern, field_ty) in patterns.iter().zip(&variant.fields) {
+                                match pattern {
                                 Pattern::Wildcard => {},
                                 Pattern::Binding(name) => bindings.push((name, checked.type_is_owner(field_ty)?)),
                                 _ => return Err("E-OWNED: nested or literal enum field patterns are unsupported".into()),
                             }
+                            }
+                            bindings
                         }
-                        bindings
-                    }
-                    Pattern::Binding(name) => {
-                        if seen.len() == variants.len() {
-                            return Err("E-OWNED: unreachable whole-value pattern".into());
+                        Pattern::Binding(name) => {
+                            if seen.len() == variants.len() {
+                                return Err("E-OWNED: unreachable whole-value pattern".into());
+                            }
+                            seen.extend(variants.iter().map(|variant| variant.name.clone()));
+                            vec![(name, checked.type_is_owner(ty)?)]
                         }
-                        seen.extend(variants.iter().map(|variant| variant.name.clone()));
-                        vec![(name, checked.type_is_owner(ty)?)]
-                    }
-                    Pattern::Wildcard => {
-                        if seen.len() == variants.len() {
-                            return Err("E-OWNED: unreachable wildcard pattern".into());
+                        Pattern::Wildcard => {
+                            if seen.len() == variants.len() {
+                                return Err("E-OWNED: unreachable wildcard pattern".into());
+                            }
+                            seen.extend(variants.iter().map(|variant| variant.name.clone()));
+                            Vec::new()
                         }
-                        seen.extend(variants.iter().map(|variant| variant.name.clone()));
-                        Vec::new()
-                    }
-                    _ => {
-                        return Err(
+                        _ => return Err(
                             "E-OWNED: enum match requires constructor, binder or wildcard patterns"
                                 .into(),
-                        )
+                        ),
                     }
                 };
                 for (name, owned) in bindings {
@@ -456,7 +490,7 @@ fn visit(checked: &CheckedProgram<'_>, expr: &Expr, scope: &mut Scope) -> Result
                 }
                 joined = Some(arm_scope);
             }
-            if seen.len() != variants.len() {
+            if owned && seen.len() != variants.len() {
                 return Err("E-OWNED: enum match must name every constructor exactly once".into());
             }
             *scope = joined.ok_or("E-OWNED: empty enum match")?;

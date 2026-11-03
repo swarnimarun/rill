@@ -4,7 +4,7 @@ pub(super) fn construct(
     adt: usize,
     variant: usize,
     fields: &[ExprNode],
-    locals: &mut HashMap<LocalId, crate::interpreter::Value>,
+    locals: &mut CopyLocals,
     program: &TypedMain,
     depth: usize,
     state: &mut EvalState,
@@ -66,7 +66,7 @@ pub(super) fn construct_values(
 pub(super) fn match_value<T>(
     value: &ExprNode,
     arms: &[AdtArm],
-    locals: &mut HashMap<LocalId, crate::interpreter::Value>,
+    locals: &mut CopyLocals,
     program: &TypedMain,
     depth: usize,
     state: &mut EvalState,
@@ -122,16 +122,17 @@ pub(super) fn match_value<T>(
                 EvalArg::Value(value) => {
                     locals.insert(*id, value);
                 }
+                EvalArg::CopyLoan(_) => return Err("E-TYPED-ADT: borrowed field in value".into()),
             }
         }
     }
     let result = evaluate_body(&arm.body, locals, program, depth, state, owners);
     if result.is_ok() {
-        for id in &arm.cleanup {
+        for cleanup in &arm.cleanup {
             let owner = owners
-                .remove(id)
+                .remove(&cleanup.local)
                 .ok_or("E-TYPED-ADT: missing payload cleanup")?;
-            state.release(owner.id)?;
+            state.release_cleanup(owner, &cleanup.tree)?;
         }
     }
     for id in arm.fields.iter().flatten() {

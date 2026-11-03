@@ -11,6 +11,9 @@ pub(super) fn constructor(
     let definition = adts
         .get(adt)
         .ok_or("E-TYPED-ADT: invalid constructor type")?;
+    if definition.record_fields.is_some() {
+        return Err("E-TYPED-RECORD: positional record construction is unsupported".into());
+    }
     let variant = definition
         .variants
         .get(variant)
@@ -40,6 +43,9 @@ pub(super) fn match_value(
         return Err("E-TYPED-ADT: match requires nominal value".into());
     };
     let definition = &adts[id];
+    if definition.record_fields.is_some() {
+        return Err("E-TYPED-RECORD: positional record matching is unsupported".into());
+    }
 
     let mut seen = HashSet::new();
     let mut result = None;
@@ -79,9 +85,10 @@ pub(super) fn match_value(
                             id,
                             ty,
                             mutable: false,
-                            available: true,
+                            initialization: Initialization::full(ty, adts)?,
                             loaned: false,
                             shared: 0,
+                            field_loans: Vec::new(),
                             mode: ParamMode::Value,
                         },
                     );
@@ -97,15 +104,17 @@ pub(super) fn match_value(
             return Err("E-TYPED-ADT: inconsistent arm result".into());
         }
         result = Some(ty);
-        let expected: Vec<_> = arm
-            .fields
-            .iter()
-            .zip(&field_types)
-            .rev()
-            .filter_map(|(id, ty)| {
-                id.filter(|id| ty.is_owner() && branch.get(id).is_some_and(|l| l.available))
-            })
-            .collect();
+        let mut expected = Vec::new();
+        for (id, ty) in arm.fields.iter().zip(&field_types).rev() {
+            if let Some(id) = id {
+                if ty.is_owner() {
+                    let local = branch.get(id).ok_or("E-TYPED-ADT: missing payload state")?;
+                    if let Some(entry) = local.initialization.cleanup_entry(*id, *ty, adts)? {
+                        expected.push(entry);
+                    }
+                }
+            }
+        }
         if arm.cleanup != expected {
             return Err("E-TYPED-ADT: invalid payload cleanup".into());
         }

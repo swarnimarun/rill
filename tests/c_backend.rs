@@ -149,8 +149,12 @@ fn arguments_are_emitted_in_source_order() {
         ],
     };
     let c = backend::emit(&p).unwrap();
-    let first = c.find("rl_make(0, INT32_C(11))").unwrap();
-    let second = c.find("rl_make(0, INT32_C(22))").unwrap();
+    let checked = rill::check::analyze(&p).unwrap();
+    let typed = rill::typed::lower_main(&checked).unwrap();
+    assert_eq!(c, rill::typed::emit_c(&typed).unwrap());
+    assert_eq!(interpreter::run(&p), interpreter::run_reference(&p));
+    let first = c.find("INT32_C(11)").unwrap();
+    let second = c.find("INT32_C(22)").unwrap();
     assert!(first < second);
     compare(&p);
 }

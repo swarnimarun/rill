@@ -60,7 +60,8 @@ fn typed_primitive_c_matches_checked_interpreters() {
         let program = rill::parser::parse(source).unwrap();
         let checked = rill::check::analyze(&program).unwrap();
         let typed = rill::typed::lower_main(&checked).unwrap();
-        let expected = rill::interpreter::run(&program);
+        let expected = rill::interpreter::run_reference(&program);
+        assert_eq!(rill::interpreter::run(&program), expected, "{source}");
         assert_eq!(rill::typed::evaluate(&typed), expected, "{source}");
         let c = rill::typed::emit_c(&typed).unwrap();
         assert_eq!(rill::backend::emit(&program).unwrap(), c, "{source}");
@@ -105,7 +106,7 @@ fn typed_primitive_c_matches_checked_interpreters() {
 
 #[test]
 fn unsupported_typed_program_uses_existing_backend() {
-    let program = rill::parser::parse("let id x = x\nlet main = id(42)").unwrap();
+    let program = rill::parser::parse("fn main() { let marker = u32(0); 42 }").unwrap();
     let checked = rill::check::analyze(&program).unwrap();
     assert!(rill::typed::lower_main(&checked)
         .unwrap_err()

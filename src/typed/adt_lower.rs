@@ -6,9 +6,10 @@ impl Lower<'_, '_> {
             b.get(name).is_some_and(|r| {
                 r.id == l.id
                     && r.ty == l.ty
-                    && r.available == l.available
+                    && r.initialization == l.initialization
                     && r.loaned == l.loaned
                     && r.shared == l.shared
+                    && r.field_loans == l.field_loans
             })
         })
     }
@@ -84,9 +85,10 @@ impl Lower<'_, '_> {
                                 id: local,
                                 ty: *ty,
                                 mutable: false,
-                                available: true,
+                                initialization: Initialization::full(*ty, &self.registry.types)?,
                                 loaned: false,
                                 shared: 0,
+                                field_loans: Vec::new(),
                                 mode: ParamMode::Value,
                             },
                         );
@@ -107,19 +109,26 @@ impl Lower<'_, '_> {
                 }
             }
             let body = self.expr(&arm.body)?;
-            let cleanup = bindings
-                .iter()
-                .rev()
-                .filter_map(|(id, name, ty)| {
-                    (ty.is_owner()
-                        && name.as_ref().is_none_or(|name| {
-                            self.locals
-                                .get(name)
-                                .is_some_and(|l| l.id == *id && l.available)
-                        }))
-                    .then_some(*id)
-                })
-                .collect();
+            let mut cleanup = Vec::new();
+            for (id, name, ty) in bindings.iter().rev() {
+                if ty.is_owner() {
+                    let initialization = if let Some(name) = name {
+                        self.locals
+                            .get(name)
+                            .filter(|local| local.id == *id)
+                            .ok_or("E-TYPED-ADT: lost payload state")?
+                            .initialization
+                            .clone()
+                    } else {
+                        Initialization::full(*ty, &self.registry.types)?
+                    };
+                    if let Some(entry) =
+                        initialization.cleanup_entry(*id, *ty, &self.registry.types)?
+                    {
+                        cleanup.push(entry);
+                    }
+                }
+            }
             let after = outer
                 .iter()
                 .map(|(name, old)| {
@@ -127,8 +136,8 @@ impl Lower<'_, '_> {
                         .locals
                         .get(name)
                         .filter(|l| l.id == old.id)
-                        .copied()
-                        .unwrap_or(*old);
+                        .cloned()
+                        .unwrap_or_else(|| old.clone());
                     (name.clone(), local)
                 })
                 .collect::<HashMap<_, _>>();

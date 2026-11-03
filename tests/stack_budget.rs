@@ -3,7 +3,9 @@ use std::{fs, process::Command};
 #[test]
 fn rejects_wide_inline_frame_before_c_compilation() {
     let mut source = String::from("type Pair<a> = Pair(a, a)\nlet main = ");
-    for i in 0..10 {
+    // Eleven compact layers exceed the conservative typed-frame bound.
+    // Ten layers fit now that scalar temporaries no longer use RL_CAP.
+    for i in 0..11 {
         let previous = if i == 0 {
             "0".to_string()
         } else {

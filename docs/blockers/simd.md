@@ -5,8 +5,13 @@ This is not automatic loop vectorization or completion of P10. The interpreter
 and default C output implement vector operations lane by lane. The C backend
 can explicitly select AArch64 NEON for AND, OR, XOR and lane-wise equality.
 The load, lane access, any/all reductions and value packing remain scalar.
-The vector helper copies bytes into and out of local arrays, so using NEON is
-not a performance guarantee.
+The checked typed path uses a 16-byte vector struct. Its NEON helper loads and
+stores those byte arrays; the uniform fallback additionally packs/unpacks its
+nodes. Neither representation establishes a performance guarantee. All eight
+existing operations now share independently checked operand/result signatures,
+source-order evaluation and compact typed execution, including generic/nominal
+values, root/field loans and restricted owner programs. No vector semantics
+are added by this migration.
 
 ## Operations and checks
 
@@ -51,7 +56,8 @@ and [GCC x86 built-ins](https://gcc.gnu.org/onlinedocs/gcc/x86-Built-in-Function
 
 ## Evidence collected
 
-On a host reporting Darwin `arm64`, Apple clang 17.0.0
+At an earlier uniform-backend checkpoint on a host reporting Darwin `arm64`,
+Apple clang 17.0.0
 (`clang-1700.6.4.2`) compiled and ran the dynamic-input fixture in
 `cargo test --test u8x16_neon`. The test compares all 16 lanes for AND, OR,
 XOR and equality with independently computed results in scalar and selected
@@ -60,7 +66,12 @@ The `-O2 -DRILL_SIMD_NEON=1 -S` output for the XOR fixture contained
 `eor.16b`. The test also removes the compiler's NEON macro to check that an
 explicit unsupported-target request fails for typed and fallback C output.
 Host hardware versus virtualization was not independently verified. This is
-not evidence for other compilers, targets or a performance improvement.
+not evidence for other compilers, targets or a performance improvement, and is
+not a fresh native-execution result for the new typed vector helper.
+
+The current typed migration was checked on x86_64 Linux with scalar execution
+and explicit unsupported-NEON-target rejection. AArch64 hardware/emulation was
+not available for a fresh NEON run. See the [typed-vector verification](../verification/2026-11-03-typed-vectors.md).
 
 ## Remaining evidence and work
 

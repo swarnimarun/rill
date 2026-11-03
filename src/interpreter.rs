@@ -80,10 +80,27 @@ impl fmt::Display for Value {
 
 pub fn run(program: &Program) -> Result<Value, String> {
     let checked = crate::check::analyze(program)?;
-    if checked.has_owned() {
-        let typed = crate::typed::lower_main(&checked)?;
-        return crate::typed::evaluate(&typed);
+    match crate::typed::lower_main(&checked) {
+        Ok(typed) => crate::typed::evaluate(&typed),
+        Err(error) if error.starts_with("E-TYPED-UNSUPPORTED:") && !checked.has_owned() => {
+            run_checked_reference(program)
+        }
+        Err(error) => Err(error),
     }
+}
+
+/// Independently evaluate the checked Copy subset from the source AST.
+/// This is a differential oracle during migration to the shared typed path;
+/// owner programs must never execute through a copying reference evaluator.
+pub fn run_reference(program: &Program) -> Result<Value, String> {
+    let checked = crate::check::analyze(program)?;
+    if checked.has_owned() {
+        return Err("E-REFERENCE: owner programs require the checked typed path".into());
+    }
+    run_checked_reference(program)
+}
+
+fn run_checked_reference(program: &Program) -> Result<Value, String> {
     let functions: HashMap<_, _> = program
         .functions
         .iter()

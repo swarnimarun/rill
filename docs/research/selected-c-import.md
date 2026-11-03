@@ -1,11 +1,12 @@
 # Selected C import investigation
 
-Status: preliminary design, paused before implementation. No importer command,
-new Cargo dependency or unsafe libclang binding is part of `v1`.
+Status: the historical checkpoint investigation is retained below; the resumed
+implementation decision appears at the end. Selected import now exists behind
+the optional `c-import` feature.
 
 The investigation recommends libclang's stable C API over parsing Clang's JSON
-AST dump. The final decision and dependency version remain for the resumed
-session. See [the continuation plan](../CONTINUATION_PLAN.md).
+AST dump. The resumed session chose this design and pinned the dependency
+version below. See [the continuation plan](../CONTINUATION_PLAN.md).
 
 ## Candidate designs
 
@@ -61,3 +62,67 @@ Validate every selection before publishing output. Reject unsupported or
 ambiguous declarations with the requested symbol and C source location. Test
 fixture imports independently of SDL, then generate the selected SDL3 binding
 module and run the existing real-library integration test.
+
+## Resumed implementation decision (3 November 2026)
+
+The first increment uses the stable libclang C API through `clang-sys` 1.8.1
+with runtime discovery, behind the optional `c-import` Cargo feature. A cloud
+probe found libclang 19 and GCC; the Clang executable and Rust toolchain were
+provisioned separately. Default builds do not load or link libclang.
+Clang JSON was rejected because its prototype strings would require a second
+C declarator parser. No handwritten ABI declarations or dynamic loader are
+introduced. Importing requires libclang 12 or newer and a compatible C11
+compiler; resources remain scoped to their translation unit.
+
+The bounded command selects named functions and integer/bool constants and
+emits an ordinary exported binding module. It compares canonical frontend
+types with target-configured stdint probes, not just widths. Pointer support
+preserves scalar or record-typedef identity and pointee constness. Unsupported
+signatures fail with the selection and source location. Object macros are
+preprocessed and typed by Clang; only frontend-foldable integer/bool constants
+are admitted, never function-like macros or runtime variables. The final
+selected C compiler checks exact constant types and values as well as the existing
+function ABI assertions before any output is published.
+
+Package flags and explicit C arguments are passed, in order, to both frontends.
+Generated modules do not persist arbitrary compiler flags or freeze an ABI:
+subsequent builds must use the same target, sysroot, defines and include paths.
+This is the existing native-module build contract, not an importer cache or a
+cross-target package format. The first increment's libclang API is in-process
+without a hard timeout. The subsequent CLI worker boundary below isolates it;
+full import cache identities remain later work.
+
+## CLI isolation continuation (3 November 2026)
+
+Keep structural libclang extraction and exact target checks unchanged, but run
+the complete CLI generation operation in a private same-executable subprocess.
+The library `generate` API remains explicitly in-process. Supervise package
+resolution and target C validation as well as libclang, so moving only parsing
+out of process does not leave the same CLI hanging in another tool.
+
+Use a small versioned, length-prefixed binary protocol with 1 MiB request/module
+bounds and raw Unix bytes for paths. It carries explicit selections, ordered
+flags, the selected compiler and resource path. No shell command construction,
+handwritten libclang ABI/loader, JSON AST or additional parser dependency is
+needed. The already-locked `libc` crate supplies Unix process/pipe interfaces as
+an optional direct dependency; default builds still require neither it nor
+libclang. The parent rechecks framing, UTF-8, expected dependencies/symbols and
+the shallow generated declaration shape before normal Rill module validation.
+Reject arbitrary functions/types before checking, because the general checker
+still has unbounded declaration-dependency traversals.
+
+Nonblocking pipes bound work per supervision turn as well as retained bytes.
+The parent polls an unreaped group leader with `waitid(WNOWAIT)`, kills the
+owned process group before reaping, and cleans a private temporary directory.
+The leader's reserved PID avoids a reused-group race. A signal guard handles
+SIGINT/TERM cancellation and clears inherited SIGCHLD auto-reaping while the
+worker is live. Malformed responses or complete output followed by failure do
+not authorize publication. The worker is the current executable, never a PATH
+or environment-selected replacement. Fault-injection workers exist only in
+internal tests.
+
+The boundary currently requires Unix. It is not a memory or security sandbox,
+and deliberately escaping descendants are not contained. A non-Unix CLI must
+fail explicitly until equivalent process-tree supervision is implemented.
+See [the precise limits](../c-interop.md#cli-worker-isolation-and-limits) and
+[verification evidence](../verification/2026-11-03-import-worker.md).

@@ -1,8 +1,36 @@
 # Continue the v1 checkpoint
 
 `v1` is an experimental implementation checkpoint, not a stable language
-release. Implementation was paused at the user's request after this checkpoint
-was prepared. Resume only when asked to continue.
+release. The original checkpoint was paused, then resumed at the user's
+request on 3 November 2026. The cloud continuation targets `v1-ernie`, leaving
+`v1` and the unrelated `main` lineage unchanged. See the
+[continuation plan](CONTINUATION_PLAN.md) and
+[cloud verification](verification/2026-11-03-selected-c-import.md) for the new
+selected-C-import increment and remaining work. The subsequent
+[CLI worker increment](verification/2026-11-03-import-worker.md) adds Unix
+timeout/cancellation, bounded IPC and process-group cleanup while keeping
+the library API in-process.
+
+The subsequent [typed-pattern increment](verification/2026-11-03-typed-copy-patterns.md)
+brings concrete Copy enums and primitive/nested patterns onto the shared checked
+typed interpreter/C path, including Copy matches inside restricted owner
+programs. The [generic-instance increment](verification/2026-11-03-typed-specialization.md)
+adds reachable concrete function specialization to that same path. The
+[root-loan increment](verification/2026-11-03-typed-copy-loans.md) adds shared
+and exclusive Copy root loans and computed read temporaries. The
+[Copy-record increment](verification/2026-11-03-typed-copy-records.md) adds
+compact finite record products, construction, field reads/assignment and
+whole-record root loans. The [field-loan increment](verification/2026-11-03-typed-field-loans.md)
+adds independently checked projected operands, prefix-overlap intervals and
+original-slot forwarding. The [Copy-vector increment](verification/2026-11-03-typed-vectors.md)
+migrates the eight existing `u8x16` operations, retaining scalar/opt-in NEON
+behavior and adding no vector semantics. The initialization/drop-tree foundation
+is present; accepted owner-record lowering still needs further work.
+The [local-value increment](verification/2026-11-03-typed-local-values.md) adds
+bounded capture-and-shape elaboration for eligible immutable schemes. Concrete
+leaves are evaluated once into private typed capture records; aliases share
+captures and each whole/field use has an exact concrete type. Unused phantom
+shapes need no default type. This does not broaden generalization or ownership.
 
 ## Open the checkpoint
 
@@ -20,8 +48,8 @@ an incremental patch on `main` or rewrite the other branch.
 
 Use a recent stable Rust toolchain and a C11 compiler available as `cc`. This
 checkpoint was exercised with Rust/Cargo 1.99.1, Apple Clang 17, Zig 0.17.0 and
-SDL3 3.4.18 on AArch64 macOS. Other hosts need their own verification. Cargo
-has no third-party crate dependencies. SDL3 development files and pkg-config
+SDL3 3.4.18 on AArch64 macOS. Other hosts need their own verification. The original checkpoint had no third-party crate dependencies; the optional
+`c-import` feature now uses a pinned runtime-loaded libclang binding. SDL3 development files and pkg-config
 are optional for ordinary examples, required for the real SDL3 integration.
 Zig is optional; writable Zig caches may need configuring in a cloud sandbox.
 
@@ -50,7 +78,9 @@ Source `@include`, `@link` and `@pkg_config` directives drive native checking,
 building and execution. Reusable binding modules export foreign functions and
 constants. The target C compiler verifies explicit signatures against headers;
 raw pointer lifetime, resource destruction and foreign effects remain the
-programmer's responsibility. Automatic declaration import is not implemented.
+programmer's responsibility. An optional `c-import` feature now imports explicitly selected declarations
+through libclang; see the [current interop workflow](c-interop.md#import-selected-declarations)
+and [cloud verification](verification/2026-11-03-selected-c-import.md).
 
 The [SDL3 game](../examples/sdl3-direct/README.md) imports its bindings from
 `sdl.rill` and calls the real system library without a C shim:
@@ -100,3 +130,23 @@ Use `plan` and `delegate` for phase implementation, `verify` before reporting
 success, and `handoff` when moving environments again, if those skills are
 available. The user requested GPT-6.1 Sol for delegated work. Preserve the
 project's Rust/C direction and record genuine blockers under `docs/blockers/`.
+
+## Reconstructed source-tree increment
+
+After cloud filesystem loss, the grammar-tree work was reconstructed from the
+restored baseline, not recovered from the missing old commit. Fresh checks are
+recorded in [grammar-tree verification](verification/2026-11-03-grammar-source-tree.md).
+The existing parser now records lossless grammar nodes and bounded top-level
+recovery with structured diagnostics. Declaration maps require an error-free
+parse. Resolved/IR mapping, finer recovery and P1 acceptance remain open.
+
+The subsequent reconstructed [AST origin pass](ast-source-origins.md) covers all
+parsed structural node families, including explicit block/unit/unary/record
+provenance. It is optional and cannot alter strict parse success. Typed/generated-
+code mappings still need separate work; module preservation follows below.
+
+The next [module origin increment](module-source-origins.md) adds an opt-in
+owned result for the exact flattened program, preserving structural origins
+through the existing resolver/rewriter and all compatible native contributors.
+Ordinary loading/checking and errors are unchanged. Typed/backend mapping and
+source-aware checker diagnostics remain open.

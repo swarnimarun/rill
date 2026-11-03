@@ -22,9 +22,15 @@ checks foreign effects, pointer lifetimes or library resource cleanup.
 
 `PLAN.md` sections 15 and 19 require more than this direct-call subset:
 
-- Import declarations automatically through a target-configured C frontend.
-  Expand supported types, calling conventions and target layout queries.
-  Do not equate `long` or `size_t` to a fixed Rill width.
+- Expand the optional libclang selected-declaration importer beyond the
+  current scalar/raw-pointer and integer/bool constant subset. Add aggregate
+  adapters, callbacks, calling conventions, target/package configuration
+  persistence, non-Unix worker supervision and full import cache identities.
+  The Unix CLI now isolates complete import generation with bounded IPC and
+  a cancellable deadline; the library API remains in-process, and neither is
+  a memory/security sandbox.
+  `long` and `size_t` are accepted only when their canonical C type matches a
+  supported target stdint type; matching width alone is insufficient.
 - Add an enforceable unsafe/effect boundary, including unknown foreign effects,
   allocation, blocking, pointer retention, ownership and thread requirements.
 - Support ABI adapters and checked layouts for by-value structs, event unions,

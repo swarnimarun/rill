@@ -1,4 +1,5 @@
 //! Lexer for the supported Rill subset.
+use crate::source::{Lexeme, LexemeKind, Position, SourceFile, Span};
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum Kind {
@@ -62,57 +63,93 @@ pub struct Token {
     pub column: usize,
 }
 
+/// The parser's historical significant-token API, using the same scanner as
+/// the lossless source representation.
 pub fn lex(source: &str) -> Result<Vec<Token>, String> {
-    let mut chars = source.chars().peekable();
-    let (mut line, mut column) = (1, 1);
-    let mut tokens = Vec::new();
-    while let Some(c) = chars.next() {
-        let (start_line, start_column) = (line, column);
-        column += 1;
-        if c == '\n' {
-            line += 1;
-            column = 1;
-            continue;
-        }
+    lex_lossless(source).map(SourceFile::into_tokens)
+}
+
+pub fn lex_lossless(source: &str) -> Result<SourceFile<'_>, String> {
+    lex_diagnostic(source).map_err(|error| error.message)
+}
+pub(crate) struct LexError {
+    pub span: Span,
+    pub message: String,
+}
+pub(crate) fn lex_diagnostic(source: &str) -> Result<SourceFile<'_>, LexError> {
+    let mut chars = Cursor::new(source);
+    let mut lexemes = Vec::new();
+    while chars.peek().is_some() {
+        let start = chars.position;
+        let (start_line, start_column) = (start.line, start.column);
+        let error = |end, message| LexError {
+            span: Span { start, end },
+            message,
+        };
+        let c = chars.next().unwrap();
         if c.is_whitespace() {
+            while chars.peek().is_some_and(|ch| ch.is_whitespace()) {
+                chars.next();
+            }
+            lexemes.push(Lexeme::new(
+                LexemeKind::Whitespace,
+                Span {
+                    start,
+                    end: chars.position,
+                },
+                source,
+            ));
             continue;
         }
         if c == '/' && chars.peek() == Some(&'/') {
-            for next in chars.by_ref() {
-                if next == '\n' {
-                    line += 1;
-                    column = 1;
-                    break;
-                }
-                column += 1;
+            chars.next();
+            while chars.peek().is_some_and(|ch| *ch != '\n') {
+                chars.next();
             }
+            lexemes.push(Lexeme::new(
+                LexemeKind::LineComment,
+                Span {
+                    start,
+                    end: chars.position,
+                },
+                source,
+            ));
             continue;
         }
         let kind = if c == '"' || (c == 'c' && chars.peek() == Some(&'"')) {
             let is_c = c == 'c';
             if is_c {
                 chars.next();
-                column += 1;
             }
             let mut value = String::new();
             loop {
-                let ch = chars
-                    .next()
-                    .ok_or_else(|| format!("{start_line}:{start_column}: unterminated string"))?;
-                column += 1;
+                let ch = chars.next().ok_or_else(|| {
+                    error(
+                        chars.position,
+                        format!("{start_line}:{start_column}: unterminated string"),
+                    )
+                })?;
                 match ch {
                     '"' => break,
                     '\n' | '\r' => {
-                        return Err(format!("{start_line}:{start_column}: newline in string"))
+                        return Err(error(
+                            chars.position,
+                            format!("{start_line}:{start_column}: newline in string"),
+                        ))
                     }
                     '\0' if is_c => {
-                        return Err(format!("{start_line}:{start_column}: NUL in C string"))
+                        return Err(error(
+                            chars.position,
+                            format!("{start_line}:{start_column}: NUL in C string"),
+                        ))
                     }
                     '\\' => {
                         let escaped = chars.next().ok_or_else(|| {
-                            format!("{start_line}:{start_column}: unterminated string escape")
+                            error(
+                                chars.position,
+                                format!("{start_line}:{start_column}: unterminated string escape"),
+                            )
                         })?;
-                        column += 1;
                         match escaped {
                             'n' => value.push('\n'),
                             'r' => value.push('\r'),
@@ -121,8 +158,11 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                             '\\' => value.push('\\'),
                             '"' => value.push('"'),
                             _ => {
-                                return Err(format!(
-                                    "{start_line}:{start_column}: unsupported string escape"
+                                return Err(error(
+                                    chars.position,
+                                    format!(
+                                        "{start_line}:{start_column}: unsupported string escape"
+                                    ),
                                 ))
                             }
                         }
@@ -142,7 +182,6 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 .is_some_and(|ch| ch.is_ascii_alphanumeric() || *ch == '_')
             {
                 s.push(chars.next().unwrap());
-                column += 1;
             }
             match s.as_str() {
                 "let" => Kind::Let,
@@ -170,16 +209,17 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
             let mut s = String::from(c);
             while chars.peek().is_some_and(|ch| ch.is_ascii_digit()) {
                 s.push(chars.next().unwrap());
-                column += 1;
             }
             Kind::Int(s.parse().map_err(|_| {
-                format!("{start_line}:{start_column}: integer literal out of i32 range")
+                error(
+                    chars.position,
+                    format!("{start_line}:{start_column}: integer literal out of i32 range"),
+                )
             })?)
         } else {
             let mut paired = |expected| {
                 if chars.peek() == Some(&expected) {
                     chars.next();
-                    column += 1;
                     true
                 } else {
                     false
@@ -214,22 +254,67 @@ pub fn lex(source: &str) -> Result<Vec<Token>, String> {
                 '|' if paired('|') => Kind::Or,
                 '|' => Kind::Pipe,
                 _ => {
-                    return Err(format!(
-                        "{start_line}:{start_column}: unexpected character {c:?}"
+                    return Err(error(
+                        chars.position,
+                        format!("{start_line}:{start_column}: unexpected character {c:?}"),
                     ))
                 }
             }
         };
-        tokens.push(Token {
-            kind,
-            line: start_line,
-            column: start_column,
-        });
+        lexemes.push(Lexeme::new(
+            LexemeKind::Token(kind),
+            Span {
+                start,
+                end: chars.position,
+            },
+            source,
+        ));
     }
-    tokens.push(Token {
-        kind: Kind::Eof,
-        line,
-        column,
-    });
-    Ok(tokens)
+    lexemes.push(Lexeme::new(
+        LexemeKind::Token(Kind::Eof),
+        Span {
+            start: chars.position,
+            end: chars.position,
+        },
+        source,
+    ));
+    Ok(SourceFile::new(source, lexemes))
+}
+
+struct Cursor<'s> {
+    chars: std::iter::Peekable<std::str::Chars<'s>>,
+    position: Position,
+}
+
+impl<'s> Cursor<'s> {
+    fn new(source: &'s str) -> Self {
+        Self {
+            chars: source.chars().peekable(),
+            position: Position {
+                byte: 0,
+                line: 1,
+                column: 1,
+            },
+        }
+    }
+
+    fn peek(&mut self) -> Option<&char> {
+        self.chars.peek()
+    }
+}
+
+impl Iterator for Cursor<'_> {
+    type Item = char;
+
+    fn next(&mut self) -> Option<char> {
+        let ch = self.chars.next()?;
+        self.position.byte += ch.len_utf8();
+        if ch == '\n' {
+            self.position.line += 1;
+            self.position.column = 1;
+        } else {
+            self.position.column += 1;
+        }
+        Some(ch)
+    }
 }

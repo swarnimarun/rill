@@ -1,6 +1,5 @@
 //! Concrete finite nominal layouts used by the affine typed path.
 use super::{AdtType, AdtVariant, Type};
-use crate::ast::Expr;
 use crate::check::{CheckedProgram, Type as SourceType};
 use std::collections::{HashMap, HashSet};
 
@@ -10,66 +9,51 @@ pub(super) struct Registry {
     active: HashSet<SourceType>,
 }
 impl Registry {
-    pub fn build(checked: &CheckedProgram<'_>) -> Result<Self, String> {
+    pub fn build(
+        checked: &CheckedProgram<'_>,
+        instances: &super::instances::Instances,
+    ) -> Result<Self, String> {
         let mut registry = Self {
             types: Vec::new(),
             ids: HashMap::new(),
             active: HashSet::new(),
         };
-        for function in &checked.program.functions {
-            let signature = &checked.functions[&function.name];
-            for ty in signature
+        for instance in &instances.list {
+            for ty in instance
                 .params
                 .iter()
-                .chain(std::iter::once(&signature.result))
+                .chain(std::iter::once(&instance.result))
             {
                 registry.register(checked, ty)?;
             }
         }
-        for function in &checked.program.functions {
-            let mut pending = vec![&function.body];
+        for instance in &instances.list {
+            let mut pending = vec![&checked.program.functions[instance.source].body];
             while let Some(expr) = pending.pop() {
-                if let Some(ty) = checked.expression_type(expr) {
-                    registry.register(checked, ty)?;
-                }
-                match expr {
-                    Expr::Binary(_, a, b)
-                    | Expr::Let(_, a, b)
-                    | Expr::LetMut(_, a, b)
-                    | Expr::While(a, b) => {
-                        pending.push(b);
-                        pending.push(a);
-                    }
-                    Expr::If(a, b, c) => {
-                        pending.push(c);
-                        pending.push(b);
-                        pending.push(a);
-                    }
-                    Expr::Assign(_, v) | Expr::FieldAssign(_, _, v) => pending.push(v),
-                    Expr::Call(_, args) => pending.extend(args.iter().rev()),
-                    Expr::Match(v, arms) => {
-                        for arm in arms.iter().rev() {
-                            pending.push(&arm.body);
-                        }
-                        pending.push(v);
-                    }
-                    Expr::Record(_, fields) => pending.extend(fields.iter().rev().map(|(_, v)| v)),
-                    _ => {}
-                }
+                let ty = super::instances::expression_type(checked, expr, &instance.substitution)?;
+                registry.register(checked, &ty)?;
+                super::instances::runtime_children(checked, expr, &mut pending);
             }
         }
         layout_costs(&registry.types)?;
         Ok(registry)
     }
-    fn register(&mut self, checked: &CheckedProgram<'_>, ty: &SourceType) -> Result<Type, String> {
+    pub(super) fn register(
+        &mut self,
+        checked: &CheckedProgram<'_>,
+        ty: &SourceType,
+    ) -> Result<Type, String> {
         if let Some(ty) = self.ids.get(ty) {
             return Ok(*ty);
         }
         if !matches!(ty, SourceType::Nominal(..)) {
             return super::primitive_type(ty);
         }
-        if checked.is_record_type(ty) {
-            return Err("E-TYPED-UNSUPPORTED: record in affine program".into());
+        if checked.is_record_type(ty) && checked.type_is_owner(ty)? {
+            return Err(
+                "E-TYPED-UNSUPPORTED: owned records require initialization and cleanup tracking"
+                    .into(),
+            );
         }
         if self.active.len() >= 128 || self.types.len() >= 1024 || !self.active.insert(ty.clone()) {
             return Err("E-TYPED-ADT: recursive or excessive nominal layout".into());
@@ -98,7 +82,15 @@ impl Registry {
             .flat_map(|v| &v.fields)
             .any(|t| t.is_owner());
         let id = self.types.len();
+        let record_fields = checked
+            .program
+            .types
+            .iter()
+            .find(|decl| decl.name == *name)
+            .and_then(|decl| decl.record_fields.clone());
         self.types.push(AdtType {
+            origin: super::AdtOrigin::Source,
+            record_fields,
             name: name.clone(),
             arguments,
             variants,
@@ -126,10 +118,12 @@ pub(super) fn verify(types: &[AdtType]) -> Result<(), String> {
     for (id, adt) in types.iter().enumerate() {
         if adt.name.is_empty()
             || adt.variants.is_empty()
-            || !identities.insert((adt.name.clone(), adt.arguments.clone()))
+            || !identities.insert((adt.origin, adt.name.clone(), adt.arguments.clone()))
         {
             return Err("E-TYPED-ADT: invalid nominal identity".into());
         }
+        super::records::verify_definition(adt)?;
+        super::local_values::verify_capture_definition(adt, types)?;
         let mut names = HashSet::new();
         let mut owned = false;
         for variant in &adt.variants {

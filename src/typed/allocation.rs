@@ -213,6 +213,8 @@ mod tests {
         // Deliberately permuted tags ensure no intrinsic depends on tag order.
         let types = vec![
             AdtType {
+                origin: super::AdtOrigin::Source,
+                record_fields: None,
                 name: c.error_name.clone(),
                 arguments: vec![],
                 owned: false,
@@ -232,6 +234,8 @@ mod tests {
                 ],
             },
             AdtType {
+                origin: super::AdtOrigin::Source,
+                record_fields: None,
                 name: c.result_name.clone(),
                 arguments: vec![
                     Type::OwnedI32,
@@ -294,7 +298,10 @@ mod tests {
                             ty: Type::Int,
                             kind: ExprKind::Int(0),
                         }),
-                        cleanup: Some(LocalId(0)),
+                        cleanup: Some(Cleanup {
+                            local: LocalId(0),
+                            tree: CleanupTree::DropWholeOwner,
+                        }),
                     },
                 },
             }],

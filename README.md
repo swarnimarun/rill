@@ -16,7 +16,9 @@ cargo run -- build examples/factorial.rill -o /tmp/factorial
 /tmp/factorial
 ```
 
-`run` uses the reference evaluator for pure Rill programs. Source native dependency
+`run` uses the checked typed evaluator for supported pure Rill
+programs. Other supported Copy programs use the checked reference evaluator
+while their typed lowering is implemented. Source native dependency
 directives select a compiled native run automatically; `run --native` or
 compiler/link arguments also select native execution.
 `build` invokes `cc` to compile C11 output.
@@ -32,6 +34,25 @@ cargo run -- build examples/factorial.rill -o /tmp/factorial --zig-cc --link-arg
 Arguments are passed directly to the compiler without shell parsing. `emit-c`
 writes the C source to standard output. The evaluator and built program print
 the result of the zero-argument `main` function followed by a newline.
+
+Conservative source formatting is available without loading dependencies:
+
+```sh
+cargo run -- fmt examples/blocks/main.rill
+cargo run -- fmt examples/blocks/main.rill --check
+```
+
+`fmt` writes validated output to stdout; `--check` exits unsuccessfully when
+formatting is needed. Neither mode edits the input. Tokens, literal spellings,
+comments, braces and semicolons are preserved. See the
+[source and formatting contract](docs/source-format.md) for the current limits.
+The opt-in `syntax::SyntaxTree` API exposes lossless grammar nodes, structured
+diagnostics and bounded tooling recovery. Erroneous trees expose no parsed AST;
+compiler commands and `fmt` retain strict rejection. Its optional
+[AST origin map](docs/ast-source-origins.md) provides validated structural paths
+and explicit origins for both source and parser-generated nodes. The optional
+[source-preserving module loader](docs/module-source-origins.md) retains owned
+snapshots and origins through resolution, renaming and native coalescing.
 
 The primary syntax uses functions, braces and semicolon-separated statements:
 
@@ -53,6 +74,20 @@ Function return annotations, local type annotations and `if` without `else`
 are not supported yet. Legacy `let name arg = expression`, `let ... in`,
 `if ... then ... else ...` and `while ... do ...` remain accepted for compatibility.
 
+Rank-one inference uses a private union-find equality solver with levels and an
+independent environment check for generalization. Immutable local lets generalize
+only eligible nonexpansive values; call, conditional and match results remain
+one monotype. Top-level functions retain rank-one polymorphism. See the
+[value restriction and migration examples](docs/decisions/0003-local-value-restriction.md)
+and [solver scope and verification](docs/verification/2026-11-03-type-solver.md).
+Eligible immutable local value schemes also share typed interpreter/C execution:
+[concrete captures and static shapes](docs/decisions/0004-local-value-shapes.md)
+retain one initializer evaluation and specialize each whole-value or field use
+at its exact type. Unused phantom shapes need no arbitrary default type;
+unconstrained real uses and weak monotypes can still lack a concrete layout.
+The [local-value example](examples/local-values/README.md) demonstrates immutable
+snapshots and independent whole-record/field instances.
+
 The subset includes signed 32-bit integers, booleans, unit, arithmetic,
 comparisons, short-circuit `&&` and `||`, generic algebraic types and exhaustive
 pattern matching. `//` starts a comment. Evaluation is left-to-right; integer
@@ -65,6 +100,11 @@ or C emission. Syntax and behavior may change as the plan is implemented.
 type Option<a> = None | Some(a)
 fn main() { match Some(42) { Some(x) => x | None => 0 } }
 ```
+
+Source exhaustiveness proofs have a deterministic 100,000-work-unit limit per
+match. Exceeding it reports `E-MATCH-COMPLEXITY`, rather than guessing whether
+cases are missing. Catch-all patterns do not enumerate their type's values.
+See the [coverage work policy](docs/verification/2026-11-03-exhaustiveness-reconstruction.md).
 
 Ordinary string literals are immutable UTF-8 with program lifetime.
 `byte_len(s)` returns the byte length and `byte_at(s, i)` returns a byte as
@@ -84,7 +124,10 @@ checked 16-byte window; `u8x16_lane(vector, index)` reads a
 checked lane as an `i32`. `u8x16_and`, `u8x16_or`, `u8x16_xor` and `u8x16_eq`
 operate lane by lane. Equality returns `0` or `255` in each lane; `u8x16_any`
 and `u8x16_all` treat a nonzero lane as true. Invalid windows or lane indices
-trap. See [examples/u8x16.rill](examples/u8x16.rill).
+trap. These values and all eight operations use the shared checked typed path,
+including concrete generic functions, enums, records and Copy root/field loans.
+C stores a vector in exactly sixteen bytes. Copy vectors can coexist with the
+restricted owner subset. See [examples/u8x16.rill](examples/u8x16.rill).
 
 Generated C defaults to portable scalar operations. `--simd neon` on
 `rill build` explicitly selects AArch64 NEON intrinsics for the four bitwise
@@ -128,9 +171,22 @@ last until the call returns. Computed expressions evaluate at their argument
 position; their temporary remains alive through the call. A bare local or
 field, even in parentheses, borrows that place.
 
+Root loans of scalars, static strings, fixed byte buffers, finite Copy enums
+and finite Copy records use the shared checked typed interpreter/C path,
+including concrete generic
+function instances. The IR independently checks modes, mutability and loan
+conflicts during later argument evaluation. Copy record field loans share this
+path, including inside restricted owner programs. No borrowed address can
+escape a call.
+
 Nominal records have named fields. Construction evaluates fields in the order
 written. Functions can annotate parameters when field access needs a known
-record type:
+record type. Finite Copy records use the shared checked path for construction,
+field reads and assignment, and root or field loans. Compact C structs
+have no enum tag; empty records use a legal dummy byte. Field assignment
+evaluates its right-hand side before updating the original root slot,
+preserving other fields and whole-record replacements. Unresolved locally
+polymorphic record layouts still need separate elaboration. For example:
 
 ```rill
 type Point = { x: i32; y: i32 }
@@ -146,10 +202,11 @@ An `inout p.x` argument borrows a field. Field paths may contain up to 16
 segments, such as `inout p.position.x`. A root overlaps every field, and a
 field overlaps its descendants; sibling fields can be borrowed independently.
 This subset has no escaping references, partial moves, or general borrow
-inference. The current implementation copies
-an `inout` field into a temporary and writes it back on normal return; the C
-backend may copy the containing record. Record fields currently use Copy
-semantics.
+inference. On the shared typed path, an explicit field loan retains the original
+slot and projection path; C passes the address of the compact struct field.
+Forwarding composes paths without holding a Rust cell borrow across a call.
+Value arguments and computed read temporaries remain independent snapshots.
+Record fields currently use Copy semantics.
 
 The hosted `system_box_i32_abort(value)` builtin is a restricted non-Copy
 allocation. Bind it directly to a local, read it with `box_read(owner)`, update
@@ -164,8 +221,9 @@ Finite enums, including concrete generic `Result` instances, can contain owners.
 Construct them with explicit moves, then consume them with `match move result`.
 Unconsumed payloads are freed in reverse field order when the selected arm ends.
 Owner-valued `if` and `match` expressions require all arms to leave enclosing
-owners in the same state. Borrowed non-owner or enum parameters, borrowed owner
-returns, owned records, foreign declarations and vectors remain unsupported
+owners in the same state. Borrowed Copy roots/fields and computed read
+temporaries are supported. Borrowed owner-bearing enum parameters, borrowed owner returns,
+owned records and foreign declarations remain unsupported
 in owner programs. See
 [owned allocation limits](docs/blockers/owned-allocation.md) and
 [the runnable examples](examples/owned/README.md).
@@ -220,9 +278,26 @@ This is an early module subset; see [module limitations](docs/blockers/modules.m
 For a bare `p.x`, a local `p` takes precedence over an import alias; a
 qualified call such as `p.f(...)` refers to the module alias.
 
-Constructor names begin with an uppercase letter. C output supports inline
-algebraic values and specializes generic calls with concrete types. Unresolved
-values and some polymorphic local bindings are rejected with `E-C-ADT`; see the
+Constructor names begin with an uppercase letter. Concrete finite enums use
+compact typed tagged unions in C, including nested and literal Copy patterns.
+Nullary enums store only a tag. These programs use
+the same independently checked typed representation for interpretation and C
+emission. Copy matches evaluate the scrutinee once and choose the first matching
+arm, including in restricted owner programs. Owner-bearing patterns still use
+the restricted consuming form described above.
+
+Reachable generic functions specialize to concrete typed functions, including
+recursive groups, generic enum results and distinct types at different calls.
+Instance identity includes both parameters and result, preserving phantom and
+return-only type arguments. Every source declaration is still checked, while
+only reachable bodies are instantiated. The implementation caps this worklist
+at 1024 concrete source-function instances and type nesting at 128, reporting a
+diagnostic if exceeded. Owner programs retain their monomorphic restrictions.
+Eligible immutable local schemes use concrete captures and statically known
+shapes, with separate exact instances for whole-value and field uses. The local
+elaborator permits 100,000 work units and 256 concrete capture leaves per
+function instance, with shape height capped at 128. Unresolved real uses and
+weak monotypes can still be rejected by C output with `E-C-ADT`; see the
 [C ADT layout blocker](docs/blockers/c-adt-layout.md).
 
 Native C programs declare dependencies and selected signatures explicitly:
@@ -247,7 +322,12 @@ and executes them. Rill checks inference and moves; the target C compiler
 checks signature compatibility. Header checking does not prove foreign pointer
 lifetimes, effects or resource cleanup. See [C interoperability](docs/c-interop.md)
 for supported exact types, raw pointers, compiler flags and manual linking.
-There is no automatic declaration import or effect/unsafe checker yet.
+Selected declaration import is available with the optional `c-import` feature;
+see [the importer workflow](docs/c-interop.md#import-selected-declarations).
+On Unix, the CLI uses an isolated worker with a 30-second default deadline
+(`--timeout-ms` overrides it), bounded IPC and cleanup on failure or cancellation.
+The library importer remains in-process; this is not a memory/security sandbox.
+There is no effect/unsafe checker yet.
 
 The [JSON syntax validator and bounded decimal and string serializers](examples/json/README.md)
 demonstrate static string and buffer operations.
@@ -259,8 +339,21 @@ The [raylib click challenge](examples/raylib-click/README.md) and
 [SDL3 collector](examples/sdl3/README.md) use small C shims for native graphics.
 Their build instructions require the corresponding development libraries.
 
+Inference bounds expanded public type materialization and copying. Excessive
+size, depth or cumulative work returns `E-TYPE-COMPLEXITY`, including compact
+generic programs whose inferred trees would grow exponentially. See the
+[resource policy](docs/verification/2026-11-03-type-materialization.md) for exact
+limits and scope. This is not a whole-compiler memory guarantee.
+
 Run the tests with `cargo test`.
 
 The [direct SDL3 click game](examples/sdl3-direct/README.md) calls SDL3 without
 a C shim. Its integration test builds and runs a short headless version against
 the real library when SDL3 development files are available.
+
+
+To reproduce actual headless SDL3 framebuffer captures of both games, see
+[`scripts/capture-sdl3.sh`](scripts/capture-sdl3.sh) and the
+[native SDL3 verification report](docs/verification/2026-11-03-sdl3-native.md).
+These captures use the real SDL software renderer; they do not simulate
+physical keyboard or mouse input.

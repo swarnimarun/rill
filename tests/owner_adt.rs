@@ -286,3 +286,34 @@ fn direct_box_moves_in_both_branches_transfer_once() {
         );
     }
 }
+
+#[test]
+fn copy_patterns_inside_owner_programs_preserve_moves_and_cleanup() {
+    for flag in ["true", "false"] {
+        traced(
+            &format!("fn main() {{ let first = system_box_i32_abort(1); let second = system_box_i32_abort(42); let result = match {flag} {{ true => move second | false => move second }}; box_read(result) }}"),
+            Some(42),
+            "A1\nA2\nF2\nF1\n",
+        );
+        traced(
+            &format!("type Option<a> = None | Some(a)\nfn main() {{ let owner = system_box_i32_abort(42); let input = Some(Some({flag})); let result = match input {{ Some(Some(true)) => move owner | Some(Some(false)) => move owner | Some(None) => move owner | None => move owner }}; box_read(result) }}"),
+            Some(42),
+            "A1\nF1\n",
+        );
+    }
+    traced(
+        "fn main() { let owner = system_box_i32_abort(40); let value = match 2 { owner => owner }; value + box_read(owner) }",
+        Some(42),
+        "A1\nF1\n",
+    );
+    traced(
+        "fn make(flag) { match flag { true => { let b = system_box_i32_abort(42); move b } | false => { let b = system_box_i32_abort(0); move b } } }\nfn main() { let b = make(true); box_read(b) }",
+        Some(42),
+        "A1\nF1\n",
+    );
+    traced(
+        "fn main() { let b = system_box_i32_abort(42); match 7 { _ => box_read(b) | 7 => { let skipped = system_box_i32_abort(0); box_read(skipped) } } }",
+        Some(42),
+        "A1\nF1\n",
+    );
+}

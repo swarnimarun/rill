@@ -16,9 +16,10 @@ Neither mode can be moved, returned, stored, passed to FFI, or dropped by the
 callee. Owned locals and value parameters may return directly or inside a
 finite enum, and consuming enum matches transfer owned payloads into arm
 bindings. Borrowed enum parameters and matching, recursive owner call graphs,
-generic functions, foreign declarations, vectors and escaping loans remain
-unsupported. Borrowed non-owner user-function parameters are also unsupported
-in owner programs.
+generic functions, foreign declarations and escaping loans remain unsupported.
+Copy scalar, string, buffer, vector, finite-enum and finite-record parameters can
+use checked root/field loans and computed read temporaries in owner programs;
+these loans do not transfer or duplicate any owned resource.
 
 Arguments evaluate left to right. A root loan begins at its argument and ends
 when the call returns. Multiple shared loans may overlap; an exclusive loan

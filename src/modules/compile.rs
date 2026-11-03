@@ -1,10 +1,13 @@
 //! Source-backed module resolution into the existing checked compiler path.
 //! The flattened names are internal and cannot occur in source identifiers.
+use super::provenance::{self, Contribution, Lowering, SourceId, SourceProgram, Trace};
 use super::resolve::{Declaration, Kind, Namespace, Resolver, Symbol, SymbolId};
 use super::{ModuleError, ModuleGraph};
 use crate::ast::{AllocationTypes, Expr, Pattern, Program, TypeExpr};
 use crate::check::Type;
 use crate::parser::{self, ExportKind, ParsedModule};
+use crate::source_map::{AstPath, AstStep};
+use crate::syntax::AstDeclaration;
 use std::collections::{BTreeMap, HashMap, HashSet};
 use std::path::Path;
 
@@ -80,7 +83,58 @@ pub fn load_program(entry: &Path) -> Result<Program, ModuleError> {
     lower(&super::load(entry)?)
 }
 
+/// Load/check through the same bounded loader and lowering pass, then preserve
+/// owned origins for the exact flattened program. Native ABI validation is still
+/// the driver's separate responsibility. Metadata errors use E-MODULE-SOURCE-MAP;
+/// ordinary load_program never constructs metadata and cannot fail for that reason.
+pub fn load_program_with_sources(entry: &Path) -> Result<SourceProgram, ModuleError> {
+    let graph = super::load(entry)?;
+    let mut trace = Trace::default();
+    let program = lower_traced(&graph, Some(&mut trace))?;
+    provenance::finish(graph, program, trace)
+}
+
+/// Validate generated bindings as an imported library, not an entry program.
+/// The synthetic entry is only a checking harness and is never published.
+/// This checks Rill syntax/types, not the target C ABI, and performs no I/O.
+#[cfg(feature = "c-import")]
+pub fn check_binding_source(source: &str) -> Result<Program, ModuleError> {
+    let entry = "import bindings; fn main() { 0 }";
+    let mut modules = BTreeMap::new();
+    for (name, text) in [("@entry", entry), ("bindings", source)] {
+        modules.insert(
+            name.to_owned(),
+            super::Module {
+                name: name.to_owned(),
+                path: format!("<{name}.rill>").into(),
+                source: text.to_owned(),
+                imports: if name == "@entry" {
+                    vec![super::Import {
+                        module: "bindings".into(),
+                        alias: "bindings".into(),
+                        line: 1,
+                        column: 1,
+                    }]
+                } else {
+                    vec![]
+                },
+            },
+        );
+    }
+    lower(&ModuleGraph {
+        root: ".".into(),
+        modules,
+    })
+}
+
 fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
+    lower_traced(graph, None)
+}
+
+fn lower_traced(
+    graph: &ModuleGraph,
+    mut trace: Option<&mut Trace>,
+) -> Result<Program, ModuleError> {
     let mut parsed = BTreeMap::<String, ParsedModule>::new();
     let mut catalogue = BTreeMap::new();
     for (module, source) in &graph.modules {
@@ -163,8 +217,9 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
     let mut constant_indices = HashMap::<String, usize>::new();
     // Resolve every foreign declaration by identity before rewriting any caller.
     // Raw C names are global, so only exactly matching ABI declarations coalesce.
-    for (module, unit) in &parsed {
-        for f in &unit.program.externs {
+    for (source_index, (module, unit)) in parsed.iter().enumerate() {
+        let source = SourceId(source_index);
+        for (original, f) in unit.program.externs.iter().enumerate() {
             crate::check::validate_extern_function(f).map_err(|e| err("E-MODULE-CHECK", e))?;
             let symbol = resolver.resolve(module, None, &f.name, Namespace::Value)?;
             foreign_names.insert(symbol.id, f.name.clone());
@@ -174,7 +229,7 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
                     format!("conflicting foreign declaration {}", f.name),
                 ));
             }
-            if let Some(&index) = function_indices.get(&f.name) {
+            let (index, contribution) = if let Some(&index) = function_indices.get(&f.name) {
                 let previous = &output.externs[index];
                 if previous.result != f.result
                     || previous
@@ -188,12 +243,24 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
                         format!("conflicting foreign signature {}", f.name),
                     ));
                 }
+                (index, Contribution::CoalescedNative)
             } else {
-                function_indices.insert(f.name.clone(), output.externs.len());
+                let index = output.externs.len();
+                function_indices.insert(f.name.clone(), index);
                 output.externs.push(f.clone());
+                (index, Contribution::Retained)
+            };
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.transfer(
+                    source,
+                    AstDeclaration::ExternFunction(original),
+                    AstDeclaration::ExternFunction(index),
+                    contribution,
+                    symbol,
+                );
             }
         }
-        for c in &unit.program.constants {
+        for (original, c) in unit.program.constants.iter().enumerate() {
             crate::check::validate_extern_constant(c).map_err(|e| err("E-MODULE-CHECK", e))?;
             let symbol = resolver.resolve(module, None, &c.name, Namespace::Value)?;
             foreign_names.insert(symbol.id, c.name.clone());
@@ -203,7 +270,7 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
                     format!("conflicting foreign declaration {}", c.name),
                 ));
             }
-            if let Some(&index) = constant_indices.get(&c.name) {
+            let (index, contribution) = if let Some(&index) = constant_indices.get(&c.name) {
                 let previous = &output.constants[index];
                 if previous.ty != c.ty {
                     return Err(err(
@@ -211,9 +278,21 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
                         format!("conflicting foreign signature {}", c.name),
                     ));
                 }
+                (index, Contribution::CoalescedNative)
             } else {
-                constant_indices.insert(c.name.clone(), output.constants.len());
+                let index = output.constants.len();
+                constant_indices.insert(c.name.clone(), index);
                 output.constants.push(c.clone());
+                (index, Contribution::Retained)
+            };
+            if let Some(trace) = trace.as_deref_mut() {
+                trace.transfer(
+                    source,
+                    AstDeclaration::Constant(original),
+                    AstDeclaration::Constant(index),
+                    contribution,
+                    symbol,
+                );
             }
         }
     }
@@ -228,23 +307,43 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
             }
         }
     }
-    for (module, unit) in &parsed {
+    for (source_index, (module, unit)) in parsed.iter().enumerate() {
         let mut rewrite = Rewrite {
             resolver: &resolver,
             module,
             locals: HashMap::new(),
             foreign_names: &foreign_names,
+            source: SourceId(source_index),
+            trace: trace.as_deref_mut(),
+            path: AstPath::root(AstDeclaration::Type(0)),
         };
-        for ty in &unit.program.types {
+        for (original, ty) in unit.program.types.iter().enumerate() {
             let mut ty = ty.clone();
-            let name = internal(resolver.resolve(module, None, &ty.name, Namespace::Type)?);
+            let symbol = resolver.resolve(module, None, &ty.name, Namespace::Type)?;
+            let name = internal(symbol);
+            let target = AstDeclaration::Type(output.types.len());
+            rewrite.declaration(AstDeclaration::Type(original), target, symbol);
             let params: HashSet<_> = ty.params.iter().cloned().collect();
-            for variant in &mut ty.variants {
-                variant.name =
-                    internal(resolver.resolve(module, None, &variant.name, Namespace::Value)?);
-                for field in &mut variant.fields {
-                    rewrite.ty(field, &params)?;
-                }
+            for (index, variant) in ty.variants.iter_mut().enumerate() {
+                let symbol = resolver.resolve(module, None, &variant.name, Namespace::Value)?;
+                variant.name = internal(symbol);
+                rewrite.at(AstStep::Variant(index), |rewrite| {
+                    if let Some(trace) = rewrite.trace.as_deref_mut() {
+                        trace.symbol(
+                            rewrite.source,
+                            rewrite.path.clone(),
+                            AstPath::root(target).child(AstStep::Variant(index)),
+                            symbol,
+                        );
+                    }
+                    rewrite.record(Lowering::ResolvedName(symbol.id));
+                    for (index, field) in variant.fields.iter_mut().enumerate() {
+                        rewrite.at(AstStep::FieldType(index), |rewrite| {
+                            rewrite.ty(field, &params)
+                        })?;
+                    }
+                    Ok(())
+                })?;
             }
             ty.name = name;
             output.types.push(ty);
@@ -261,7 +360,7 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
             .native
             .packages
             .extend(unit.program.native.packages.iter().cloned());
-        for function in &unit.program.functions {
+        for (original, function) in unit.program.functions.iter().enumerate() {
             let symbol = resolver.resolve(module, None, &function.name, Namespace::Value)?;
             let mut f = function.clone();
             f.name = if module == "@entry" && f.name == "main" {
@@ -269,18 +368,27 @@ fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
             } else {
                 internal(symbol)
             };
+            rewrite.declaration(
+                AstDeclaration::Function(original),
+                AstDeclaration::Function(output.functions.len()),
+                symbol,
+            );
             if symbol.exported {
                 exported_functions.push(f.name.clone());
             }
-            for p in &mut f.params {
+            for (index, p) in f.params.iter_mut().enumerate() {
                 if let Some(annotation) = &mut p.annotation {
-                    rewrite.ty(annotation, &HashSet::new())?;
+                    rewrite.at(AstStep::Parameter(index), |rewrite| {
+                        rewrite.at(AstStep::Annotation, |rewrite| {
+                            rewrite.ty(annotation, &HashSet::new())
+                        })
+                    })?;
                 }
             }
             for p in &f.params {
                 rewrite.push(&p.name);
             }
-            rewrite.expr(&mut f.body)?;
+            rewrite.at(AstStep::FunctionBody, |rewrite| rewrite.expr(&mut f.body))?;
             for p in &f.params {
                 rewrite.pop(&p.name);
             }
@@ -377,8 +485,37 @@ struct Rewrite<'a> {
     module: &'a str,
     locals: HashMap<String, usize>,
     foreign_names: &'a HashMap<SymbolId, String>,
+    source: SourceId,
+    trace: Option<&'a mut Trace>,
+    path: AstPath,
 }
 impl Rewrite<'_> {
+    fn declaration(&mut self, from: AstDeclaration, to: AstDeclaration, symbol: &Symbol) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            self.path = AstPath::root(from);
+            trace.transfer(self.source, from, to, Contribution::Retained, symbol);
+        }
+        self.record(Lowering::ResolvedName(symbol.id));
+    }
+    fn record(&mut self, change: Lowering) {
+        if let Some(trace) = self.trace.as_deref_mut() {
+            trace.change(self.source, self.path.clone(), change);
+        }
+    }
+    fn at<T>(
+        &mut self,
+        step: AstStep,
+        action: impl FnOnce(&mut Self) -> Result<T, ModuleError>,
+    ) -> Result<T, ModuleError> {
+        if self.trace.is_some() {
+            self.path.steps.push(step);
+        }
+        let result = action(self);
+        if self.trace.is_some() {
+            self.path.steps.pop();
+        }
+        result
+    }
     fn push(&mut self, name: &str) {
         *self.locals.entry(name.into()).or_default() += 1;
     }
@@ -403,21 +540,26 @@ impl Rewrite<'_> {
         }
         Ok(internal(s))
     }
-    fn ty(&self, ty: &mut TypeExpr, params: &HashSet<String>) -> Result<(), ModuleError> {
+    fn ty(&mut self, ty: &mut TypeExpr, params: &HashSet<String>) -> Result<(), ModuleError> {
         if matches!(ty.name.as_str(), "ptr" | "const_ptr") && !params.contains(&ty.name) {
             // Pointees name C types from headers, not declarations in a Rill module.
             // The checker validates their spelling and arity.
             return Ok(());
         }
         if !params.contains(&ty.name) && !primitive(&ty.name) {
-            ty.name = internal(self.symbol(&ty.name, Namespace::Type)?)
+            let symbol = self.symbol(&ty.name, Namespace::Type)?;
+            let id = symbol.id;
+            ty.name = internal(symbol);
+            self.record(Lowering::ResolvedName(id));
         }
-        for arg in &mut ty.args {
-            self.ty(arg, params)?
+        for (index, arg) in ty.args.iter_mut().enumerate() {
+            self.at(AstStep::TypeArgument(index), |rewrite| {
+                rewrite.ty(arg, params)
+            })?;
         }
         Ok(())
     }
-    fn pattern(&self, p: &mut Pattern, bindings: &mut Vec<String>) -> Result<(), ModuleError> {
+    fn pattern(&mut self, p: &mut Pattern, bindings: &mut Vec<String>) -> Result<(), ModuleError> {
         match p {
             Pattern::Binding(n) => bindings.push(n.clone()),
             Pattern::Constructor(n, args) => {
@@ -428,9 +570,13 @@ impl Rewrite<'_> {
                         format!("{}: {n} is not a constructor", self.module),
                     ));
                 }
+                let id = s.id;
                 *n = internal(s);
-                for p in args {
-                    self.pattern(p, bindings)?
+                self.record(Lowering::ResolvedName(id));
+                for (index, p) in args.iter_mut().enumerate() {
+                    self.at(AstStep::PatternField(index), |rewrite| {
+                        rewrite.pattern(p, bindings)
+                    })?;
                 }
             }
             _ => {}
@@ -454,7 +600,9 @@ impl Rewrite<'_> {
                         format!("{}: {name} is not a constant or constructor", self.module),
                     ));
                 }
+                let id = symbol.id;
                 *e = Expr::Var(self.value_name(&name)?);
+                self.record(Lowering::QualifiedValue(id));
                 return Ok(());
             }
         }
@@ -471,55 +619,71 @@ impl Rewrite<'_> {
                             ),
                         ));
                     }
+                    let id = s.id;
                     *n = self.value_name(n)?;
+                    self.record(Lowering::ResolvedName(id));
                 }
             }
             Expr::Let(n, value, body) | Expr::LetMut(n, value, body) => {
-                self.expr(value)?;
+                self.at(AstStep::LetValue, |rewrite| rewrite.expr(value))?;
                 self.push(n);
-                let r = self.expr(body);
+                let r = self.at(AstStep::LetBody, |rewrite| rewrite.expr(body));
                 self.pop(n);
                 r?;
             }
-            Expr::Assign(_, value) => self.expr(value)?,
-            Expr::FieldAssign(_, _, value) => self.expr(value)?,
+            Expr::Assign(_, value) | Expr::FieldAssign(_, _, value) => {
+                self.at(AstStep::AssignValue, |rewrite| rewrite.expr(value))?;
+            }
             Expr::Field(_, _) => {}
             Expr::Record(name, fields) => {
-                *name = internal(self.symbol(name, Namespace::Type)?);
-                for (_, value) in fields {
-                    self.expr(value)?;
+                let symbol = self.symbol(name, Namespace::Type)?;
+                let id = symbol.id;
+                *name = internal(symbol);
+                self.record(Lowering::ResolvedName(id));
+                for (index, (_, value)) in fields.iter_mut().enumerate() {
+                    self.at(AstStep::RecordField(index), |rewrite| rewrite.expr(value))?;
                 }
             }
-            Expr::Binary(_, a, b) | Expr::While(a, b) => {
-                self.expr(a)?;
-                self.expr(b)?
+            Expr::Binary(_, a, b) => {
+                self.at(AstStep::BinaryLeft, |rewrite| rewrite.expr(a))?;
+                self.at(AstStep::BinaryRight, |rewrite| rewrite.expr(b))?;
+            }
+            Expr::While(a, b) => {
+                self.at(AstStep::Condition, |rewrite| rewrite.expr(a))?;
+                self.at(AstStep::WhileBody, |rewrite| rewrite.expr(b))?;
             }
             Expr::If(c, a, b) => {
-                self.expr(c)?;
-                self.expr(a)?;
-                self.expr(b)?
+                self.at(AstStep::Condition, |rewrite| rewrite.expr(c))?;
+                self.at(AstStep::Then, |rewrite| rewrite.expr(a))?;
+                self.at(AstStep::Else, |rewrite| rewrite.expr(b))?;
             }
             Expr::Call(n, args) => {
                 if !builtin(n) {
-                    *n = self.value_name(n)?
+                    let id = self.symbol(n, Namespace::Value)?.id;
+                    *n = self.value_name(n)?;
+                    self.record(Lowering::ResolvedName(id));
                 }
-                for a in args {
-                    self.expr(a)?
+                for (index, a) in args.iter_mut().enumerate() {
+                    self.at(AstStep::Argument(index), |rewrite| rewrite.expr(a))?;
                 }
             }
             Expr::Match(value, arms) => {
-                self.expr(value)?;
-                for arm in arms {
-                    let mut bindings = Vec::new();
-                    self.pattern(&mut arm.pattern, &mut bindings)?;
-                    for n in &bindings {
-                        self.push(n)
-                    }
-                    let r = self.expr(&mut arm.body);
-                    for n in bindings.iter().rev() {
-                        self.pop(n)
-                    }
-                    r?;
+                self.at(AstStep::MatchValue, |rewrite| rewrite.expr(value))?;
+                for (index, arm) in arms.iter_mut().enumerate() {
+                    self.at(AstStep::Arm(index), |rewrite| {
+                        let mut bindings = Vec::new();
+                        rewrite.at(AstStep::ArmPattern, |rewrite| {
+                            rewrite.pattern(&mut arm.pattern, &mut bindings)
+                        })?;
+                        for n in &bindings {
+                            rewrite.push(n)
+                        }
+                        let r = rewrite.at(AstStep::ArmBody, |rewrite| rewrite.expr(&mut arm.body));
+                        for n in bindings.iter().rev() {
+                            rewrite.pop(n)
+                        }
+                        r
+                    })?;
                 }
             }
             Expr::Int(_)
