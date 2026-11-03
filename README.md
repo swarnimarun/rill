@@ -59,7 +59,10 @@ snapshots and origins through resolution, renaming and native coalescing.
 The opt-in [function-instance origin index](docs/typed-function-origins.md)
 retains resolved definitions, closed parameter/result types and every requesting
 source call for reachable typed functions. It is not a complete typed-node or
-generated-C source map.
+generated-C source map. A separate [Copy-body origin API](docs/typed-copy-node-origins.md)
+now covers pure typed expressions, operands, patterns and local capture/shape
+elaboration with explicit generated and erased provenance. Native, owner-cleanup
+and generated-C byte-range coverage remain separate work.
 
 The primary syntax uses functions, braces and semicolon-separated statements:
 

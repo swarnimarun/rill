@@ -6,7 +6,12 @@
 //! the requested closed type determines concrete constructors and projections;
 //! the ordinary IR verifier then checks every operation and capture identity.
 //! This is a lowering construction, not a proof that source and IR coincide.
+use super::provenance::nodes::shapes::ShapeReceiptKind;
+use super::provenance::nodes::{
+    DirectRule, Edges, GenerationReason, LoweredExpr, RawDisposition, TypedChildRole, TypedNodeRef,
+};
 use super::*;
+use crate::source_map::AstNode;
 use std::rc::Rc;
 
 pub(super) const MAX_WORK: usize = 100_000;
@@ -51,21 +56,31 @@ pub(super) enum Shape {
     Capture {
         local: LocalId,
         ty: Type,
+        trace: Option<usize>,
     },
     Constructor {
         nominal: String,
         name: String,
         fields: Vec<Rc<Shape>>,
         height: usize,
+        trace: Option<usize>,
     },
     Record {
         nominal: String,
         fields: Vec<(usize, Rc<Shape>)>,
         height: usize,
+        trace: Option<usize>,
     },
 }
 
 impl Shape {
+    fn trace(&self) -> Option<usize> {
+        match self {
+            Self::Capture { trace, .. }
+            | Self::Constructor { trace, .. }
+            | Self::Record { trace, .. } => *trace,
+        }
+    }
     fn height(&self) -> usize {
         match self {
             Self::Capture { .. } => 0,
@@ -81,6 +96,12 @@ fn product_height<'a>(fields: impl Iterator<Item = &'a Rc<Shape>>) -> Result<usi
     Ok(height)
 }
 
+struct CapturedValue {
+    local: LocalId,
+    value: LoweredExpr,
+    receipt: Option<usize>,
+}
+
 impl Lower<'_, '_> {
     pub(super) fn local_shape(&self, expr: &Expr) -> Option<Rc<Shape>> {
         self.checked
@@ -93,24 +114,25 @@ impl Lower<'_, '_> {
         &mut self,
         expr: &Expr,
         identity: usize,
-    ) -> Result<ExprNode, String> {
+    ) -> Result<LoweredExpr, String> {
         let Expr::Let(name, value, body) = expr else {
             return Err(INVALID.into());
         };
         let mut captures = Vec::new();
         let shape = self.capture_shape(value, &mut captures, 0)?;
-        // One concrete capture product avoids introducing a nested Let per
-        // leaf. It has exactly the captured field types, never a default type
-        // for an unresolved phantom parameter. Written field order is retained.
+        // Preserve once-only, written-order evaluation in a single product.
         let environment = if captures.is_empty() {
             None
         } else {
-            let fields: Vec<_> = captures.iter().map(|(_, value)| value.ty).collect();
+            let fields: Vec<_> = captures
+                .iter()
+                .map(|capture| capture.value.value.ty)
+                .collect();
             let adt = self.capture_record(&fields)?;
             let root = self.fresh()?;
-            for (field, (capture, _)) in captures.iter().enumerate() {
+            for (field, capture) in captures.iter().enumerate() {
                 self.capture_places.insert(
-                    *capture,
+                    capture.local,
                     FieldPlace {
                         root,
                         path: vec![FieldStep { record: adt, field }],
@@ -119,53 +141,115 @@ impl Lower<'_, '_> {
             }
             Some((root, adt))
         };
-        // A shadowed source local is absent while the shape is in scope. The
-        // checker's stable local identity, not this spelling, resolves all uses.
+        let binding = self.node_trace.as_deref_mut().and_then(|trace| {
+            let source = trace.source(AstNode::Expression(expr));
+            let initializer = trace.source(AstNode::Expression(value));
+            let continuation = trace.source(AstNode::Expression(body));
+            trace.shape_binding(
+                source,
+                initializer,
+                continuation,
+                identity,
+                shape.trace(),
+                captures.iter().map(|capture| capture.receipt),
+                environment,
+            )
+        });
         let previous = self.locals.remove(name);
         if self.shapes.insert(identity, shape).is_some() {
             return Err(INVALID.into());
         }
-        let lowered = self.expr(body);
+        let lowered = self.expr_observed(body);
         self.shapes.remove(&identity);
-        for (capture, _) in &captures {
-            self.capture_places.remove(capture);
+        for capture in &captures {
+            self.capture_places.remove(&capture.local);
         }
         if let Some(previous) = previous {
             self.locals.insert(name.clone(), previous);
         }
         let body = lowered?;
-        if let Some((root, adt)) = environment {
-            Ok(ExprNode {
-                ty: body.ty,
+        let body_trace = body.trace;
+        let result = if let Some((root, adt)) = environment {
+            let mut fields = Vec::new();
+            let mut product_edges = Edges::new();
+            for (index, capture) in captures.into_iter().enumerate() {
+                if let Some(trace) = self.node_trace.as_deref_mut() {
+                    let mut edges = Edges::new();
+                    trace.edge(&mut edges, TypedChildRole::RecordValue, capture.value.trace);
+                    let relations = trace.capture_relations(binding, Some(index));
+                    let field = trace.generated(
+                        GenerationReason::CaptureProductField,
+                        relations,
+                        TypedNodeRef::RecordField {
+                            written: index,
+                            declaration: index,
+                            value: &capture.value.value,
+                        },
+                        edges,
+                    );
+                    trace.edge(
+                        &mut product_edges,
+                        TypedChildRole::RecordField(index),
+                        field,
+                    );
+                }
+                fields.push((index, capture.value.value));
+            }
+            let product = ExprNode {
+                ty: Type::Adt {
+                    id: adt,
+                    owned: false,
+                },
+                kind: ExprKind::Record { adt, fields },
+            };
+            let product_trace = self.node_trace.as_deref_mut().and_then(|trace| {
+                let relations = trace.capture_relations(binding, None);
+                trace.generated(
+                    GenerationReason::CaptureProduct,
+                    relations,
+                    TypedNodeRef::Expression(&product),
+                    product_edges,
+                )
+            });
+            let value = ExprNode {
+                ty: body.value.ty,
                 kind: ExprKind::Let {
                     local: root,
                     mutable: false,
-                    value: Box::new(ExprNode {
-                        ty: Type::Adt {
-                            id: adt,
-                            owned: false,
-                        },
-                        kind: ExprKind::Record {
-                            adt,
-                            fields: captures
-                                .into_iter()
-                                .enumerate()
-                                .map(|(index, (_, value))| (index, value))
-                                .collect(),
-                        },
-                    }),
-                    body: Box::new(body),
+                    value: Box::new(product),
+                    body: Box::new(body.value),
                 },
-            })
+            };
+            let origin = self.node_trace.as_deref_mut().and_then(|trace| {
+                let mut edges = Edges::new();
+                trace.edge(&mut edges, TypedChildRole::LetValue, product_trace);
+                trace.edge(&mut edges, TypedChildRole::LetBody, body_trace);
+                let relations = trace.capture_relations(binding, None);
+                trace.generated(
+                    GenerationReason::CaptureEnvironmentBinding,
+                    relations,
+                    TypedNodeRef::Expression(&value),
+                    edges,
+                )
+            });
+            LoweredExpr {
+                value,
+                trace: origin,
+            }
         } else {
-            Ok(body)
+            // Erasure forwards the exact continuation fragment. No synthetic
+            // unit, let, or relabelled source origin may be introduced here.
+            body
+        };
+        if let Some(trace) = self.node_trace.as_deref_mut() {
+            trace.finish_shape_binding(binding, body_trace, result.trace);
         }
+        Ok(result)
     }
 
     fn capture_record(&mut self, fields: &[Type]) -> Result<usize, String> {
-        // '$' cannot occur in an accepted source declaration. Identity includes
-        // the exact concrete payload sequence, so equal environments can share
-        // their product layout without conflating source binding identities.
+        // Each requesting environment has its own binding receipt, including
+        // a dedup hit. A layout is not a source binding or source declaration.
         if let Some(id) = self
             .registry
             .types
@@ -196,18 +280,37 @@ impl Lower<'_, '_> {
         Ok(id)
     }
 
-    fn capture_value(&self, local: LocalId, ty: Type) -> Result<ExprNode, String> {
+    fn capture_value(
+        &mut self,
+        local: LocalId,
+        ty: Type,
+        shape: Option<usize>,
+        use_id: Option<usize>,
+    ) -> Result<LoweredExpr, String> {
         let place = self.capture_places.get(&local).ok_or(INVALID)?.clone();
-        Ok(ExprNode {
+        let value = ExprNode {
             ty,
             kind: ExprKind::FieldRead(place),
+        };
+        let origin = self.node_trace.as_deref_mut().and_then(|trace| {
+            let relations = trace.shape_relations(use_id, shape, true);
+            trace.generated(
+                GenerationReason::CaptureProjection,
+                relations,
+                TypedNodeRef::Expression(&value),
+                Edges::new(),
+            )
+        });
+        Ok(LoweredExpr {
+            value,
+            trace: origin,
         })
     }
 
     fn capture_shape(
         &mut self,
         expr: &Expr,
-        captures: &mut Vec<(LocalId, ExprNode)>,
+        captures: &mut Vec<CapturedValue>,
         depth: usize,
     ) -> Result<Rc<Shape>, String> {
         self.local_work.charge()?;
@@ -215,8 +318,12 @@ impl Lower<'_, '_> {
             return Err(COMPLEXITY.into());
         }
         if let Some(shape) = self.local_shape(expr) {
-            // O(1) sharing is essential: a chain of Pair(previous, previous)
-            // aliases must not expand before the materialization budget runs.
+            // O(1) sharing survives aliases. Their use/binding relationship is
+            // recorded separately instead of overwriting the defining source.
+            if let Some(trace) = self.node_trace.as_deref_mut() {
+                let source = trace.source(AstNode::Expression(expr));
+                trace.shape_alias(source, self.checked.local_use(expr), shape.trace());
+            }
             return Ok(shape);
         }
         let shape = match expr {
@@ -255,38 +362,79 @@ impl Lower<'_, '_> {
                 let indices = info.field_indices.clone();
                 let mut seen = HashSet::new();
                 let mut result = Vec::new();
-                for ((name, value), index) in fields.iter().zip(indices) {
+                let mut shape_edges = Vec::new();
+                for (written, ((name, value), index)) in fields.iter().zip(indices).enumerate() {
                     if names.get(index) != Some(name) || !seen.insert(index) {
                         return Err(INVALID.into());
                     }
-                    result.push((index, self.capture_shape(value, captures, depth + 1)?));
+                    let child = self.capture_shape(value, captures, depth + 1)?;
+                    if let Some(trace) = self.node_trace.as_deref_mut() {
+                        let source = trace.source(AstNode::Expression(value));
+                        trace.shape_edge(&mut shape_edges, source, child.trace(), written, index);
+                    }
+                    result.push((index, child));
                 }
+                let origin = self.node_trace.as_deref_mut().and_then(|trace| {
+                    let source = trace.source(AstNode::Expression(expr));
+                    let definition = trace.source(AstNode::TypeDeclaration(decl))?;
+                    trace.shape_node(
+                        source,
+                        ShapeReceiptKind::Record {
+                            definition,
+                            fields: shape_edges,
+                        },
+                    )
+                });
                 Shape::Record {
                     nominal: decl.name.clone(),
                     height: product_height(result.iter().map(|(_, field)| field))?,
                     fields: result,
+                    trace: origin,
                 }
             }
-            // No calls, field reads, control flow, mutable reads, allocations or
-            // traps may be turned into a deferred computation by this pass.
             _ => return Err(INVALID.into()),
         };
+        if !matches!(shape, Shape::Capture { .. }) {
+            if let Some(trace) = self.node_trace.as_deref_mut() {
+                if let (Some(source), Some(shape)) =
+                    (trace.source(AstNode::Expression(expr)), shape.trace())
+                {
+                    trace.disposition(source, RawDisposition::RepresentedByShape(shape));
+                }
+            }
+        }
         Ok(Rc::new(shape))
     }
 
     fn capture_leaf(
         &mut self,
         expr: &Expr,
-        captures: &mut Vec<(LocalId, ExprNode)>,
+        captures: &mut Vec<CapturedValue>,
     ) -> Result<Shape, String> {
         self.local_work.capture()?;
         let source = self.source_type(expr)?;
         let ty = self.registry.register(self.checked, &source)?;
         self.copy_dependency(ty)?;
-        let value = self.expr(expr)?;
+        let value = self.expr_observed(expr)?;
         let local = self.fresh()?;
-        captures.push((local, value));
-        Ok(Shape::Capture { local, ty })
+        let receipt = self.node_trace.as_deref_mut().and_then(|trace| {
+            let source = trace.source(AstNode::Expression(expr));
+            trace.shape_capture(source, local, ty, value.trace)
+        });
+        let origin = self.node_trace.as_deref_mut().and_then(|trace| {
+            let source = trace.source(AstNode::Expression(expr));
+            trace.shape_node(source, ShapeReceiptKind::Capture { capture: receipt? })
+        });
+        captures.push(CapturedValue {
+            local,
+            value,
+            receipt,
+        });
+        Ok(Shape::Capture {
+            local,
+            ty,
+            trace: origin,
+        })
     }
 
     fn constructor_shape(
@@ -294,7 +442,7 @@ impl Lower<'_, '_> {
         expr: &Expr,
         name: &str,
         args: &[Expr],
-        captures: &mut Vec<(LocalId, ExprNode)>,
+        captures: &mut Vec<CapturedValue>,
         depth: usize,
     ) -> Result<Shape, String> {
         let Some(InferredType::Nominal(nominal, _)) = self.checked.expression_type(expr) else {
@@ -310,29 +458,46 @@ impl Lower<'_, '_> {
         if decl.record_fields.is_some() {
             return Err(INVALID.into());
         }
-        let variant = decl
+        let (variant_index, variant) = decl
             .variants
             .iter()
-            .find(|v| v.name == name)
+            .enumerate()
+            .find(|(_, v)| v.name == name)
             .ok_or(INVALID)?;
         if variant.fields.len() != args.len() {
             return Err(INVALID.into());
         }
         let mut fields = Vec::new();
-        for arg in args {
-            fields.push(self.capture_shape(arg, captures, depth + 1)?);
+        let mut shape_edges = Vec::new();
+        for (index, arg) in args.iter().enumerate() {
+            let field = self.capture_shape(arg, captures, depth + 1)?;
+            if let Some(trace) = self.node_trace.as_deref_mut() {
+                let source = trace.source(AstNode::Expression(arg));
+                trace.shape_edge(&mut shape_edges, source, field.trace(), index, index);
+            }
+            fields.push(field);
         }
+        let origin = self.node_trace.as_deref_mut().and_then(|trace| {
+            let source = trace.source(AstNode::Expression(expr));
+            let definition = trace.source(AstNode::TypeDeclaration(decl))?;
+            trace.shape_node(
+                source,
+                ShapeReceiptKind::Constructor {
+                    definition,
+                    variant: variant_index,
+                    fields: shape_edges,
+                },
+            )
+        });
         Ok(Shape::Constructor {
             nominal: nominal.clone(),
             name: name.into(),
             height: product_height(fields.iter())?,
             fields,
+            trace: origin,
         })
     }
 
-    // Owner dependencies include inactive variants (the layout's owner flag)
-    // and phantom arguments. Never turn an owner instantiation into a copy just
-    // because this particular constructor has no live owner payload.
     fn copy_dependency(&mut self, ty: Type) -> Result<(), String> {
         require_copy(ty, &self.registry.types, &mut self.local_work)
     }
@@ -341,14 +506,33 @@ impl Lower<'_, '_> {
         &mut self,
         expr: &Expr,
         mut shape: Rc<Shape>,
-    ) -> Result<ExprNode, String> {
+    ) -> Result<LoweredExpr, String> {
         let source = self.source_type(expr)?;
         let target = self.registry.register(self.checked, &source)?;
         self.copy_dependency(target)?;
+        let use_id = self.node_trace.as_deref_mut().and_then(|trace| {
+            let source = trace.source(AstNode::Expression(expr));
+            trace.shape_use(source, self.checked.local_use(expr), shape.trace(), target)
+        });
         if let Expr::Field(_, _) = expr {
             let info = self.checked.field_info(expr).ok_or(INVALID)?;
             if info.is_empty() || info.len() > 16 {
                 return Err(INVALID.into());
+            }
+            if let Some(trace) = self.node_trace.as_deref_mut() {
+                for step in info {
+                    if !trace.shape_lookup_work(self.checked.program.types.len()) {
+                        break;
+                    }
+                    let definition = self
+                        .checked
+                        .program
+                        .types
+                        .iter()
+                        .find(|decl| decl.name == step.record)
+                        .and_then(|decl| trace.source(AstNode::TypeDeclaration(decl)));
+                    trace.shape_projection_step(use_id, definition, step.index, step.arity);
+                }
             }
             for (offset, step) in info.iter().enumerate() {
                 self.local_work.charge()?;
@@ -366,7 +550,7 @@ impl Lower<'_, '_> {
                             .1
                             .clone();
                     }
-                    Shape::Capture { local, ty } => {
+                    Shape::Capture { local, ty, .. } => {
                         let mut ty = *ty;
                         let mut path = Vec::new();
                         for step in &info[offset..] {
@@ -390,29 +574,68 @@ impl Lower<'_, '_> {
                         if ty != target {
                             return Err(INVALID.into());
                         }
-                        // Keep the source's sixteen-step limit independent
-                        // of the internal environment field. A concrete Copy
-                        // temporary, not an extra source projection, holds the
-                        // frozen record before following its original path.
-                        let value = self.capture_value(
-                            *local,
-                            match &*shape {
-                                Shape::Capture { ty, .. } => *ty,
-                                _ => unreachable!(),
-                            },
-                        )?;
+                        // The environment step stays separate from all sixteen
+                        // permitted source steps. This is an actual new root.
+                        let capture_type = match &*shape {
+                            Shape::Capture { ty, .. } => *ty,
+                            _ => unreachable!(),
+                        };
+                        let value =
+                            self.capture_value(*local, capture_type, shape.trace(), use_id)?;
                         let root = self.fresh()?;
-                        return Ok(ExprNode {
+                        let read = ExprNode {
+                            ty,
+                            kind: ExprKind::FieldRead(FieldPlace { root, path }),
+                        };
+                        let read_trace = self.node_trace.as_deref_mut().and_then(|trace| {
+                            trace.direct(
+                                AstNode::Expression(expr),
+                                DirectRule::ProjectedUse,
+                                TypedNodeRef::Expression(&read),
+                                Edges::new(),
+                            )
+                        });
+                        let capture_trace = value.trace;
+                        let result = ExprNode {
                             ty,
                             kind: ExprKind::Let {
                                 local: root,
                                 mutable: false,
-                                value: Box::new(value),
-                                body: Box::new(ExprNode {
-                                    ty,
-                                    kind: ExprKind::FieldRead(FieldPlace { root, path }),
-                                }),
+                                value: Box::new(value.value),
+                                body: Box::new(read),
                             },
+                        };
+                        let origin = self.node_trace.as_deref_mut().and_then(|trace| {
+                            let mut edges = Edges::new();
+                            trace.edge(&mut edges, TypedChildRole::LetValue, capture_trace);
+                            trace.edge(&mut edges, TypedChildRole::LetBody, read_trace);
+                            let relations = trace.shape_relations(use_id, shape.trace(), false);
+                            trace.generated(
+                                GenerationReason::ProjectedCaptureTemporary,
+                                relations,
+                                TypedNodeRef::Expression(&result),
+                                edges,
+                            )
+                        });
+                        if let Some(trace) = self.node_trace.as_deref_mut() {
+                            if let ExprKind::Let { body, .. } = &result.kind {
+                                if let ExprKind::FieldRead(place) = &body.kind {
+                                    trace.projected_capture(
+                                        use_id,
+                                        shape.trace(),
+                                        offset,
+                                        place,
+                                        capture_trace,
+                                        read_trace,
+                                        origin,
+                                    );
+                                }
+                            }
+                            trace.finish_shape_use(use_id, shape.trace(), origin);
+                        }
+                        return Ok(LoweredExpr {
+                            value: result,
+                            trace: origin,
                         });
                     }
                     _ => return Err(INVALID.into()),
@@ -421,7 +644,11 @@ impl Lower<'_, '_> {
         } else if !matches!(expr, Expr::Var(_)) {
             return Err(INVALID.into());
         }
-        self.materialize(&shape, target, 0)
+        let result = self.materialize(&shape, target, 0, use_id)?;
+        if let Some(trace) = self.node_trace.as_deref_mut() {
+            trace.finish_shape_use(use_id, shape.trace(), result.trace);
+        }
+        Ok(result)
     }
 
     fn materialize(
@@ -429,19 +656,25 @@ impl Lower<'_, '_> {
         shape: &Shape,
         target: Type,
         depth: usize,
-    ) -> Result<ExprNode, String> {
-        // Charge before following DAG edges or allocating the expanded IR.
+        use_id: Option<usize>,
+    ) -> Result<LoweredExpr, String> {
         self.local_work.charge()?;
         if depth > MAX_DEPTH {
             return Err(COMPLEXITY.into());
         }
         self.copy_dependency(target)?;
+        let mut edges = Edges::new();
+        let mut children = Vec::new();
         let kind = match shape {
-            Shape::Capture { local, ty } => {
+            Shape::Capture { local, ty, .. } => {
                 if *ty != target {
                     return Err(INVALID.into());
                 }
-                return self.capture_value(*local, target);
+                let result = self.capture_value(*local, target, shape.trace(), use_id)?;
+                if let Some(trace) = self.node_trace.as_deref_mut() {
+                    trace.materialized_shape(use_id, shape.trace(), target, result.trace, &[]);
+                }
+                return Ok(result);
             }
             Shape::Constructor {
                 nominal,
@@ -466,8 +699,17 @@ impl Lower<'_, '_> {
                     return Err(INVALID.into());
                 }
                 let mut values = Vec::new();
-                for (field, expected) in fields.iter().zip(expected) {
-                    values.push(self.materialize(field, expected, depth + 1)?);
+                for (index, (field, expected)) in fields.iter().zip(expected).enumerate() {
+                    let value = self.materialize(field, expected, depth + 1, use_id)?;
+                    if let Some(trace) = self.node_trace.as_deref_mut() {
+                        trace.edge(
+                            &mut edges,
+                            TypedChildRole::ConstructorField(index),
+                            value.trace,
+                        );
+                        trace.shape_output_edge(&mut children, value.trace);
+                    }
+                    values.push(value.value);
                 }
                 ExprKind::Constructor {
                     adt: id,
@@ -491,12 +733,34 @@ impl Lower<'_, '_> {
                 }
                 let mut values = Vec::new();
                 let mut seen = HashSet::new();
-                for (index, field) in fields {
+                for (written, (index, field)) in fields.iter().enumerate() {
                     if !seen.insert(index) {
                         return Err(INVALID.into());
                     }
                     let ty = *expected.get(*index).ok_or(INVALID)?;
-                    values.push((*index, self.materialize(field, ty, depth + 1)?));
+                    let value = self.materialize(field, ty, depth + 1, use_id)?;
+                    if let Some(trace) = self.node_trace.as_deref_mut() {
+                        let mut field_edges = Edges::new();
+                        trace.edge(&mut field_edges, TypedChildRole::RecordValue, value.trace);
+                        let relations = trace.shape_relations(use_id, shape.trace(), false);
+                        let field_trace = trace.generated(
+                            GenerationReason::ShapeRecordField,
+                            relations,
+                            TypedNodeRef::RecordField {
+                                written,
+                                declaration: *index,
+                                value: &value.value,
+                            },
+                            field_edges,
+                        );
+                        trace.edge(
+                            &mut edges,
+                            TypedChildRole::RecordField(written),
+                            field_trace,
+                        );
+                        trace.shape_output_edge(&mut children, value.trace);
+                    }
+                    values.push((*index, value.value));
                 }
                 ExprKind::Record {
                     adt: id,
@@ -504,7 +768,23 @@ impl Lower<'_, '_> {
                 }
             }
         };
-        Ok(ExprNode { ty: target, kind })
+        let value = ExprNode { ty: target, kind };
+        let origin = self.node_trace.as_deref_mut().and_then(|trace| {
+            let relations = trace.shape_relations(use_id, shape.trace(), false);
+            trace.generated(
+                GenerationReason::ShapeMaterialization,
+                relations,
+                TypedNodeRef::Expression(&value),
+                edges,
+            )
+        });
+        if let Some(trace) = self.node_trace.as_deref_mut() {
+            trace.materialized_shape(use_id, shape.trace(), target, origin, &children);
+        }
+        Ok(LoweredExpr {
+            value,
+            trace: origin,
+        })
     }
 }
 
@@ -647,6 +927,7 @@ mod tests {
         let mut shape = Rc::new(Shape::Capture {
             local: LocalId(0),
             ty: Type::Int,
+            trace: None,
         });
         for _ in 0..MAX_DEPTH {
             let fields = vec![shape.clone(), shape.clone()];
@@ -656,6 +937,7 @@ mod tests {
                 name: "N".into(),
                 fields,
                 height,
+                trace: None,
             });
         }
         assert_eq!(shape.height(), MAX_DEPTH);

@@ -47,7 +47,7 @@ impl Lower<'_, '_> {
         }
         let indices = info.field_indices.clone();
         let mut lowered = Vec::new();
-        for ((name, value), index) in fields.iter().zip(indices) {
+        for (written, ((name, value), index)) in fields.iter().zip(indices).enumerate() {
             if self.registry.types[id]
                 .record_fields
                 .as_ref()
@@ -56,7 +56,23 @@ impl Lower<'_, '_> {
             {
                 return Err("E-TYPED-RECORD: inconsistent field identity".into());
             }
-            lowered.push((index, self.expr(value)?));
+            let lowered_value = self.expr_observed(value)?;
+            if let Some(trace) = self.node_trace.as_deref_mut() {
+                let mut children = Vec::new();
+                trace.edge(&mut children, NodeRole::RecordValue, lowered_value.trace);
+                let fragment = trace.direct(
+                    crate::source_map::AstNode::Expression(value),
+                    DirectRule::RecordField,
+                    TypedNodeRef::RecordField {
+                        written,
+                        declaration: index,
+                        value: &lowered_value.value,
+                    },
+                    children,
+                );
+                trace.attach(NodeRole::RecordField(written), fragment);
+            }
+            lowered.push((index, lowered_value.value));
         }
         Ok(ExprKind::Record {
             adt: id,

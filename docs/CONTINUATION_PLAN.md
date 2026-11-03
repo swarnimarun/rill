@@ -165,3 +165,9 @@ The subsequent reconstructed [AST origin pass](ast-source-origins.md) covers all
 parsed structural node families, including explicit block/unit/unary/record
 provenance. It is optional and cannot alter strict parse success. Resolved/module
 origin preservation and typed/generated-code mappings still need separate work.
+
+
+The optional [Copy-body origin index](typed-copy-node-origins.md) now adds exact
+typed expression, operand, pattern and capture/shape correspondence on the
+combined native checkpoint. Its [full verification](verification/2026-11-03-copy-node-origins.md)
+passed; broader owner/native, storage and generated-C mappings remain open.

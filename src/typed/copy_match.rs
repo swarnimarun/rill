@@ -9,17 +9,17 @@ impl Lower<'_, '_> {
         value: &Expr,
         arms: &[MatchArm],
     ) -> Result<ExprKind, String> {
-        let value = self.expr(value)?;
+        let value = self.expr_child(value, NodeRole::MatchScrutinee)?;
         if value.ty.is_owner() {
             return Err("E-TYPED-MATCH: cannot copy an owner".into());
         }
         let outer = self.locals.clone();
         let mut lowered = Vec::new();
         let mut joined = None;
-        for arm in arms {
+        for (ordinal, arm) in arms.iter().enumerate() {
             self.locals = outer.clone();
-            let pattern = self.copy_pattern(&arm.pattern, value.ty)?;
-            let body = self.expr(&arm.body)?;
+            let (pattern, pattern_fragment) = self.copy_pattern(&arm.pattern, value.ty)?;
+            let body = self.expr_observed(&arm.body)?;
             let after = outer
                 .iter()
                 .map(|(name, old)| {
@@ -39,7 +39,24 @@ impl Lower<'_, '_> {
             } else {
                 joined = Some(after);
             }
-            lowered.push(CopyArm { pattern, body });
+            let body_fragment = body.trace;
+            let lowered_arm = CopyArm {
+                pattern,
+                body: body.value,
+            };
+            if let Some(trace) = self.node_trace.as_deref_mut() {
+                let mut children = Vec::new();
+                trace.edge(&mut children, NodeRole::ArmPattern, pattern_fragment);
+                trace.edge(&mut children, NodeRole::ArmBody, body_fragment);
+                let fragment = trace.direct(
+                    crate::source_map::AstNode::MatchArm(arm),
+                    DirectRule::Arm,
+                    TypedNodeRef::Arm(&lowered_arm),
+                    children,
+                );
+                trace.attach(NodeRole::MatchArm(ordinal), fragment);
+            }
+            lowered.push(lowered_arm);
         }
         self.locals = joined.unwrap_or(outer);
         Ok(ExprKind::CopyMatch {
@@ -48,14 +65,22 @@ impl Lower<'_, '_> {
         })
     }
 
-    fn copy_pattern(&mut self, pattern: &Pattern, ty: Type) -> Result<CopyPattern, String> {
+    fn copy_pattern(
+        &mut self,
+        pattern: &Pattern,
+        ty: Type,
+    ) -> Result<(CopyPattern, Option<usize>), String> {
         if ty.is_owner() {
             return Err("E-TYPED-MATCH: owner in Copy pattern".into());
         }
-        Ok(match pattern {
+        let mut children = Vec::new();
+        let result = match pattern {
             Pattern::Wildcard => CopyPattern::Wildcard,
             Pattern::Binding(name) => {
                 let id = self.fresh()?;
+                if let Some(trace) = self.node_trace.as_deref_mut() {
+                    trace.bind(crate::source_map::AstNode::Pattern(pattern), id);
+                }
                 self.locals.insert(
                     name.clone(),
                     Local {
@@ -90,18 +115,31 @@ impl Lower<'_, '_> {
                 if fields.len() != types.len() {
                     return Err("E-TYPED-MATCH: wrong pattern arity".into());
                 }
-                let fields = fields
-                    .iter()
-                    .zip(types)
-                    .map(|(p, t)| self.copy_pattern(p, t))
-                    .collect::<Result<_, _>>()?;
+                let mut values = Vec::new();
+                for (ordinal, (pattern, ty)) in fields.iter().zip(types).enumerate() {
+                    let (value, fragment) = self.copy_pattern(pattern, ty)?;
+                    if let Some(trace) = self.node_trace.as_deref_mut() {
+                        trace.edge(&mut children, NodeRole::PatternField(ordinal), fragment);
+                    }
+                    values.push(value);
+                }
+                let fields = values;
                 CopyPattern::Constructor {
                     adt: id,
                     variant,
                     fields,
                 }
             }
-        })
+        };
+        let fragment = self.node_trace.as_deref_mut().and_then(|trace| {
+            trace.direct(
+                crate::source_map::AstNode::Pattern(pattern),
+                DirectRule::Pattern,
+                TypedNodeRef::Pattern(&result),
+                children,
+            )
+        });
+        Ok((result, fragment))
     }
 }
 

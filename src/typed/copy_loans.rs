@@ -100,20 +100,61 @@ impl CopyLocals {
 }
 
 impl Lower<'_, '_> {
-    pub(super) fn copy_argument(
+    pub(super) fn copy_argument_observed(
         &mut self,
         arg: &Expr,
         ty: Type,
         mode: ParamMode,
-    ) -> Result<CallArg, String> {
+    ) -> Result<(CallArg, Option<usize>), String> {
+        let frame = self
+            .node_trace
+            .as_deref_mut()
+            .and_then(|trace| trace.begin());
+        let value = self.copy_argument(arg, ty, mode)?;
+        let fragment = self.node_trace.as_deref_mut().and_then(|trace| {
+            let children = trace.end(frame);
+            if matches!(value, CallArg::ReadTemporary(_)) {
+                let source = trace.source(crate::source_map::AstNode::Expression(arg))?;
+                let mut relations = Vec::new();
+                trace.relation(
+                    &mut relations,
+                    nodes::RelationRole::CausedByUse,
+                    nodes::RawTarget::Source(source),
+                );
+                let fragment = trace.generated(
+                    nodes::GenerationReason::ReadArgumentTemporary,
+                    relations,
+                    TypedNodeRef::Argument(&value),
+                    children,
+                )?;
+                trace.disposition(source, nodes::RawDisposition::OperandOnly(fragment));
+                Some(fragment)
+            } else {
+                trace.direct(
+                    crate::source_map::AstNode::Expression(arg),
+                    DirectRule::Argument,
+                    TypedNodeRef::Argument(&value),
+                    children,
+                )
+            }
+        });
+        Ok((value, fragment))
+    }
+    fn copy_argument(&mut self, arg: &Expr, ty: Type, mode: ParamMode) -> Result<CallArg, String> {
         // Generalized immutable values have frozen captures, not one concrete
         // addressable root. Read arguments materialize this exact instance;
         // the source checker has already enforced the source root's interval.
         if mode == ParamMode::Read && self.local_shape(arg).is_some() {
-            return Ok(CallArg::ReadTemporary(self.expr(arg)?));
+            return Ok(CallArg::ReadTemporary(
+                self.expr_child(arg, NodeRole::ArgumentValue)?,
+            ));
         }
         let source = match (mode, arg) {
-            (ParamMode::Value, _) => return Ok(CallArg::Value(self.expr(arg)?)),
+            (ParamMode::Value, _) => {
+                return Ok(CallArg::Value(
+                    self.expr_child(arg, NodeRole::ArgumentValue)?,
+                ))
+            }
             (ParamMode::Read, Expr::Field(root, _)) => {
                 return self.field_argument(arg, root, ty, mode)
             }
@@ -121,7 +162,11 @@ impl Lower<'_, '_> {
                 return self.field_argument(arg, root, ty, mode)
             }
             (ParamMode::Read, Expr::Var(name)) if self.locals.contains_key(name) => name,
-            (ParamMode::Read, _) => return Ok(CallArg::ReadTemporary(self.expr(arg)?)),
+            (ParamMode::Read, _) => {
+                return Ok(CallArg::ReadTemporary(
+                    self.expr_child(arg, NodeRole::ArgumentValue)?,
+                ))
+            }
             (ParamMode::Inout, Expr::Inout(name)) => name,
             (ParamMode::Inout, _) => {
                 return Err("E-TYPED-UNSUPPORTED: Copy inout requires a root".into())

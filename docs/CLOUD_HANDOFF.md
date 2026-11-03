@@ -178,3 +178,12 @@ both Windows GNU compile checks. Twelve actual direct/generated/collector SDL3
 software captures agree across GCC/Clang and O0/O2. Use the opt-in
 [capture matrix](sdl3-capture-matrix.md) to reproduce the bounded visual gate;
 physical input and hardware rendering are not covered.
+
+
+The separate [Copy-body origin API](typed-copy-node-origins.md) now preserves
+validated expression/operand/pattern and capture/shape metadata through the
+existing semantic lowerer. Its [integrated checkpoint](verification/2026-11-03-copy-node-origins.md)
+passed 661 default and 695 importer-enabled tests, both strict Clippy and
+Windows GNU compile configurations, and 39 independent combined probes. It
+remains a pure Copy-body mapping API, not native/owner-cleanup or generated-C
+byte coverage.

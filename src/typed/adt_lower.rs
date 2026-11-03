@@ -30,7 +30,8 @@ impl Lower<'_, '_> {
             .ok_or("E-TYPED-ADT: wrong constructor")?;
         let fields = args
             .iter()
-            .map(|a| self.expr(a))
+            .enumerate()
+            .map(|(i, a)| self.expr_child(a, NodeRole::ConstructorField(i)))
             .collect::<Result<_, _>>()?;
         Ok(ExprKind::Constructor {
             adt: id,

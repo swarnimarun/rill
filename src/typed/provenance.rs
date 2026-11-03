@@ -57,6 +57,9 @@ handle!(DefinitionId);
 handle!(FunctionInstanceId);
 handle!(SourceNodeId);
 
+pub mod nodes;
+pub use nodes::{lower_main_with_copy_node_origins, CopyNodeOriginProgram};
+
 /// Closed source types. Nominals reference actual resolver declarations, not
 /// lowered spellings, generated C names, inference variables or layout slots.
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -230,7 +233,7 @@ fn lower_with_trace(
     mut trace: instances::Trace,
 ) -> Result<FunctionOriginProgram, String> {
     let checked = check::analyze(sources.program())?;
-    let (typed, instances) = super::lower_main_traced(&checked, Some(&mut trace))?;
+    let (typed, instances) = super::lower_main_traced(&checked, Some(&mut trace), None)?;
     // Keep ordinary semantic errors first, including existing native rejection.
     // If ordinary lowering later supports native nodes, this narrower API still
     // reports its explicit mapping boundary, never a partial successful index.
@@ -244,9 +247,41 @@ fn lower_with_trace(
             "E-TYPED-UNSUPPORTED: function origin index does not map native programs".into(),
         );
     }
+    let data = finalize_function_data(&sources, &checked, &typed, &instances, &mut trace)?;
+    drop(checked);
+    Ok(data.into_program(sources, typed))
+}
+
+struct FunctionOriginData {
+    domain: Domain,
+    instances: Vec<FunctionInstance>,
+    requests: Vec<InstanceRequest>,
+    functions: Vec<usize>,
+    dispositions: HashMap<usize, Vec<FunctionInstanceId>>,
+}
+impl FunctionOriginData {
+    fn into_program(self, sources: SourceProgram, typed: TypedMain) -> FunctionOriginProgram {
+        FunctionOriginProgram {
+            sources,
+            typed,
+            domain: self.domain,
+            instances: self.instances,
+            requests: self.requests,
+            functions: self.functions,
+            dispositions: self.dispositions,
+        }
+    }
+}
+fn finalize_function_data(
+    sources: &SourceProgram,
+    checked: &CheckedProgram<'_>,
+    typed: &TypedMain,
+    instances: &instances::Instances,
+    trace: &mut instances::Trace,
+) -> Result<FunctionOriginData, String> {
     trace.check()?;
-    let bridge = Bridge::new(&sources, &mut trace)?;
-    validate(&sources, &checked, &typed, &instances, &bridge, &mut trace)?;
+    let bridge = Bridge::new(sources, trace)?;
+    validate(sources, checked, typed, instances, &bridge, trace)?;
     let domain = Domain(Arc::new(()));
     let definition_id = |slot| DefinitionId {
         domain: domain.clone(),
@@ -263,19 +298,19 @@ fn lower_with_trace(
         .map(|&slot| (slot, Vec::new()))
         .collect::<HashMap<_, _>>();
     for (slot, instance) in instances.list.iter().enumerate() {
-        charge(&mut trace, 1)?;
+        charge(trace, 1)?;
         let definition = bridge.functions[instance.source];
         let parameters = sources.program().functions[instance.source]
             .params
             .iter()
             .zip(&instance.params)
-            .map(|(param, ty)| Ok((param.mode, concrete(ty, &bridge, &domain, &mut trace)?)))
+            .map(|(param, ty)| Ok((param.mode, concrete(ty, &bridge, &domain, trace)?)))
             .collect::<Result<_, String>>()?;
         records.push(FunctionInstance {
             id: instance_id(slot),
             definition: definition_id(definition),
             parameters,
-            result: concrete(&instance.result, &bridge, &domain, &mut trace)?,
+            result: concrete(&instance.result, &bridge, &domain, trace)?,
         });
         dispositions
             .get_mut(&definition)
@@ -311,10 +346,7 @@ fn lower_with_trace(
         calls,
     } = bridge;
     drop((nominal, symbols, nodes, calls));
-    drop(checked);
-    Ok(FunctionOriginProgram {
-        sources,
-        typed,
+    Ok(FunctionOriginData {
         domain,
         instances: records,
         requests,
@@ -683,7 +715,7 @@ mod tests {
         let checked = check::analyze(sources.program()).unwrap();
         let mut trace = instances::Trace::default();
         let (typed, instances) =
-            super::super::lower_main_traced(&checked, Some(&mut trace)).unwrap();
+            super::super::lower_main_traced(&checked, Some(&mut trace), None).unwrap();
         let bridge = Bridge::new(&sources, &mut trace).unwrap();
         validate(&sources, &checked, &typed, &instances, &bridge, &mut trace).unwrap();
         change(&mut trace, &instances, &sources);
@@ -757,7 +789,7 @@ mod tests {
         let checked = check::analyze(sources.program()).unwrap();
         let mut trace = instances::Trace::default();
         let (mut typed, instances) =
-            super::super::lower_main_traced(&checked, Some(&mut trace)).unwrap();
+            super::super::lower_main_traced(&checked, Some(&mut trace), None).unwrap();
         let mut bridge = Bridge::new(&sources, &mut trace).unwrap();
         bridge.functions.swap(0, 1);
         assert!(
@@ -794,7 +826,7 @@ mod tests {
         let checked = check::analyze(sources.program()).unwrap();
         let mut trace = instances::Trace::default();
         let (typed, instances) =
-            super::super::lower_main_traced(&checked, Some(&mut trace)).unwrap();
+            super::super::lower_main_traced(&checked, Some(&mut trace), None).unwrap();
         assert_eq!(trace.requests.len(), 1);
         let mut bridge = Bridge::new(&sources, &mut trace).unwrap();
         bridge.functions.swap(0, 1);
@@ -823,7 +855,7 @@ mod tests {
         let checked = check::analyze(sources.program()).unwrap();
         let mut trace = instances::Trace::default();
         let (typed, mut instances) =
-            super::super::lower_main_traced(&checked, Some(&mut trace)).unwrap();
+            super::super::lower_main_traced(&checked, Some(&mut trace), None).unwrap();
         let bridge = Bridge::new(&sources, &mut trace).unwrap();
         validate(&sources, &checked, &typed, &instances, &bridge, &mut trace).unwrap();
         let unused = sources

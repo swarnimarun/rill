@@ -38,6 +38,7 @@ mod places;
 pub mod provenance;
 pub use initialization::{Cleanup, CleanupTree, Initialization};
 pub use places::Place;
+use provenance::nodes::{self, DirectRule, LoweredExpr, TypedChildRole as NodeRole, TypedNodeRef};
 mod local_values;
 #[cfg(test)]
 mod local_values_tests;
@@ -309,13 +310,14 @@ struct Local {
 /// The C backend uses this result for supported programs; other checked
 /// programs use the existing AST backend.
 pub fn lower_main(checked: &CheckedProgram<'_>) -> Result<TypedMain, String> {
-    lower_main_traced(checked, None).map(|(typed, _)| typed)
+    lower_main_traced(checked, None, None).map(|(typed, _)| typed)
 }
 
 // One lowering path; optional discovery metadata cannot change semantic errors.
-fn lower_main_traced(
-    checked: &CheckedProgram<'_>,
+fn lower_main_traced<'source>(
+    checked: &CheckedProgram<'source>,
     trace: Option<&mut instances::Trace>,
+    body_trace: Option<&mut nodes::Trace<'source>>,
 ) -> Result<(TypedMain, instances::Instances), String> {
     let program = checked.program;
     let native = NativeManifest::from_checked(checked)?;
@@ -328,6 +330,7 @@ fn lower_main_traced(
     let registry = adts::Registry::build(checked, &instances, &native)?;
     let mut lower = Lower {
         native: &native,
+        node_trace: body_trace,
         registry,
         checked,
         locals: HashMap::new(),
@@ -354,7 +357,10 @@ fn lower_main_traced(
         functions: Vec::new(),
         entry: instances.entry,
     };
-    for instance in &instances.list {
+    for (instance_slot, instance) in instances.list.iter().enumerate() {
+        if let Some(trace) = lower.node_trace.as_deref_mut() {
+            trace.set_instance(instance_slot);
+        }
         let function = &program.functions[instance.source];
         lower.substitution = &instance.substitution;
         let result_type = lower.registry.convert(&instance.result)?;
@@ -373,6 +379,9 @@ fn lower_main_traced(
         let mut params = Vec::new();
         for (param, ty) in function.params.iter().zip(param_types) {
             let id = lower.fresh()?;
+            if let Some(trace) = lower.node_trace.as_deref_mut() {
+                trace.bind(crate::source_map::AstNode::Parameter(param), id);
+            }
             lower.locals.insert(
                 param.name.clone(),
                 Local {
@@ -388,7 +397,10 @@ fn lower_main_traced(
             );
             params.push((id, ty, param.mode));
         }
-        let body = lower.expr(&function.body)?;
+        let LoweredExpr {
+            value: body,
+            trace: body_fragment,
+        } = lower.expr_observed(&function.body)?;
         let mut param_cleanup = Vec::new();
         for (param, (id, ty, mode)) in function.params.iter().zip(&params).rev() {
             if ty.is_owner() && *mode == ParamMode::Value {
@@ -406,6 +418,9 @@ fn lower_main_traced(
                 }
             }
         }
+        if let Some(trace) = lower.node_trace.as_deref_mut() {
+            trace.signature(function, &params, &result_type, &body, body_fragment);
+        }
         result.functions.push(TypedFunction {
             params,
             result: result_type,
@@ -420,6 +435,7 @@ fn lower_main_traced(
 }
 
 struct Lower<'a, 'b> {
+    node_trace: Option<&'a mut nodes::Trace<'b>>,
     native: &'a NativeManifest,
     registry: adts::Registry,
     checked: &'a CheckedProgram<'b>,
@@ -443,12 +459,37 @@ impl Lower<'_, '_> {
         instances::expression_type(self.checked, expr, self.substitution)
     }
     fn expr(&mut self, expr: &Expr) -> Result<ExprNode, String> {
+        self.expr_observed(expr).map(|lowered| lowered.value)
+    }
+    fn expr_child(&mut self, expr: &Expr, role: NodeRole) -> Result<ExprNode, String> {
+        let lowered = self.expr_observed(expr)?;
+        if let Some(trace) = self.node_trace.as_deref_mut() {
+            trace.attach(role, lowered.trace);
+        }
+        Ok(lowered.value)
+    }
+    fn expr_observed(&mut self, expr: &Expr) -> Result<LoweredExpr, String> {
         if let Some(id) = self.checked.polymorphic_local(expr) {
             return self.polymorphic_let(expr, id);
         }
         if let Some(shape) = self.local_shape(expr) {
             return self.polymorphic_use(expr, shape);
         }
+        let frame = self
+            .node_trace
+            .as_deref_mut()
+            .and_then(|trace| trace.begin());
+        let value = self.expr_direct(expr)?;
+        let fragment = self
+            .node_trace
+            .as_deref_mut()
+            .and_then(|trace| trace.finish_expression(frame, expr, &value));
+        Ok(LoweredExpr {
+            value,
+            trace: fragment,
+        })
+    }
+    fn expr_direct(&mut self, expr: &Expr) -> Result<ExprNode, String> {
         let ty = self.registry.convert(&self.source_type(expr)?)?;
         let kind = match expr {
             Expr::Call(name, args) if self.native.function_id(name).is_some() => {
@@ -475,7 +516,10 @@ impl Lower<'_, '_> {
             Expr::Field(root, _) => ExprKind::FieldRead(self.field_place(expr, root, false)?),
             Expr::FieldAssign(root, _, value) => {
                 let place = self.field_place(expr, root, true)?;
-                ExprKind::FieldAssign(place, Box::new(self.expr(value)?))
+                ExprKind::FieldAssign(
+                    place,
+                    Box::new(self.expr_child(value, NodeRole::AssignmentValue)?),
+                )
             }
             Expr::Call(name, args)
                 if matches!(name.as_str(), "system_box_i32" | "system_bytes_zeroed")
@@ -627,8 +671,11 @@ impl Lower<'_, '_> {
                         cleanup,
                     }
                 } else {
-                    let value = self.expr(value)?;
+                    let value = self.expr_child(value, NodeRole::LetValue)?;
                     let id = self.fresh()?;
+                    if let Some(trace) = self.node_trace.as_deref_mut() {
+                        trace.bind(crate::source_map::AstNode::Expression(expr), id);
+                    }
                     let mutable = matches!(expr, Expr::LetMut(..));
                     let previous = self.locals.insert(
                         name.clone(),
@@ -643,7 +690,7 @@ impl Lower<'_, '_> {
                             mode: ParamMode::Value,
                         },
                     );
-                    let body = self.expr(body);
+                    let body = self.expr_child(body, NodeRole::LetBody);
                     if let Some(previous) = previous {
                         self.locals.insert(name.clone(), previous);
                     } else {
@@ -670,7 +717,10 @@ impl Lower<'_, '_> {
                 {
                     return Err("E-TYPED: invalid assignment local".into());
                 }
-                ExprKind::Assign(local.id, Box::new(self.expr(value)?))
+                ExprKind::Assign(
+                    local.id,
+                    Box::new(self.expr_child(value, NodeRole::AssignmentValue)?),
+                )
             }
             Expr::Call(name, args) if name == "box_read" && args.len() == 1 => {
                 let Expr::Var(root) = &args[0] else {
@@ -769,7 +819,8 @@ impl Lower<'_, '_> {
                 let op = VectorOp::named(name).unwrap();
                 let args = args
                     .iter()
-                    .map(|arg| self.expr(arg))
+                    .enumerate()
+                    .map(|(i, arg)| self.expr_child(arg, NodeRole::BuiltinOperand(i)))
                     .collect::<Result<Vec<_>, _>>()?;
                 op.result(&args.iter().map(|arg| arg.ty).collect::<Vec<_>>())?;
                 ExprKind::Vector(op, args)
@@ -784,24 +835,24 @@ impl Lower<'_, '_> {
                 }
                 ExprKind::BytesNew(n)
             }
-            Expr::Call(name, args) if name == "bytes_len" && args.len() == 1 => {
-                ExprKind::BytesLen(Box::new(self.expr(&args[0])?))
-            }
+            Expr::Call(name, args) if name == "bytes_len" && args.len() == 1 => ExprKind::BytesLen(
+                Box::new(self.expr_child(&args[0], NodeRole::BuiltinOperand(0))?),
+            ),
             Expr::Call(name, args) if name == "bytes_get" && args.len() == 2 => ExprKind::BytesGet(
-                Box::new(self.expr(&args[0])?),
-                Box::new(self.expr(&args[1])?),
+                Box::new(self.expr_child(&args[0], NodeRole::BuiltinOperand(0))?),
+                Box::new(self.expr_child(&args[1], NodeRole::BuiltinOperand(1))?),
             ),
             Expr::Call(name, args) if name == "bytes_set" && args.len() == 3 => ExprKind::BytesSet(
-                Box::new(self.expr(&args[0])?),
-                Box::new(self.expr(&args[1])?),
-                Box::new(self.expr(&args[2])?),
+                Box::new(self.expr_child(&args[0], NodeRole::BuiltinOperand(0))?),
+                Box::new(self.expr_child(&args[1], NodeRole::BuiltinOperand(1))?),
+                Box::new(self.expr_child(&args[2], NodeRole::BuiltinOperand(2))?),
             ),
-            Expr::Call(name, args) if name == "byte_len" && args.len() == 1 => {
-                ExprKind::ByteLen(Box::new(self.expr(&args[0])?))
-            }
+            Expr::Call(name, args) if name == "byte_len" && args.len() == 1 => ExprKind::ByteLen(
+                Box::new(self.expr_child(&args[0], NodeRole::BuiltinOperand(0))?),
+            ),
             Expr::Call(name, args) if name == "byte_at" && args.len() == 2 => ExprKind::ByteAt(
-                Box::new(self.expr(&args[0])?),
-                Box::new(self.expr(&args[1])?),
+                Box::new(self.expr_child(&args[0], NodeRole::BuiltinOperand(0))?),
+                Box::new(self.expr_child(&args[1], NodeRole::BuiltinOperand(1))?),
             ),
             Expr::Call(name, args) => {
                 let param_types = args
@@ -833,7 +884,9 @@ impl Lower<'_, '_> {
                         )
                     })
                     .collect();
-                for ((arg, ty), mode) in args.iter().zip(&param_types).zip(modes) {
+                for (ordinal, ((arg, ty), mode)) in
+                    args.iter().zip(&param_types).zip(modes).enumerate()
+                {
                     if self.registry.convert(ty)?.is_owner() {
                         let source = match (mode, arg) {
                             (ParamMode::Value, Expr::Move(source))
@@ -881,7 +934,11 @@ impl Lower<'_, '_> {
                         }
                     } else {
                         let ty = self.registry.convert(ty)?;
-                        lowered.push(self.copy_argument(arg, ty, mode)?);
+                        let argument = self.copy_argument_observed(arg, ty, mode)?;
+                        if let Some(trace) = self.node_trace.as_deref_mut() {
+                            trace.attach(NodeRole::CallArgument(ordinal), argument.1);
+                        }
+                        lowered.push(argument.0);
                     }
                 }
                 for (name, id, shared, loaned, fields) in loans {
@@ -896,16 +953,18 @@ impl Lower<'_, '_> {
                 }
                 ExprKind::Call(id, lowered)
             }
-            Expr::Binary(op, a, b) => {
-                ExprKind::Binary(*op, Box::new(self.expr(a)?), Box::new(self.expr(b)?))
-            }
+            Expr::Binary(op, a, b) => ExprKind::Binary(
+                *op,
+                Box::new(self.expr_child(a, NodeRole::BinaryLeft)?),
+                Box::new(self.expr_child(b, NodeRole::BinaryRight)?),
+            ),
             Expr::If(c, a, b) => {
-                let condition = self.expr(c)?;
+                let condition = self.expr_child(c, NodeRole::Condition)?;
                 let before = self.locals.clone();
-                let yes = self.expr(a)?;
+                let yes = self.expr_child(a, NodeRole::Then)?;
                 let after_yes = self.locals.clone();
                 self.locals = before;
-                let no = self.expr(b)?;
+                let no = self.expr_child(b, NodeRole::Else)?;
                 if !Self::same_states(&after_yes, &self.locals) {
                     return Err(
                         "E-TYPED-OWNER: move in conditional has incompatible branch ownership"
@@ -915,7 +974,10 @@ impl Lower<'_, '_> {
                 self.locals = after_yes;
                 ExprKind::If(Box::new(condition), Box::new(yes), Box::new(no))
             }
-            Expr::While(c, b) => ExprKind::While(Box::new(self.expr(c)?), Box::new(self.expr(b)?)),
+            Expr::While(c, b) => ExprKind::While(
+                Box::new(self.expr_child(c, NodeRole::Condition)?),
+                Box::new(self.expr_child(b, NodeRole::LoopBody)?),
+            ),
             _ => return Err("E-TYPED-UNSUPPORTED: expression is outside primitive subset".into()),
         };
         Ok(ExprNode { ty, kind })

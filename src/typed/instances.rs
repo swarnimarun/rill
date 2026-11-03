@@ -372,6 +372,8 @@ pub(super) struct Trace {
     pub requests: Vec<Request>,
     pub failure: Option<String>,
     work: usize,
+    shared_work: Option<std::rc::Rc<std::cell::Cell<usize>>>,
+    shared_failure: Option<std::rc::Rc<std::cell::Cell<bool>>>,
     max_requests: usize,
 }
 #[derive(Clone, Debug)]
@@ -391,17 +393,45 @@ impl Trace {
             requests: Vec::new(),
             failure: None,
             work,
+            shared_work: None,
+            shared_failure: None,
             max_requests,
         }
     }
+    pub fn with_shared_work(
+        work: std::rc::Rc<std::cell::Cell<usize>>,
+        failure: std::rc::Rc<std::cell::Cell<bool>>,
+    ) -> Self {
+        Self {
+            shared_work: Some(work),
+            shared_failure: Some(failure),
+            ..Self::default()
+        }
+    }
     pub fn charge(&mut self, amount: usize) -> bool {
-        if self.failure.is_some() {
+        if self.failure.is_some()
+            || self
+                .shared_failure
+                .as_ref()
+                .is_some_and(|failed| failed.get())
+        {
             return false;
         }
-        if let Some(remaining) = self.work.checked_sub(amount) {
-            self.work = remaining;
+        let work = self
+            .shared_work
+            .as_ref()
+            .map_or(self.work, |work| work.get());
+        if let Some(remaining) = work.checked_sub(amount) {
+            if let Some(work) = &self.shared_work {
+                work.set(remaining);
+            } else {
+                self.work = remaining;
+            }
             true
         } else {
+            if let Some(failed) = &self.shared_failure {
+                failed.set(true);
+            }
             self.failure =
                 Some("E-TYPED-SOURCE-MAP-LIMIT: function origin work budget exceeded".into());
             false
@@ -412,6 +442,9 @@ impl Trace {
             return;
         }
         if self.requests.len() >= self.max_requests {
+            if let Some(failed) = &self.shared_failure {
+                failed.set(true);
+            }
             self.failure =
                 Some("E-TYPED-SOURCE-MAP-LIMIT: function request budget exceeded".into());
             return;
@@ -425,6 +458,13 @@ impl Trace {
     pub fn check(&self) -> Result<(), String> {
         match &self.failure {
             Some(error) => Err(error.clone()),
+            None if self
+                .shared_failure
+                .as_ref()
+                .is_some_and(|failed| failed.get()) =>
+            {
+                Err("E-TYPED-SOURCE-MAP-LIMIT: combined origin trace disabled".into())
+            }
             None => Ok(()),
         }
     }
