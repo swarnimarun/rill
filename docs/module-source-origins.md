@@ -107,3 +107,18 @@ parse work; it is not a separately budgeted editor service or security sandbox.
 Mappings for inferred types, specialization, checked typed IR/MIR, cleanup,
 generated C, debugger locations, incremental queries, an LSP and source-aware
 checker diagnostics remain open. See [verification](verification/2026-11-03-module-source-origins.md).
+
+## Library buffers and editor overlays
+
+`modules::load_with_overlays` loads the same bounded graph with immutable open
+buffer text overriding reached files. Keys may be absolute or relative to the
+entry directory. New unsaved files require an existing parent directory and a
+matching overlay. Unreachable overlays do not expand import access. Canonical
+paths, hardlink identity, root containment, cycles and source-size limits still
+apply; loading does not alter disk contents.
+
+`compile::load_program_with_sources_and_overlays` retains those exact snapshots
+and source origins. `load_library_with_sources_and_overlays` uses the same
+checks without requiring a `main`; an existing `main` still needs zero
+parameters. Both retain signature budgets, nominal identity, privacy and
+ownership validation. This foundation does not launch external native tools.

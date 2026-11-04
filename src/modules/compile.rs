@@ -9,7 +9,7 @@ use crate::parser::{self, ExportKind, ParsedModule};
 use crate::source_map::{AstPath, AstStep};
 use crate::syntax::AstDeclaration;
 use std::collections::{BTreeMap, HashMap, HashSet};
-use std::path::Path;
+use std::path::{Path, PathBuf};
 
 fn err(code: &'static str, message: impl Into<String>) -> ModuleError {
     ModuleError {
@@ -117,7 +117,30 @@ pub fn load_program_snapshot(entry: &Path) -> Result<ProgramSnapshot, ModuleErro
 pub fn load_program_with_sources(entry: &Path) -> Result<SourceProgram, ModuleError> {
     let graph = super::load(entry)?;
     let mut trace = Trace::default();
-    let program = lower_traced(&graph, Some(&mut trace))?;
+    let program = lower_traced(&graph, Some(&mut trace), true)?;
+    provenance::finish(graph, program, trace)
+}
+
+/// Check immutable open-document text through the ordinary module compiler.
+pub fn load_program_with_sources_and_overlays(
+    entry: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Result<SourceProgram, ModuleError> {
+    let graph = super::load_with_overlays(entry, overlays)?;
+    let mut trace = Trace::default();
+    let program = lower_traced(&graph, Some(&mut trace), true)?;
+    provenance::finish(graph, program, trace)
+}
+
+/// Check a library buffer without requiring an executable entry point.
+/// Import, declaration, ownership and visibility rules remain unchanged.
+pub fn load_library_with_sources_and_overlays(
+    entry: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Result<SourceProgram, ModuleError> {
+    let graph = super::load_with_overlays(entry, overlays)?;
+    let mut trace = Trace::default();
+    let program = lower_traced(&graph, Some(&mut trace), false)?;
     provenance::finish(graph, program, trace)
 }
 
@@ -155,12 +178,13 @@ pub fn check_binding_source(source: &str) -> Result<Program, ModuleError> {
 }
 
 fn lower(graph: &ModuleGraph) -> Result<Program, ModuleError> {
-    lower_traced(graph, None)
+    lower_traced(graph, None, true)
 }
 
 fn lower_traced(
     graph: &ModuleGraph,
     mut trace: Option<&mut Trace>,
+    require_main: bool,
 ) -> Result<Program, ModuleError> {
     let mut parsed = BTreeMap::<String, ParsedModule>::new();
     let mut catalogue = BTreeMap::new();
@@ -492,7 +516,12 @@ fn lower_traced(
             }
         }
     }
-    let checked = crate::check::analyze(&output).map_err(|e| err("E-MODULE-CHECK", e))?;
+    let checked = if require_main {
+        crate::check::analyze(&output)
+    } else {
+        crate::check::analyze_library(&output)
+    }
+    .map_err(|e| err("E-MODULE-CHECK", e))?;
     for name in exported_functions {
         let sig = &checked.functions[&name];
         if sig

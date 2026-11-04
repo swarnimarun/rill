@@ -67,13 +67,41 @@ fn error(code: &'static str, message: impl Into<String>) -> ModuleError {
 /// loading; use only a trusted, stable source tree until a directory-handle
 /// based loader is available.
 pub fn load(entry: &Path) -> Result<ModuleGraph, ModuleError> {
+    load_with_overlays(entry, &BTreeMap::new())
+}
+
+/// Load the same bounded graph using open-document text instead of disk bytes.
+/// Keys are absolute paths or paths relative to the entry directory. Existing
+/// files retain their canonical identity; new files require an existing parent
+/// directory and a matching overlay. Unreachable overlays are not imported.
+pub fn load_with_overlays(
+    entry: &Path,
+    overlays: &BTreeMap<PathBuf, String>,
+) -> Result<ModuleGraph, ModuleError> {
     let parent = entry
         .parent()
         .filter(|p| !p.as_os_str().is_empty())
         .unwrap_or_else(|| Path::new("."));
     let root = fs::canonicalize(parent)
         .map_err(|e| error("E-MODULE-IO", format!("{}: {e}", parent.display())))?;
-    let path = fs::canonicalize(entry)
+    let mut normalized = BTreeMap::new();
+    let mut overlay_conflicts = HashSet::new();
+    for (path, text) in overlays {
+        let candidate = if path.is_absolute() {
+            path.clone()
+        } else {
+            root.join(path)
+        };
+        let Ok(path) = overlay_path(&candidate) else {
+            // Unreachable open documents must not invalidate this graph. A
+            // reached path still passes source_path's ordinary filesystem checks.
+            continue;
+        };
+        if normalized.insert(path.clone(), text.as_str()).is_some() {
+            overlay_conflicts.insert(path);
+        }
+    }
+    let path = source_path(entry, &normalized)
         .map_err(|e| error("E-MODULE-IO", format!("{}: {e}", entry.display())))?;
     if !path.starts_with(&root) {
         return Err(error(
@@ -88,6 +116,8 @@ pub fn load(entry: &Path) -> Result<ModuleGraph, ModuleError> {
         #[cfg(unix)]
         identities: HashMap::new(),
         stack: Vec::new(),
+        overlays: normalized,
+        overlay_conflicts,
     };
     loader.visit(ENTRY.to_string(), path)?;
     Ok(ModuleGraph {
@@ -96,16 +126,66 @@ pub fn load(entry: &Path) -> Result<ModuleGraph, ModuleError> {
     })
 }
 
-struct Loader {
+fn overlay_path(path: &Path) -> std::io::Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => {
+            if !fs::metadata(&path)?.is_file() {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::InvalidInput,
+                    "an overlay must name a regular source file",
+                ));
+            }
+            Ok(path)
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            // A dangling symlink is a filesystem path, not a new editor file.
+            if fs::symlink_metadata(path).is_ok() {
+                return Err(error);
+            }
+            let Some(name) = path.file_name() else {
+                return Err(error);
+            };
+            let parent = path.parent().filter(|path| !path.as_os_str().is_empty());
+            let parent = fs::canonicalize(parent.unwrap_or_else(|| Path::new(".")))?;
+            Ok(parent.join(name))
+        }
+        Err(error) => Err(error),
+    }
+}
+
+fn source_path(path: &Path, overlays: &BTreeMap<PathBuf, &str>) -> std::io::Result<PathBuf> {
+    match fs::canonicalize(path) {
+        Ok(path) => Ok(path),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            let candidate = overlay_path(path)?;
+            if overlays.contains_key(&candidate) {
+                Ok(candidate)
+            } else {
+                Err(error)
+            }
+        }
+        Err(error) => Err(error),
+    }
+}
+
+struct Loader<'a> {
     root: PathBuf,
     modules: BTreeMap<String, Module>,
     paths: HashMap<PathBuf, String>,
     #[cfg(unix)]
     identities: HashMap<(u64, u64), String>,
     stack: Vec<(String, PathBuf)>,
+    overlays: BTreeMap<PathBuf, &'a str>,
+    overlay_conflicts: HashSet<PathBuf>,
 }
-impl Loader {
+impl Loader<'_> {
     fn visit(&mut self, name: String, path: PathBuf) -> Result<(), ModuleError> {
+        if self.overlay_conflicts.contains(&path) {
+            return Err(error(
+                "E-MODULE-DUPLICATE",
+                format!("multiple overlays resolve to {}", path.display()),
+            ));
+        }
         if let Some(start) = self.stack.iter().position(|(_, p)| *p == path) {
             let mut names: Vec<_> = self.stack[start..]
                 .iter()
@@ -132,10 +212,18 @@ impl Loader {
         let source = if let Some(source) = stdlib::source(&name) {
             source.to_owned()
         } else {
-            let file = File::open(&path)
-                .map_err(|e| error("E-MODULE-IO", format!("{}: {e}", path.display())))?;
+            let file = match File::open(&path) {
+                Ok(file) => Some(file),
+                Err(error)
+                    if error.kind() == std::io::ErrorKind::NotFound
+                        && self.overlays.contains_key(&path) =>
+                {
+                    None
+                }
+                Err(e) => return Err(error("E-MODULE-IO", format!("{}: {e}", path.display()))),
+            };
             #[cfg(unix)]
-            {
+            if let Some(file) = &file {
                 use std::os::unix::fs::MetadataExt;
                 let metadata = file
                     .metadata()
@@ -149,18 +237,30 @@ impl Loader {
                 }
                 self.identities.insert(identity, name.clone());
             }
-            let mut bytes = Vec::new();
-            file.take(MAX_SOURCE_BYTES + 1)
-                .read_to_end(&mut bytes)
-                .map_err(|e| error("E-MODULE-IO", format!("{}: {e}", path.display())))?;
-            if bytes.len() as u64 > MAX_SOURCE_BYTES {
-                return Err(error(
-                    "E-MODULE-LIMIT",
-                    format!("{} exceeds 1 MiB", path.display()),
-                ));
+            if let Some(source) = self.overlays.get(&path) {
+                if source.len() as u64 > MAX_SOURCE_BYTES {
+                    return Err(error(
+                        "E-MODULE-LIMIT",
+                        format!("{} exceeds 1 MiB", path.display()),
+                    ));
+                }
+                (*source).to_owned()
+            } else {
+                let mut bytes = Vec::new();
+                file.expect("a missing file requires an overlay")
+                    .take(MAX_SOURCE_BYTES + 1)
+                    .read_to_end(&mut bytes)
+                    .map_err(|e| error("E-MODULE-IO", format!("{}: {e}", path.display())))?;
+                if bytes.len() as u64 > MAX_SOURCE_BYTES {
+                    return Err(error(
+                        "E-MODULE-LIMIT",
+                        format!("{} exceeds 1 MiB", path.display()),
+                    ));
+                }
+                String::from_utf8(bytes).map_err(|_| {
+                    error("E-MODULE-UTF8", format!("{} is not UTF-8", path.display()))
+                })?
             }
-            String::from_utf8(bytes)
-                .map_err(|_| error("E-MODULE-UTF8", format!("{} is not UTF-8", path.display())))?
         };
         if source.len() as u64 > MAX_SOURCE_BYTES {
             return Err(error(
@@ -206,7 +306,7 @@ impl Loader {
                 .root
                 .join(import.module.replace('.', "/"))
                 .with_extension("rill");
-            let target = fs::canonicalize(&candidate).map_err(|e| {
+            let target = source_path(&candidate, &self.overlays).map_err(|e| {
                 error(
                     "E-MODULE-IO",
                     format!(

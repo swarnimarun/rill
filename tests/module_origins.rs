@@ -385,6 +385,20 @@ fn non_utf8_paths_are_preserved_without_lossy_conversion() {
     use std::{ffi::OsString, os::unix::ffi::OsStringExt};
     let tree = Tree::new();
     let relative = PathBuf::from(OsString::from_vec(b"dir-\xff".to_vec()));
+    if let Err(error) = fs::create_dir(tree.0.join(&relative)) {
+        #[cfg(target_os = "macos")]
+        {
+            const MACOS_EPERM: i32 = 1;
+            const MACOS_EILSEQ: i32 = 92;
+            if matches!(error.raw_os_error(), Some(MACOS_EPERM | MACOS_EILSEQ)) {
+                eprintln!(
+                    "SKIP non-UTF-8 module directory: filesystem/sandbox rejects invalid byte names: {error}"
+                );
+                return;
+            }
+        }
+        panic!("cannot create module directory: {error}");
+    }
     tree.write(relative.join("main.rill"), "fn main() { 42 }");
     let entry = tree.0.join(&relative).join("main.rill");
     let mapped = load_program_with_sources(&entry).unwrap();
