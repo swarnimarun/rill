@@ -28,11 +28,12 @@ host.
 
 ## Compact reference values
 
-The compact typed backend remains the first path for supported programs. The explicit `backend::emit_reference` oracle uses a uniform tagged
+The compact typed backend remains the first path for supported programs.
+The explicit `backend::emit_reference` oracle uses a uniform tagged
 representation for supported Copy programs, including supported native transport.
-The normal native backend retains upstream checked typed lowering. Its string, scalar and pointer payloads now share a C11
-union. Flattening and extracting nested values copy the payload selected by
-the tag.
+The normal native backend retains upstream checked typed lowering. In the
+reference runtime, string, scalar and pointer payloads now share a C11 union.
+Flattening and extracting nested values copy the payload selected by the tag.
 
 In the archived AArch64 reference-emitter measurements, an inline node shrinks from 64 to 32 bytes. A
 256-byte-buffer value shrinks from 4,216 to 2,112 bytes. This reduces copying

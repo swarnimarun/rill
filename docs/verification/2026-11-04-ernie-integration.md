@@ -31,6 +31,9 @@ The plan commit `cf42928` and compiler-action slice `7e899f8` were pushed as
 normal fast-forwards to `v1-ernie`. The configured GPG signer timed out waiting
 for an interactive prompt. These integration commits use a per-command signing
 override; the user's Git configuration remains unchanged.
+Portable capture `9a02114`, negation `c68dd13`, reference compaction `67c5fda`
+and grammar `0e83182` were also pushed normally. Later slices await the final
+integrated gate before publication.
 
 ## Portable SDL capture
 
@@ -55,10 +58,10 @@ does not establish hardware-renderer or physical-input support.
 
 ## Open verification
 
-The upstream baseline full suite is running separately. Its result is not yet
-an integrated acceptance claim. Compiler callables, automatic headers, editor
-support and demonstrations are still being ported. No delivery phase is marked
-complete by the slices above.
+The functional port is committed and both integrated full suites are running
+on its frozen source. The final Helix workflow is still under investigation.
+The stopped upstream baseline is described below. No delivery phase is marked
+complete by these slices.
 
 ## Boolean syntax and SDL lifecycle
 
