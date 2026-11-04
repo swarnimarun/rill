@@ -389,12 +389,9 @@ fn nullary_layout_does_not_relax_root_loan_conflicts() {
 }
 
 #[test]
-fn payload_roots_and_unconstrained_nonreturning_results_remain_unsupported() {
+fn unknown_payloads_and_unconstrained_nonreturning_results_remain_unsupported() {
     for source in [
         "type O<a> = None | Some(a)\nfn main() { let f = None; match f { None => 42 | Some(_) => 0 } }",
-        "type Mark<a> = Mark(i32)\nfn main() { match Mark(42) { Mark(n) => n } }",
-        "type Stamp<a> = { number: i32 }\nfn main() { let weak = if true { record Stamp { number = 42 } } else { record Stamp { number = 0 } }; weak.number }",
-        "type Flag<a> = Off | On\ntype Link<a> = Link(a,Flag<a>)\nfn tag(x) { match Link(x,Off) { Link(_,f) => f } }\nfn main() { tag(Off) }",
         "fn forever() { forever() }\nfn main() { let unused = forever(); 42 }",
         "fn forever() { forever() }\nfn main() { if false { let unused = forever(); 0 } else { 42 } }",
     ] {
@@ -405,6 +402,8 @@ fn payload_roots_and_unconstrained_nonreturning_results_remain_unsupported() {
         // Do not run the nonreturning controls or conflate typed rejection with
         // rejection by the source checker or by the separate uniform backend.
     }
+    // K2 moves the exact Mark, weak Stamp and Link<Flag<opaque>> controls to
+    // typed_phantom_products.rs. Option<opaque> remains a negative here.
 }
 
 #[test]

@@ -1,5 +1,5 @@
-//! Finite nominal layouts: closed physical fields and separately proved
-//! tag-only enums with frozen logical arguments.
+//! Finite nominal layouts: closed layouts and independently proved Copy
+//! products with complete frozen logical arguments.
 use super::{AdtType, AdtVariant, Type};
 use crate::check::{CheckedProgram, Type as SourceType};
 use std::collections::{HashMap, HashSet};
@@ -11,6 +11,9 @@ pub(super) struct Registry {
     ids: HashMap<SourceType, Type>,
     active: HashSet<SourceType>,
     logical_work: super::logical::Budget,
+    product_work: super::logical::Budget,
+    admission: super::logical::layout::Admission,
+    products: bool,
 }
 impl Registry {
     pub fn build(
@@ -18,13 +21,22 @@ impl Registry {
         instances: &super::instances::Instances,
         native: &super::NativeManifest,
     ) -> Result<Self, String> {
+        let mut product_work = super::logical::Budget::default();
+        let logical = super::logical::Metadata::from_checked_with_budget(
+            checked,
+            instances,
+            &mut product_work,
+        )?;
         let mut registry = Self {
             types: Vec::new(),
-            logical: super::logical::Metadata::from_checked(checked, instances)?,
+            logical,
             pointers: native.pointers.clone(),
             ids: HashMap::new(),
             active: HashSet::new(),
             logical_work: super::logical::Budget::default(),
+            product_work,
+            admission: super::logical::layout::Admission::default(),
+            products: instances.admission.active(),
         };
         for instance in &instances.list {
             for ty in instance
@@ -38,7 +50,12 @@ impl Registry {
         for instance in &instances.list {
             let mut pending = vec![&checked.program.functions[instance.source].body];
             while let Some(expr) = pending.pop() {
-                let ty = super::instances::expression_type(checked, expr, &instance.substitution)?;
+                let ty = super::instances::expression_type(
+                    checked,
+                    expr,
+                    &instance.substitution,
+                    &instances.admission,
+                )?;
                 registry.register(checked, &ty)?;
                 super::instances::runtime_children(checked, expr, &mut pending);
             }
@@ -51,6 +68,23 @@ impl Registry {
         checked: &CheckedProgram<'_>,
         ty: &SourceType,
     ) -> Result<Type, String> {
+        if !self.products {
+            // Preserve the closed/K1 cached-registration path. A previously
+            // registered key cannot newly become an open product.
+            if let Some(ty) = self.ids.get(ty) {
+                return Ok(*ty);
+            }
+            if self.admission.is_product(checked, ty)? {
+                self.products = true;
+            }
+        }
+        if self.products {
+            // Reserve key scans, hashing and both retained copies before any
+            // lookup or insertion, including repeated/cached requests.
+            for _ in 0..6 {
+                super::logical::layout::charge_source(ty, 0, &mut self.product_work)?;
+            }
+        }
         if let Some(ty) = self.ids.get(ty) {
             return Ok(*ty);
         }
@@ -62,6 +96,9 @@ impl Registry {
         }
         if !matches!(ty, SourceType::Nominal(..)) {
             return super::primitive_type(ty);
+        }
+        if self.products {
+            return self.register_product(checked, ty);
         }
         if super::logical::has_opaque(ty) {
             super::logical::charge_type(ty, &mut self.logical_work)?;
@@ -151,7 +188,99 @@ impl Registry {
         self.active.remove(ty);
         Ok(result)
     }
-    pub fn convert(&self, ty: &SourceType) -> Result<Type, String> {
+    fn register_product(
+        &mut self,
+        checked: &CheckedProgram<'_>,
+        ty: &SourceType,
+    ) -> Result<Type, String> {
+        let SourceType::Nominal(name, args) = ty else {
+            return Err("E-TYPED-LOGICAL: invalid product root".into());
+        };
+        let catalog = self.admission.catalog(checked)?;
+        catalog.validate_type(ty, 0, &mut self.product_work)?;
+        let symbolic = if super::logical::has_opaque(ty) {
+            catalog.finite(ty, self.active.len(), &mut self.product_work)?;
+            Some(catalog.instance(&self.logical, name, args, &mut self.product_work)?)
+        } else {
+            None
+        };
+        let definition = catalog.definition(name, &mut self.product_work)?;
+        let declaration = &self.logical.declarations[definition];
+        super::logical::layout::charge_table(declaration, &mut self.product_work)?;
+        let fields = catalog.fields(
+            definition,
+            args,
+            &self.logical.declarations,
+            &mut self.product_work,
+        )?;
+        let names: Vec<_> = declaration
+            .variants
+            .iter()
+            .map(|v| v.name.clone())
+            .collect();
+        let record_fields = declaration.record_fields.clone();
+        if self.active.len() >= 128 || self.types.len() >= 1024 || !self.active.insert(ty.clone()) {
+            return Err("E-TYPED-ADT: recursive or excessive nominal layout".into());
+        }
+        let result = (|| {
+            // A closed descendant retains the original concrete argument
+            // representation. Decode its complete fields with the bounded
+            // catalog instead of cloning an uncharged owner-facing cache.
+            let arguments = if symbolic.is_none() {
+                self.product_work.charge(args.len())?;
+                args.iter()
+                    .map(|arg| self.register(checked, arg))
+                    .collect::<Result<_, _>>()?
+            } else {
+                Vec::new()
+            };
+            let mut variants = Vec::with_capacity(fields.len());
+            for (name, source_fields) in names.into_iter().zip(fields) {
+                let mut fields = Vec::with_capacity(source_fields.len());
+                for field in source_fields {
+                    let field = self.register(checked, &field)?;
+                    if symbolic.is_some() && field.is_owner() {
+                        return Err(
+                            "E-TYPED-UNSUPPORTED: symbolic products require Copy physical fields"
+                                .into(),
+                        );
+                    }
+                    fields.push(field);
+                }
+                variants.push(AdtVariant { name, fields });
+            }
+            let owned = variants
+                .iter()
+                .flat_map(|v| &v.fields)
+                .any(|ty| ty.is_owner());
+            if owned && record_fields.is_some() {
+                return Err("E-TYPED-UNSUPPORTED: owned records require initialization and cleanup tracking".into());
+            }
+            if self.types.len() >= 1024 {
+                return Err("E-TYPED-ADT: excessive nominal layout".into());
+            }
+            let id = self.types.len();
+            self.types.push(AdtType {
+                symbolic,
+                origin: super::AdtOrigin::Source,
+                record_fields,
+                name: name.clone(),
+                arguments,
+                variants,
+                owned,
+            });
+            let result = Type::Adt { id, owned };
+            self.ids.insert(ty.clone(), result);
+            Ok(result)
+        })();
+        self.active.remove(ty);
+        result
+    }
+
+    pub fn convert(&mut self, ty: &SourceType) -> Result<Type, String> {
+        if self.products {
+            super::logical::layout::charge_source(ty, 0, &mut self.product_work)?;
+        }
         if let Some(ty) = self.ids.get(ty) {
             Ok(*ty)
         } else {
@@ -178,14 +307,10 @@ pub(super) fn verify(types: &[AdtType]) -> Result<(), String> {
             return Err("E-TYPED-ADT: invalid nominal identity".into());
         }
         if adt.symbolic.is_some()
-            && (adt.origin != super::AdtOrigin::Source
-                || adt.owned
-                || adt.record_fields.is_some()
-                || !adt.arguments.is_empty()
-                || adt.variants.iter().any(|v| !v.fields.is_empty()))
+            && (adt.origin != super::AdtOrigin::Source || adt.owned || !adt.arguments.is_empty())
         {
             return Err(
-                "E-TYPED-LOGICAL: symbolic arguments require a tag-only source enum".into(),
+                "E-TYPED-LOGICAL: symbolic arguments require a proved Copy source layout".into(),
             );
         }
         super::records::verify_definition(adt)?;
@@ -313,5 +438,95 @@ mod symbolic_budget_tests {
         assert_eq!(registry.ids.len(), before.1 + 1);
         // Reusing a verified complete layout does not clone another tag table.
         assert_eq!(registry.register(&checked, &nested).unwrap(), ty);
+    }
+}
+
+#[cfg(test)]
+mod product_budget_tests {
+    use super::*;
+    use crate::{check, parser};
+
+    #[test]
+    fn closed_descendant_expansion_is_reserved_before_any_parent_publication() {
+        let parsed = parser::parse("type Mark<a> = Mark(i32)\ntype Wide = Wide(i32,i32,i32,i32,i32,i32,i32,i32)\ntype Target<a> = Target(Wide)\nfn main() { Mark(42) }").unwrap();
+        let checked = check::analyze(&parsed).unwrap();
+        let instances = super::super::instances::Instances::discover(&checked).unwrap();
+        let native = super::super::NativeManifest::from_checked(&checked).unwrap();
+        let new_type = SourceType::Nominal("Target".into(), vec![SourceType::Var(0)]);
+        let mut measured = Registry::build(&checked, &instances, &native).unwrap();
+        measured.product_work = super::super::logical::Budget::default();
+        measured.register(&checked, &new_type).unwrap();
+        let cost = measured.product_work.used();
+        let mut registry = Registry::build(&checked, &instances, &native).unwrap();
+        let before = (registry.types.len(), registry.ids.len());
+        registry.product_work = super::super::logical::Budget::default();
+        registry
+            .product_work
+            .charge(super::super::logical::MAX_WORK - cost + 1)
+            .unwrap();
+        assert!(registry
+            .register(&checked, &new_type)
+            .unwrap_err()
+            .contains("LOGICAL-COMPLEXITY"));
+        assert_eq!((registry.types.len(), registry.ids.len()), before);
+        assert!(registry.active.is_empty());
+    }
+
+    #[test]
+    fn product_registration_reserves_before_parent_publication() {
+        let parsed = parser::parse(
+            "type Flag<a> = Off | On\ntype Mark<a> = Mark(i32)\nfn main() { Mark(42) }",
+        )
+        .unwrap();
+        let checked = check::analyze(&parsed).unwrap();
+        let instances = super::super::instances::Instances::discover(&checked).unwrap();
+        let native = super::super::NativeManifest::from_checked(&checked).unwrap();
+        let new_type = SourceType::Nominal(
+            "Mark".into(),
+            vec![SourceType::Nominal("Flag".into(), vec![SourceType::Var(0)])],
+        );
+        let mut measured = Registry::build(&checked, &instances, &native).unwrap();
+        measured.product_work = super::super::logical::Budget::default();
+        measured.register(&checked, &new_type).unwrap();
+        let cost = measured.product_work.used();
+        for (remaining, success) in [(cost, true), (cost - 1, false)] {
+            let mut registry = Registry::build(&checked, &instances, &native).unwrap();
+            let before = (
+                registry.types.len(),
+                registry.ids.len(),
+                registry.pointers.len(),
+            );
+            registry.product_work = super::super::logical::Budget::default();
+            registry
+                .product_work
+                .charge(super::super::logical::MAX_WORK - remaining)
+                .unwrap();
+            let result = registry.register(&checked, &new_type);
+            assert_eq!(result.is_ok(), success);
+            assert!(registry.active.is_empty());
+            if success {
+                assert_eq!(
+                    registry.product_work.used(),
+                    super::super::logical::MAX_WORK
+                );
+                assert_eq!(registry.types.len(), before.0 + 1);
+                // Cached lookup is bounded work too; exhausted budget cannot
+                // perform an uncharged hash/compare on a duplicate request.
+                assert!(registry
+                    .register(&checked, &new_type)
+                    .unwrap_err()
+                    .contains("LOGICAL-COMPLEXITY"));
+            } else {
+                assert!(result.unwrap_err().contains("LOGICAL-COMPLEXITY"));
+                assert_eq!(
+                    (
+                        registry.types.len(),
+                        registry.ids.len(),
+                        registry.pointers.len()
+                    ),
+                    before
+                );
+            }
+        }
     }
 }

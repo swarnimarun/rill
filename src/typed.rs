@@ -1,6 +1,6 @@
 //! A provisional typed IR for closed scalar, static-string, fixed byte-buffer/
 //! vector, finite enum/record and Copy native-transport programs, plus bounded
-//! all-nullary enums with frozen logical phantom arguments.
+//! finite Copy products with frozen logical phantom arguments.
 //!
 //! This is not the verified MIR in PLAN.md. Lowering requires an existing
 //! checked program. The C backend uses it for supported forms; owned-box
@@ -31,6 +31,8 @@ mod field_loans;
 mod field_loans_tests;
 #[cfg(test)]
 mod foreign_tests;
+#[cfg(test)]
+mod independent_phantom_product_tests;
 mod initialization;
 #[cfg(test)]
 mod initialization_tests;
@@ -110,7 +112,7 @@ pub enum AdtOrigin {
 
 #[derive(Clone, Debug)]
 pub struct AdtType {
-    /// Full logical arguments of a proved all-nullary open enum. Closed layouts
+    /// Full logical arguments of a proved finite Copy open nominal. Closed layouts
     /// retain `arguments`; opaque identities never become runtime `Type`s.
     pub symbolic: Option<SymbolicInstance>,
     pub origin: AdtOrigin,
@@ -467,7 +469,12 @@ impl Lower<'_, '_> {
         Ok(id)
     }
     fn source_type(&self, expr: &Expr) -> Result<InferredType, String> {
-        instances::expression_type(self.checked, expr, self.substitution)
+        instances::expression_type(
+            self.checked,
+            expr,
+            self.substitution,
+            &self.instances.admission,
+        )
     }
     fn expr(&mut self, expr: &Expr) -> Result<ExprNode, String> {
         self.expr_observed(expr).map(|lowered| lowered.value)

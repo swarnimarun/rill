@@ -26,9 +26,9 @@ passed 715 default and 763 importer-enabled tests, both strict Clippy modes,
 both Windows compile modes and formatting. Exact source and limits are in the
 report; this is not completion of the full P1 gate.
 
-## Admission boundary
+## K1 admission boundary
 
-An unresolved runtime value type is admitted only when its outer nominal
+In K1, an unresolved runtime value type is admitted only when its outer nominal
 declaration is an enum whose **complete variant set is nullary**. The same
 rule applies to entry results, function parameters/results, evaluated
 initializers, local reads, assignments, and match scrutinees. The constructor
@@ -40,10 +40,10 @@ primitive types, nominal definition identities and arities, raw-pointer pointee
 spelling and constness, owner dependencies, and unresolved binder identities
 remain meaningful even though no argument bytes are stored.
 
-The first slice intentionally keeps **open runtime roots** narrower than that
+The first slice intentionally kept **open runtime roots** narrower than that
 logical argument grammar. Payload-bearing products containing symbolic nullary
-values still remain unsupported. For example, this source receives ordinary
-typed rejection rather than silently extending the product boundary:
+values were unsupported in K1. For example, the following was an ordinary
+typed rejection control rather than an implicit product extension:
 
 ```rill
 type Flag<a> = Off | On
@@ -52,11 +52,13 @@ fn tag(x) { match Link(x,Off) { Link(_,f) => f } }
 fn main() { tag(Off) }
 ```
 
-The `Link<Flag<a>>` value is a physical payload-bearing root. It is outside this
-slice even though its fields could in principle have finite tag layouts.
-Supporting such roots belongs to separately reviewed product work. This limit
-does not permit losing the full nested identity of arguments that are carried
-only logically under an admitted nullary root.
+The `Link<Flag<a>>` value is a physical payload-bearing root. The accepted
+[K2 increment](typed-phantom-products.md) moves this exact fixture into its
+positive suite using complete field-schema reconstruction. K2 also
+includes fixed-field Mark/Stamp products and `Option<Flag<opaque>>`, while
+`Option<opaque>` remains unsupported. K2 has separate focused, independent and full aggregate acceptance
+evidence. Neither slice permits losing full nested
+identity merely because an argument is carried only logically.
 
 Already accepted closed finite aggregates and phantom-owner cases retain their
 existing behavior. No new arbitrary witness such as `unit`, `i32`, or a fabricated
@@ -168,8 +170,8 @@ field types and identity arguments must remain exactly equal under the existing
 capture verifier; binder visibility is propagated through those fields. This
 allows a generalized local record shape to return `Flag<Flag<a>>` without ever
 materializing its open source record layout. The regression suite includes that
-source construction, separately from the rejected physical `Link<Flag<a>>`
-case above.
+source construction, separately from the originally rejected physical
+`Link<Flag<a>>` case now assigned to K2 above.
 
 ## Source rules and native/owner boundaries stay intact
 
@@ -220,10 +222,12 @@ The suite distinguishes ordinary typed rejection from source rejection and
 from the independent reference/uniform backend's capabilities. In particular:
 
 - `None | Some(a)` is not all-nullary, even when execution selects `None`.
-- `Mark<a> = Mark(i32)` and `Stamp<a> = { number: i32 }` need separately proved
-  fixed-layout phantom-product support.
-- Physical payload wrappers around symbolic nullary values remain unsupported
-  in this first slice, as described above.
+  K2 admits `Option<Flag<opaque>>` by proving both variants, not by erasing
+  Some's payload; genuinely unknown `Option<opaque>` remains rejected.
+- `Mark<a> = Mark(i32)`, `Stamp<a> = { number: i32 }` and finite physical
+  wrappers around symbolic nullary values move to the accepted
+  [K2 acceptance assertions](../tests/typed_phantom_products.rs). They were
+  intentionally excluded from this first slice; K1 evidence does not certify K2.
 - A bare unresolved result of `fn forever() { forever() }` is not a phantom
   value. Dead branches containing that result still receive ordinary static
   representation checking. No termination analysis or discarded-result rule

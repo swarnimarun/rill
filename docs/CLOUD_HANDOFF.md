@@ -204,7 +204,12 @@ compilation-branded logical arguments separately from verified tag-only layouts.
 Ordinary typed evaluation/C now handles dynamic nullary tags, weak/mutable
 values, generic forwarding and existing root loans without choosing a default
 type. Canonical full-declaration checks prevent inactive-payload erasure;
-optional origin APIs remain closed. Open physical payload products still need
-separate field-schema reconstruction. The [integrated verification](verification/2026-11-03-nullary-phantoms.md)
+optional origin APIs remain closed. The [integrated K1 verification](verification/2026-11-03-nullary-phantoms.md)
 passed 715 default and 763 importer-enabled tests, both strict Clippy and Windows
 compile modes, plus independent probes and GCC/Clang O0/O2 execution.
+The accepted [K2 product follow-on](typed-phantom-products.md) proves complete
+finite Copy field-schema reconstruction, including nested symbolic fields and
+`Option<Flag<opaque>>`. Its [integrated matrix](verification/2026-11-03-phantom-products.md)
+passed 762 default and 810 importer-enabled tests, both strict Clippy and Windows
+compile modes, plus independent malformed-layout and native/C checks. Genuinely
+unknown stored payloads and bare unresolved/no-return values remain out of scope.

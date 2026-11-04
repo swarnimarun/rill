@@ -1,6 +1,7 @@
-//! Frozen logical identities for tag-only enum layouts. These are not runtime
-//! types or inference variables. Only a complete all-nullary declaration can
-//! hide an opaque argument; every other runtime layout stays closed.
+//! Frozen logical identities with independently reconstructed finite Copy
+//! representations. Opaque arguments are not runtime types or inference
+//! variables and never acquire a fabricated physical representation.
+pub(super) mod layout;
 use super::{AdtOrigin, Type, TypedMain};
 use crate::ast::{TypeDecl, TypeExpr};
 use crate::check::{CheckedProgram, Type as SourceType};
@@ -90,6 +91,10 @@ pub(super) struct Metadata {
 #[derive(Default)]
 pub(super) struct Budget(usize);
 impl Budget {
+    #[cfg(test)]
+    pub fn used(&self) -> usize {
+        self.0
+    }
     pub fn charge(&mut self, count: usize) -> Result<(), String> {
         self.0 = self
             .0
@@ -362,14 +367,35 @@ impl Metadata {
         })
     }
 
+    #[cfg(test)]
     pub fn from_checked(
         checked: &CheckedProgram<'_>,
         instances: &super::instances::Instances,
+    ) -> Result<Self, String> {
+        Self::from_checked_with_budget(checked, instances, &mut Budget::default())
+    }
+
+    pub fn from_checked_with_budget(
+        checked: &CheckedProgram<'_>,
+        instances: &super::instances::Instances,
+        product_work: &mut Budget,
     ) -> Result<Self, String> {
         if instances.binders.is_empty() {
             return Ok(Self::default());
         }
         let mut budget = Budget::default();
+        if instances.admission.active() {
+            // Separate reservations for schema validation, retained metadata
+            // copying and the checked-source equality pass below.
+            for _ in 0..3 {
+                layout::charge_schema(&checked.program.types, product_work)?;
+            }
+            product_work.charge(checked.program.functions.len())?;
+            for function in &checked.program.functions {
+                product_work.charge(function.name.len().checked_mul(2).ok_or(LIMIT)?)?;
+            }
+            product_work.charge(instances.list.len() + instances.binders.len())?;
+        }
         schema_dependencies(&checked.program.types, &mut budget)?;
         budget.charge(
             checked.program.functions.len() + instances.list.len() + instances.binders.len(),
@@ -433,6 +459,15 @@ impl Metadata {
     }
 
     pub fn instance(&self, name: &str, args: &[SourceType]) -> Result<SymbolicInstance, String> {
+        if self
+            .declarations
+            .iter()
+            .find(|decl| decl.name == name)
+            .is_some_and(|decl| !all_nullary(decl))
+        {
+            let catalog = layout::Catalog::new(&self.declarations, &mut Budget::default())?;
+            return catalog.instance(self, name, args, &mut Budget::default());
+        }
         let mut budget = Budget::default();
         let deps = schema_dependencies(&self.declarations, &mut budget)?;
         let definition = self
@@ -568,7 +603,43 @@ impl Metadata {
                 allowed: vec![HashSet::new(); program.functions.len()],
             });
         }
-        let schema = schema_dependencies(&self.declarations, budget)?;
+        let mut preparation = Budget::default();
+        let mut classifications = HashMap::new();
+        let mut products = false;
+        preparation.charge(program.adts.len())?;
+        for instance in program.adts.iter().filter_map(|adt| adt.symbolic.as_ref()) {
+            let product = if let Some(&product) = classifications.get(&instance.definition) {
+                product
+            } else {
+                let declaration = self.declarations.get(instance.definition).ok_or(INVALID)?;
+                preparation.charge(declaration.variants.len())?;
+                let product = !all_nullary(declaration);
+                classifications.insert(instance.definition, product);
+                product
+            };
+            products |= product;
+        }
+        // Builder caches are deliberately not retained in Metadata. Rebuild
+        // canonical demand facts and use a separate cumulative proof budget.
+        let catalog = if products {
+            Some(layout::Catalog::new(&self.declarations, &mut preparation)?)
+        } else {
+            None
+        };
+        let closed_schema;
+        let schema = if let Some(catalog) = &catalog {
+            &catalog.dependencies
+        } else {
+            closed_schema = schema_dependencies(&self.declarations, budget)?;
+            &closed_schema
+        };
+        let mut product_work = Budget::default();
+        if products {
+            product_work.charge(self.source_functions.len())?;
+            for name in &self.source_functions {
+                product_work.charge(name.len())?;
+            }
+        }
         budget.charge(
             self.binders.len()
                 + self.scope_sources.len()
@@ -626,14 +697,29 @@ impl Metadata {
                 budget.charge(variant.fields.len())?;
             }
             let mut binders = HashSet::new();
+            if products {
+                product_work.charge(adt.name.len())?;
+                product_work.charge(adt.arguments.len())?;
+                if let Some(fields) = &adt.record_fields {
+                    product_work.charge(fields.len())?;
+                    for name in fields {
+                        product_work.charge(name.len())?;
+                    }
+                }
+                product_work.charge(adt.variants.len())?;
+                for variant in &adt.variants {
+                    product_work.charge(variant.name.len())?;
+                    product_work.charge(variant.fields.len())?;
+                }
+            }
             if let Some(instance) = &adt.symbolic {
                 let decl = self.declarations.get(instance.definition).ok_or(INVALID)?;
                 if adt.origin != AdtOrigin::Source
                     || adt.owned
-                    || adt.record_fields.is_some()
+                    || (!products && adt.record_fields.is_some())
                     || !adt.arguments.is_empty()
                     || adt.name != decl.name
-                    || !all_nullary(decl)
+                    || (!products && !all_nullary(decl))
                     || instance.arguments.len() != decl.params.len()
                     || adt.variants.len() != decl.variants.len()
                     || adt
@@ -641,14 +727,17 @@ impl Metadata {
                         .iter()
                         .zip(&decl.variants)
                         .any(|(actual, expected)| {
-                            actual.name != expected.name || !actual.fields.is_empty()
+                            actual.name != expected.name || (!products && !actual.fields.is_empty())
                         })
                 {
                     return Err(INVALID.into());
                 }
-                let mut deps = Dependencies::default();
+                let mut deps = schema[instance.definition];
                 for arg in &instance.arguments {
-                    deps.include(self.check_type(arg, &schema, &mut binders, 0, budget)?);
+                    if products {
+                        layout::charge_logical(arg, 0, &mut product_work)?;
+                    }
+                    deps.include(self.check_type(arg, schema, &mut binders, 0, budget)?);
                 }
                 if binders.is_empty() || deps != instance.dependencies {
                     return Err(INVALID.into());
@@ -662,16 +751,22 @@ impl Metadata {
                 if let Type::Adt { id, .. } = ty {
                     let child = adt_binders.get(*id).ok_or(INVALID)?;
                     budget.charge(child.len())?;
-                    // Source payload products around open enum values need the
-                    // next field-schema proof. Private capture products already
-                    // prove exact field/identity equality independently.
-                    if adt.origin == AdtOrigin::Source && !child.is_empty() {
+                    // Source products must retain their own complete logical
+                    // identity and canonical field proof. Private captures have
+                    // a separate exact field/identity contract.
+                    if adt.origin == AdtOrigin::Source
+                        && adt.symbolic.is_none()
+                        && !child.is_empty()
+                    {
                         return Err(INVALID.into());
                     }
                     binders.extend(child);
                 }
             }
             adt_binders.push(binders);
+        }
+        if let Some(catalog) = &catalog {
+            layout::verify(self, program, catalog, &mut product_work)?;
         }
         let mut allowed = Vec::new();
         let mut keys = HashSet::new();

@@ -529,3 +529,195 @@ fn opaque_identities_cannot_be_spliced_between_compilations() {
         .validate_source(&checked, &instances)
         .is_err());
 }
+
+#[test]
+fn product_proof_reconstructs_closed_descendants_not_just_their_names() {
+    let original = lower("type Fixed = Fixed(i32)\ntype Middle = Middle(Fixed)\ntype Mark<a> = Mark(Middle)\nfn main() { Mark(Middle(Fixed(42))) }");
+    for target in ["Fixed", "Middle"] {
+        let mut forged = original.clone();
+        let id = forged.adts.iter().position(|a| a.name == target).unwrap();
+        forged.adts[id].variants[0].fields[0] = Type::Bool;
+        assert!(verify(&forged).unwrap_err().contains("E-TYPED-LOGICAL"));
+        reject(&forged);
+    }
+}
+
+#[test]
+fn product_kind_fields_variants_and_copy_leaves_are_canonical() {
+    let original = lower(
+        "type Stamp<a> = { n: i32; b: bool }\nfn main() { record Stamp { b = false; n = 42 } }",
+    );
+    let id = symbolic(&original);
+    for mutation in 0..9 {
+        let mut forged = original.clone();
+        match mutation {
+            0 => forged.adts[id].record_fields = None,
+            1 => forged.adts[id].record_fields.as_mut().unwrap().swap(0, 1),
+            2 => forged.adts[id].variants[0].fields.swap(0, 1),
+            3 => {
+                forged.adts[id].variants[0].fields.pop();
+            }
+            4 => forged.adts[id].variants[0].name = "NotStamp".into(),
+            5 => forged.adts[id].variants[0].fields[0] = Type::OwnedI32,
+            6 => forged.adts[id].variants[0].fields[0] = Type::Adt { id, owned: false },
+            7 => forged.adts[id].symbolic = None,
+            8 => forged.adts[id].origin = AdtOrigin::LocalCapture,
+            _ => unreachable!(),
+        }
+        reject(&forged);
+    }
+}
+
+#[test]
+fn product_fields_preserve_nested_logical_and_closed_phantom_identity() {
+    for source in [
+        "type Flag<a> = Off | On\ntype Link<a> = Link(a, Flag<a>)\nfn main() { Link(Off, On) }",
+        "type Flag<a> = Off | On\ntype Pair<a> = Pair(Flag<i32>, Flag<bool>)\nfn main() { Pair(Off, On) }",
+    ] {
+        let original = lower(source);
+        let id = original.adts.iter().position(|a| a.symbolic.is_some() && !a.variants[0].fields.is_empty()).unwrap();
+        assert_ne!(original.adts[id].variants[0].fields[0], original.adts[id].variants[0].fields[1]);
+        let mut forged = original.clone();
+        forged.adts[id].variants[0].fields.swap(0, 1);
+        assert!(verify(&forged).unwrap_err().contains("E-TYPED-LOGICAL"));
+        reject(&forged);
+        let mut forged = original.clone();
+        forged.adts[id].symbolic = None;
+        reject(&forged);
+    }
+}
+
+#[test]
+fn optional_payload_proof_never_uses_the_selected_constructor() {
+    let original = lower("type Flag<a> = Off | On\ntype Option<a> = None | Some(a)\nfn main() { if true { None } else { Some(Off) } }");
+    let id = original
+        .adts
+        .iter()
+        .position(|a| a.name == "Option")
+        .unwrap();
+    for mutation in 0..5 {
+        let mut forged = original.clone();
+        match mutation {
+            0 => {
+                forged.adts[id].variants.pop();
+            }
+            1 => forged.adts[id].variants[1].fields.clear(),
+            2 => forged.adts[id].variants[1].fields[0] = Type::Unit,
+            3 => {
+                forged.adts[id].symbolic.as_mut().unwrap().arguments[0] =
+                    LogicalType::Opaque(forged.logical.opaque_id(0).unwrap());
+                forged.adts[id].variants[1].fields[0] = Type::Unit;
+            }
+            4 => forged.adts[id].variants.swap(0, 1),
+            _ => unreachable!(),
+        }
+        assert!(verify(&forged).unwrap_err().contains("E-TYPED-LOGICAL"));
+        reject(&forged);
+    }
+}
+
+#[test]
+fn physical_native_fields_keep_intrinsic_dependency_and_pointer_identity() {
+    let original =
+        lower("type Raw<a> = Raw(u32, const_ptr<void>)\nfn main() { Raw(u32(42), c_null()) }");
+    let id = symbolic(&original);
+    assert!(
+        original.adts[id]
+            .symbolic
+            .as_ref()
+            .unwrap()
+            .dependencies
+            .native
+    );
+    let mut forged = original.clone();
+    forged.adts[id]
+        .symbolic
+        .as_mut()
+        .unwrap()
+        .dependencies
+        .native = false;
+    reject(&forged);
+    for mutation in 0..3 {
+        let mut forged = original.clone();
+        let Type::RawPointer(pointer) = forged.adts[id].variants[0].fields[1] else {
+            panic!()
+        };
+        match mutation {
+            0 => forged.native.pointers[pointer.0 as usize].is_const = false,
+            1 => forged.native.pointers[pointer.0 as usize].pointee = "Other".into(),
+            2 => forged.adts[id].variants[0].fields[1] = Type::RawPointer(PointerTypeId(u32::MAX)),
+            _ => unreachable!(),
+        }
+        reject(&forged);
+    }
+}
+
+#[test]
+fn product_body_binders_do_not_escape_through_physical_fields() {
+    let mut program = lower("type Stamp<a> = { n: i32 }\nfn independent(x) { let r = if true { record Stamp { n = 1 } } else { record Stamp { n = 2 } }; x }\nfn main() { if independent(true) { independent(42) } else { 0 } }");
+    let ids: Vec<_> = program
+        .adts
+        .iter()
+        .enumerate()
+        .filter(|(_, a)| a.symbolic.is_some())
+        .map(|(i, _)| i)
+        .collect();
+    assert_eq!(ids.len(), 2);
+    let scope = match &program.adts[ids[0]].symbolic.as_ref().unwrap().arguments[0] {
+        LogicalType::Opaque(binder) => program.logical.binders[binder.index].scope,
+        _ => panic!(),
+    };
+    let function = program
+        .logical
+        .function_scopes
+        .iter()
+        .position(|s| *s == scope)
+        .unwrap();
+    let ExprKind::Let { value, .. } = &mut program.functions[function].body.kind else {
+        panic!()
+    };
+    let ExprKind::If(_, yes, _) = &mut value.kind else {
+        panic!()
+    };
+    yes.ty = Type::Adt {
+        id: ids[1],
+        owned: false,
+    };
+    let ExprKind::Record { adt, .. } = &mut yes.kind else {
+        panic!()
+    };
+    *adt = ids[1];
+    assert!(verify(&program).unwrap_err().contains("scope"));
+    reject(&program);
+}
+
+#[test]
+fn consistent_product_schema_rewrite_still_fails_checked_source_correspondence() {
+    let parsed = parser::parse("type Mark<a> = Mark(i32)\nfn main() { Mark(42) }").unwrap();
+    let checked = check::analyze(&parsed).unwrap();
+    let (mut program, instances) = lower_main_traced(&checked, None, None).unwrap();
+    program
+        .logical
+        .validate_source(&checked, &instances)
+        .unwrap();
+    let id = symbolic(&program);
+    let definition = program.adts[id].symbolic.as_ref().unwrap().definition;
+    program.logical.declarations[definition].variants[0].fields[0].name = "bool".into();
+    program.adts[id].variants[0].fields[0] = Type::Bool;
+    let ExprKind::Constructor { fields, .. } = &mut program.functions[program.entry].body.kind
+    else {
+        panic!()
+    };
+    fields[0] = ExprNode {
+        ty: Type::Bool,
+        kind: ExprKind::Bool(true),
+    };
+    // This describes a different, internally valid finite Copy program.
+    verify(&program).unwrap();
+    assert_eq!(evaluate(&program).unwrap().to_string(), "Mark(true)");
+    assert!(program
+        .logical
+        .validate_source(&checked, &instances)
+        .unwrap_err()
+        .contains("checked source"));
+}

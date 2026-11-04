@@ -33,6 +33,7 @@ pub(super) struct Instances {
     pub entry: usize,
     ids: HashMap<Key, usize>,
     pub binders: Vec<super::logical::OpaqueBinding>,
+    pub admission: super::logical::layout::Admission,
     budget: super::logical::Budget,
 }
 
@@ -63,14 +64,21 @@ impl Instances {
             ids: HashMap::new(),
             binders: Vec::new(),
             budget: super::logical::Budget::default(),
+            admission: super::logical::layout::Admission::default(),
         };
         let mut entry_context = Substitution::new();
         result.freeze_unbound(checked, main, 0, &mut entry_context)?;
         let entry_key = Key {
             source: main,
             params: vec![],
-            result: substitute_logical(checked, &signature.result, &entry_context)?,
+            result: substitute_logical(
+                checked,
+                &signature.result,
+                &entry_context,
+                &result.admission,
+            )?,
         };
+        result.admission.reserve_type(&entry_key.result, 1)?;
         let entry = result.insert_seeded(checked, entry_key.clone(), Some(entry_context))?;
         if let Some(trace) = &mut trace {
             trace.request(None, None, entry);
@@ -78,6 +86,12 @@ impl Instances {
         let mut next = 0;
         while next < result.list.len() {
             let instance = &result.list[next];
+            result
+                .admission
+                .reserve_entries(instance.substitution.len())?;
+            for ty in instance.substitution.values() {
+                result.admission.reserve_type(ty, 1)?;
+            }
             let context = instance.substitution.clone();
             let source = instance.source;
             let function = &checked.program.functions[source];
@@ -90,12 +104,12 @@ impl Instances {
                     path.steps.truncate(depth);
                     steps.append(&mut path.steps);
                 }
-                let ty = expression_type(checked, expr, &context)?;
+                let ty = expression_type(checked, expr, &context, &result.admission)?;
                 if let Expr::Call(name, args) = expr {
                     if let Some(&source) = result.functions.get(name) {
                         let params = args
                             .iter()
-                            .map(|a| expression_type(checked, a, &context))
+                            .map(|a| expression_type(checked, a, &context, &result.admission))
                             .collect::<Result<_, _>>()?;
                         let callee = result.insert(
                             checked,
@@ -138,6 +152,14 @@ impl Instances {
         result.list.sort_by_key(|instance| instance.source);
         result.ids.clear();
         for (id, instance) in result.list.iter().enumerate() {
+            result.admission.reserve_entries(instance.params.len())?;
+            for ty in instance
+                .params
+                .iter()
+                .chain(std::iter::once(&instance.result))
+            {
+                result.admission.reserve_type(ty, 2)?;
+            }
             result.ids.insert(
                 Key {
                     source: instance.source,
@@ -147,6 +169,7 @@ impl Instances {
                 id,
             );
         }
+        result.admission.reserve_type(&entry_key.result, 1)?;
         result.entry = result.ids[&entry_key];
         Ok(result)
     }
@@ -161,7 +184,11 @@ impl Instances {
         key: Key,
         seed: Option<Substitution>,
     ) -> Result<usize, String> {
+        self.admission.reserve_entries(key.params.len())?;
         for ty in key.params.iter().chain(std::iter::once(&key.result)) {
+            // Reserve signature hashing, substitution matching/copying and
+            // retained list/key copies before the first key lookup.
+            self.admission.reserve_type(ty, 6)?;
             if super::logical::has_opaque(ty) {
                 super::logical::charge_type(ty, &mut self.budget)?;
             }
@@ -280,6 +307,10 @@ impl Instances {
     }
 
     pub fn call(&self, name: &str, params: Vec<Type>, result: Type) -> Result<usize, String> {
+        self.admission.reserve_entries(name.len() + params.len())?;
+        for ty in params.iter().chain(std::iter::once(&result)) {
+            self.admission.reserve_type(ty, 1)?;
+        }
         let &source = self
             .functions
             .get(name)
@@ -299,6 +330,7 @@ pub(super) fn expression_type(
     checked: &CheckedProgram<'_>,
     expr: &Expr,
     context: &Substitution,
+    admission: &super::logical::layout::Admission,
 ) -> Result<Type, String> {
     substitute_logical(
         checked,
@@ -306,6 +338,7 @@ pub(super) fn expression_type(
             .expression_type(expr)
             .ok_or("E-TYPED: missing checked expression type")?,
         context,
+        admission,
     )
 }
 
@@ -313,6 +346,7 @@ fn substitute_logical(
     checked: &CheckedProgram<'_>,
     ty: &Type,
     context: &Substitution,
+    admission: &super::logical::layout::Admission,
 ) -> Result<Type, String> {
     fn walk(
         ty: &Type,
@@ -357,15 +391,22 @@ fn substitute_logical(
             _ => Ok(false),
         }
     }
-    // Keep the prior closed conversion and its limits exactly intact. The new
-    // representation budget applies only when a frozen argument is present.
+    // Keep the prior closed conversion and its limits exactly intact until
+    // product admission activates this lowering's cumulative accounting.
+    let prepared = admission.active();
+    if prepared {
+        admission.charge_substitution(checked, ty, context)?;
+    }
     if !needs_logical(ty, context, 0)? {
         return substitute(ty, context);
+    }
+    if !prepared {
+        admission.charge_substitution(checked, ty, context)?;
     }
     let mut budget = super::logical::Budget::default();
     let result = walk(ty, context, 0, &mut budget)?;
     super::logical::charge_type(&result, &mut budget)?;
-    super::logical::admit(checked, &result)?;
+    admission.admit(checked, &result)?;
     Ok(result)
 }
 

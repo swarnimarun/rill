@@ -110,8 +110,8 @@ independently verified tag-only layouts. Their combined acceptance passed
 715 default and 763 importer-enabled tests plus independent native/C probes;
 see [nullary-phantom verification](verification/2026-11-03-nullary-phantoms.md).
 Other unresolved real uses and weak monotypes still require a separately
-proved representation. Fixed-layout phantom products and nonreturning results
-remain subsequent bounded kernel work. Existing native
+proved representation. Fixed-layout phantom products have bounded acceptance below;
+nonreturning results remain subsequent bounded kernel work. Existing native
 `i32`/`bool` calls and constants, `unit` results and direct static `cstr`
 arguments now use explicit typed operations and retain the full native manifest.
 Existing unsigned/float/raw-pointer transport now also uses the checked typed
@@ -127,6 +127,15 @@ coverage remain open. See the
 [local-value verification](verification/2026-11-03-typed-local-values.md), and
 [native-call verification](verification/2026-11-03-typed-native-calls.md), and
 [raw native integration](verification/2026-11-03-typed-native-raw-integration.md).
+
+The accepted [K2 phantom-product contract](typed-phantom-products.md) extends K1 with finite Copy records/enums whose
+complete physical field layouts are provable despite opaque logical arguments.
+This includes `Mark<opaque>`, `Stamp<opaque>`, `Link<Flag<opaque>>` and
+`Option<Flag<opaque>>`, not `Option<opaque>` or bare unresolved/no-return
+values. [Integrated checks](verification/2026-11-03-phantom-products.md) pass
+762 default and 810 importer-enabled tests plus independent GCC/Clang, native
+and malformed-layout cases. Preserve source inference/ownership/loan rules, full native/owner
+dependencies and the closed optional-origin APIs. This is not P1/P2 completion.
 
 ## 4. Complete P3 and P4 contracts
 

@@ -44,9 +44,14 @@ not a replacement for those gates.
   evaluator rejection. All-nullary enums with unresolved phantom arguments now
   have separate branded logical identities and verified tag-only runtime layouts,
   including dynamic tags, weak/mutable values, generic calls and root loans.
-  Open payload-bearing roots remain unsupported; see the [bounded contract](typed-nullary-phantoms.md)
+  See the [bounded K1 contract](typed-nullary-phantoms.md)
   and [integrated verification](verification/2026-11-03-nullary-phantoms.md),
   with 715 default and 763 importer-enabled tests passing.
+  The accepted [K2 product increment](typed-phantom-products.md) verifies
+  complete finite Copy fields with opaque logical arguments, including
+  `Option<Flag<opaque>>`, while rejecting actual unknown stored payloads.
+  Its full matrix passed 762 default and 810 importer-enabled tests, with
+  independent malformed-layout/native/C checks.
   Other unsupported Copy layouts retain the uniform fallback. This is not P1 or P5 completion; see the
   [F2 evidence and limits](verification/2026-11-03-typed-native-transport.md) and
   [final integrated checks and SDL captures](verification/2026-11-03-typed-native-raw-integration.md).

@@ -1275,6 +1275,40 @@ fn type_deps(t: &TypeExpr, names: &HashSet<String>, params: &[String], out: &mut
     }
 }
 
+fn reject_recursive_types(program: &Program, type_names: &HashSet<String>) -> Result<(), String> {
+    // Without an indirection type, recursive nominal layouts cannot be finite.
+    let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
+    for decl in &program.types {
+        let mut d = HashSet::new();
+        for v in &decl.variants {
+            for f in &v.fields {
+                type_deps(f, type_names, &decl.params, &mut d)
+            }
+        }
+        deps.insert(decl.name.clone(), d);
+    }
+    // Traversal and witness selection follow declaration order, not hash order.
+    for outer in &program.types {
+        let k = &outer.name;
+        for inner in &program.types {
+            let i = &inner.name;
+            if deps[i].contains(k) {
+                let trans = deps[k].clone();
+                deps.get_mut(i).unwrap().extend(trans);
+            }
+        }
+    }
+    for decl in &program.types {
+        let name = &decl.name;
+        if deps[name].contains(name) {
+            return Err(format!(
+                "E-TYPE: recursive type '{name}' requires indirection"
+            ));
+        }
+    }
+    Ok(())
+}
+
 fn valid_constructor_name(name: &str) -> bool {
     let source_name = if let Some(rest) = name.strip_prefix("M$") {
         let Some((id, source)) = rest.split_once('$') else {
@@ -1663,32 +1697,7 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             }
         }
     }
-    // Without an indirection type, recursive nominal layouts cannot be finite.
-    let mut deps: HashMap<String, HashSet<String>> = HashMap::new();
-    for decl in &program.types {
-        let mut d = HashSet::new();
-        for v in &decl.variants {
-            for f in &v.fields {
-                type_deps(f, &type_names, &decl.params, &mut d)
-            }
-        }
-        deps.insert(decl.name.clone(), d);
-    }
-    for k in &type_names {
-        for i in &type_names {
-            if deps[i].contains(k) {
-                let trans = deps[k].clone();
-                deps.get_mut(i).unwrap().extend(trans);
-            }
-        }
-    }
-    for name in &type_names {
-        if deps[name].contains(name) {
-            return Err(format!(
-                "E-TYPE: recursive type '{name}' requires indirection"
-            ));
-        }
-    }
+    reject_recursive_types(program, &type_names)?;
     let mut foreign_names = HashSet::new();
     for foreign in &program.externs {
         validate_extern_function(foreign)?;
@@ -2018,6 +2027,34 @@ mod tests {
             .unwrap_err()
             .contains("unknown type"));
         assert!(checked("type X<a> = A(a)\nlet main = A(A(1))").is_ok());
+    }
+
+    #[test]
+    fn recursive_declaration_witness_ignores_hash_iteration_order() {
+        let names: std::collections::HashSet<String> = ["Alpha", "Beta", "Gamma"]
+            .into_iter()
+            .map(str::to_owned)
+            .collect();
+        let hash_order: Vec<_> = names.iter().cloned().collect();
+        let declaration_order: Vec<_> = hash_order.iter().rev().collect();
+        let mut source = String::new();
+        for (index, name) in declaration_order.iter().enumerate() {
+            let next = declaration_order[(index + 1) % declaration_order.len()];
+            source.push_str(&format!("type {name} = {name}({next})\n"));
+        }
+        source.push_str("fn main() { 42 }");
+        let program = parse(&source).unwrap();
+
+        // Use this exact set, without rebuilding it: the old set-based witness
+        // always disagrees with the source's first declaration, for every seed.
+        assert_ne!(program.types[0].name, hash_order[0]);
+        assert_eq!(
+            super::reject_recursive_types(&program, &names).unwrap_err(),
+            format!(
+                "E-TYPE: recursive type '{}' requires indirection",
+                program.types[0].name
+            )
+        );
     }
 
     #[test]

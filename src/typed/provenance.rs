@@ -698,7 +698,10 @@ fn checked_type(
             _ => {}
         }
     }
-    instances::expression_type(checked, expr, context).map_err(fail)
+    // Ordinary lowering has already succeeded and opaque metadata has already
+    // been rejected. This optional closed-only reconstruction does not rerun
+    // source admission or alter ordinary diagnostic precedence.
+    instances::substitute(ty, context).map_err(fail)
 }
 
 #[cfg(test)]
