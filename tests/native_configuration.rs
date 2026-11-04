@@ -613,14 +613,14 @@ mod native {
         let f = Fixture::new();
         let include = f.0.join(OsString::from_vec(b"headers \xff".to_vec()));
         if let Err(error) = fs::create_dir(&include) {
-            if cfg!(target_os = "macos")
-                && matches!(
-                    error.kind(),
-                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput
-                )
+            #[cfg(target_os = "macos")]
             {
-                eprintln!("SKIP native configuration non-UTF8 filesystem paths: create_dir rejected the raw-byte filename: {error}");
-                return;
+                const MACOS_EPERM: i32 = 1;
+                const MACOS_EILSEQ: i32 = 92;
+                if matches!(error.raw_os_error(), Some(MACOS_EPERM | MACOS_EILSEQ)) {
+                    eprintln!("SKIP native configuration non-UTF8 filesystem paths: create_dir rejected the raw-byte filename: {error}");
+                    return;
+                }
             }
             panic!("cannot create non-UTF8 include directory: {error}");
         }
