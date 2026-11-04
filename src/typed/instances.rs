@@ -8,6 +8,7 @@ use crate::syntax::AstDeclaration;
 use std::collections::{HashMap, HashSet};
 
 pub(super) type Substitution = HashMap<usize, Type>;
+pub(super) const BARE_RESULT: &str = "E-TYPED-UNSUPPORTED: bare unresolved polymorphic value requires checked no-normal result proof";
 const MAX_INSTANCES: usize = 1024;
 const MAX_TYPE_DEPTH: usize = 128;
 
@@ -35,6 +36,7 @@ pub(super) struct Instances {
     pub binders: Vec<super::logical::OpaqueBinding>,
     pub admission: super::logical::layout::Admission,
     budget: super::logical::Budget,
+    control_work: Option<std::cell::RefCell<super::control::Budget>>,
 }
 
 impl Instances {
@@ -45,8 +47,31 @@ impl Instances {
 
     pub fn discover_traced(
         checked: &CheckedProgram<'_>,
-        mut trace: Option<&mut Trace>,
+        trace: Option<&mut Trace>,
     ) -> Result<Self, String> {
+        Self::discover_mode(checked, trace, None)
+    }
+    pub fn discover_control(
+        checked: &CheckedProgram<'_>,
+        control: &super::control::SourceFacts<'_, '_>,
+    ) -> Result<Self, String> {
+        control.check_pure_subset()?;
+        Self::discover_mode(checked, None, Some(control))
+    }
+    fn discover_mode(
+        checked: &CheckedProgram<'_>,
+        mut trace: Option<&mut Trace>,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+    ) -> Result<Self, String> {
+        let control_work =
+            control.map(|_| std::cell::RefCell::new(super::control::Budget::default()));
+        if let Some(work) = &control_work {
+            let mut work = work.borrow_mut();
+            work.charge(checked.program.functions.len())?;
+            for function in &checked.program.functions {
+                work.charge(function.name.len())?;
+            }
+        }
         let functions = checked
             .program
             .functions
@@ -65,20 +90,22 @@ impl Instances {
             binders: Vec::new(),
             budget: super::logical::Budget::default(),
             admission: super::logical::layout::Admission::default(),
+            control_work,
         };
         let mut entry_context = Substitution::new();
         result.freeze_unbound(checked, main, 0, &mut entry_context)?;
         let entry_key = Key {
             source: main,
             params: vec![],
-            result: substitute_logical(
+            result: result.substituted_type(
                 checked,
                 &signature.result,
                 &entry_context,
-                &result.admission,
+                control.is_some_and(|control| control.function_may_return(main) == Some(false)),
             )?,
         };
         result.admission.reserve_type(&entry_key.result, 1)?;
+        result.reserve_control_type(&entry_key.result, 2)?;
         let entry = result.insert_seeded(checked, entry_key.clone(), Some(entry_context))?;
         if let Some(trace) = &mut trace {
             trace.request(None, None, entry);
@@ -92,24 +119,40 @@ impl Instances {
             for ty in instance.substitution.values() {
                 result.admission.reserve_type(ty, 1)?;
             }
+            result.charge_control(instance.substitution.len())?;
+            for ty in instance.substitution.values() {
+                result.reserve_control_type(ty, 1)?;
+            }
             let context = instance.substitution.clone();
             let source = instance.source;
             let function = &checked.program.functions[source];
             // A single mutable path and depth checkpoints avoid copying ancestor
             // paths at every node. Only actual request edges retain a path.
             let mut path = AstPath::root(AstDeclaration::Function(source));
+            result.charge_control(1)?;
             let mut pending = vec![(&function.body, 0, ChildSteps::one(AstStep::FunctionBody))];
             while let Some((expr, depth, steps)) = pending.pop() {
+                result.charge_control(1)?;
                 if trace.as_mut().is_some_and(|trace| trace.charge(1)) {
                     path.steps.truncate(depth);
                     steps.append(&mut path.steps);
                 }
-                let ty = expression_type(checked, expr, &context, &result.admission)?;
+                let ty = result.expression_result_type(checked, expr, &context, control)?;
                 if let Expr::Call(name, args) = expr {
                     if let Some(&source) = result.functions.get(name) {
+                        result.charge_control(args.len())?;
                         let params = args
                             .iter()
-                            .map(|a| expression_type(checked, a, &context, &result.admission))
+                            .map(|a| {
+                                result.substituted_type(
+                                    checked,
+                                    checked
+                                        .expression_type(a)
+                                        .ok_or("E-TYPED: missing checked argument type")?,
+                                    &context,
+                                    false,
+                                )
+                            })
                             .collect::<Result<_, _>>()?;
                         let callee = result.insert(
                             checked,
@@ -125,6 +168,11 @@ impl Instances {
                     }
                 }
                 let depth = path.steps.len();
+                result.charge_control(
+                    source_child_count(expr)
+                        .checked_mul(2)
+                        .ok_or("E-TYPED-CONTROL-COMPLEXITY: control work limit exceeded")?,
+                )?;
                 runtime_children_with_steps(checked, expr, |child, steps| {
                     pending.push((child, depth, steps));
                 });
@@ -149,6 +197,12 @@ impl Instances {
                 }
             }
         }
+        result.charge_control(
+            result
+                .list
+                .len()
+                .saturating_mul(result.list.len().saturating_add(1).ilog2() as usize + 2),
+        )?;
         result.list.sort_by_key(|instance| instance.source);
         result.ids.clear();
         for (id, instance) in result.list.iter().enumerate() {
@@ -159,6 +213,7 @@ impl Instances {
                 .chain(std::iter::once(&instance.result))
             {
                 result.admission.reserve_type(ty, 2)?;
+                result.reserve_control_type(ty, 2)?;
             }
             result.ids.insert(
                 Key {
@@ -170,8 +225,88 @@ impl Instances {
             );
         }
         result.admission.reserve_type(&entry_key.result, 1)?;
+        result.reserve_control_type(&entry_key.result, 1)?;
         result.entry = result.ids[&entry_key];
         Ok(result)
+    }
+
+    pub fn charge_control(&self, amount: usize) -> Result<(), String> {
+        if let Some(work) = &self.control_work {
+            work.borrow_mut().charge(amount)?;
+        }
+        Ok(())
+    }
+    pub fn reserve_control_type(&self, ty: &Type, copies: usize) -> Result<(), String> {
+        if let Some(work) = &self.control_work {
+            let mut work = work.borrow_mut();
+            for _ in 0..copies {
+                work.reserve_type(ty, 0)?;
+            }
+        }
+        Ok(())
+    }
+    fn substituted_type(
+        &self,
+        checked: &CheckedProgram<'_>,
+        ty: &Type,
+        context: &Substitution,
+        bare_result: bool,
+    ) -> Result<Type, String> {
+        let Some(work) = &self.control_work else {
+            return substitute_logical(checked, ty, context, &self.admission);
+        };
+        self.admission.charge_substitution(checked, ty, context)?;
+        fn substitute(
+            ty: &Type,
+            context: &Substitution,
+            budget: &mut super::control::Budget,
+            depth: usize,
+        ) -> Result<Type, String> {
+            budget.charge(1)?;
+            if depth > MAX_TYPE_DEPTH {
+                return Err("E-TYPED-CONTROL-COMPLEXITY: control type depth exceeded".into());
+            }
+            Ok(match ty {
+                Type::Var(id) => {
+                    super::control::copy_type(context.get(id).ok_or(BARE_RESULT)?, budget, depth)?
+                }
+                Type::Nominal(name, args) => {
+                    let name = budget.text(name)?;
+                    budget.charge(args.len())?;
+                    let mut values = Vec::with_capacity(args.len());
+                    for arg in args {
+                        values.push(substitute(arg, context, budget, depth + 1)?);
+                    }
+                    Type::Nominal(name, values)
+                }
+                _ => super::control::copy_type(ty, budget, depth)?,
+            })
+        }
+        let result = substitute(ty, context, &mut work.borrow_mut(), 0)?;
+        if matches!(result, Type::Var(_)) {
+            if bare_result {
+                return Ok(result);
+            }
+            return Err(BARE_RESULT.into());
+        }
+        self.admission.admit(checked, &result)?;
+        Ok(result)
+    }
+    pub fn expression_result_type(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expr: &Expr,
+        context: &Substitution,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+    ) -> Result<Type, String> {
+        self.substituted_type(
+            checked,
+            checked
+                .expression_type(expr)
+                .ok_or("E-TYPED: missing checked expression type")?,
+            context,
+            control.is_some_and(|facts| facts.expression_may_return(expr) == Some(false)),
+        )
     }
 
     fn insert(&mut self, checked: &CheckedProgram<'_>, key: Key) -> Result<usize, String> {
@@ -185,10 +320,17 @@ impl Instances {
         seed: Option<Substitution>,
     ) -> Result<usize, String> {
         self.admission.reserve_entries(key.params.len())?;
+        self.charge_control(
+            key.params
+                .len()
+                .checked_add(2)
+                .ok_or("E-TYPED-CONTROL-COMPLEXITY: control work limit exceeded")?,
+        )?;
         for ty in key.params.iter().chain(std::iter::once(&key.result)) {
             // Reserve signature hashing, substitution matching/copying and
             // retained list/key copies before the first key lookup.
             self.admission.reserve_type(ty, 6)?;
+            self.reserve_control_type(ty, 6)?;
             if super::logical::has_opaque(ty) {
                 super::logical::charge_type(ty, &mut self.budget)?;
             }
@@ -203,6 +345,14 @@ impl Instances {
         let signature = &checked.functions[&function.name];
         if signature.params.len() != key.params.len() {
             return Err("E-TYPED-INSTANCES: wrong specialized arity".into());
+        }
+        self.charge_control(signature.quantified.len())?;
+        for ty in signature
+            .params
+            .iter()
+            .chain(std::iter::once(&signature.result))
+        {
+            self.reserve_control_type(ty, 1)?;
         }
         let quantified = signature.quantified.iter().copied().collect();
         let mut substitution = seed.unwrap_or_default();
@@ -272,10 +422,19 @@ impl Instances {
             .iter()
             .chain(std::iter::once(&signature.result))
         {
+            self.reserve_control_type(ty, 2)?;
             collect(ty, context, &mut vars, 0, &mut self.budget)?;
         }
+        self.charge_control(1)?;
         let mut pending = vec![&function.body];
         while let Some(expr) = pending.pop() {
+            self.charge_control(1)?;
+            self.reserve_control_type(
+                checked
+                    .expression_type(expr)
+                    .ok_or("E-TYPED: missing checked expression type")?,
+                2,
+            )?;
             collect(
                 checked
                     .expression_type(expr)
@@ -285,11 +444,21 @@ impl Instances {
                 0,
                 &mut self.budget,
             )?;
+            self.charge_control(
+                source_child_count(expr)
+                    .checked_mul(2)
+                    .ok_or("E-TYPED-CONTROL-COMPLEXITY: control work limit exceeded")?,
+            )?;
             runtime_children(checked, expr, &mut pending);
         }
+        self.charge_control(
+            vars.len()
+                .saturating_mul(vars.len().saturating_add(1).ilog2() as usize + 3),
+        )?;
         self.budget.charge(vars.len())?;
         let mut vars = vars.into_iter().collect::<Vec<_>>();
         vars.sort_unstable();
+        self.charge_control(self.binders.len())?;
         let first_ordinal = self
             .binders
             .iter()
@@ -308,8 +477,14 @@ impl Instances {
 
     pub fn call(&self, name: &str, params: Vec<Type>, result: Type) -> Result<usize, String> {
         self.admission.reserve_entries(name.len() + params.len())?;
+        self.charge_control(
+            name.len()
+                .checked_add(params.len())
+                .ok_or("E-TYPED-CONTROL-COMPLEXITY: control work limit exceeded")?,
+        )?;
         for ty in params.iter().chain(std::iter::once(&result)) {
             self.admission.reserve_type(ty, 1)?;
+            self.reserve_control_type(ty, 1)?;
         }
         let &source = self
             .functions
@@ -324,22 +499,6 @@ impl Instances {
             .copied()
             .ok_or_else(|| "E-TYPED-INSTANCES: missing reachable function instance".into())
     }
-}
-
-pub(super) fn expression_type(
-    checked: &CheckedProgram<'_>,
-    expr: &Expr,
-    context: &Substitution,
-    admission: &super::logical::layout::Admission,
-) -> Result<Type, String> {
-    substitute_logical(
-        checked,
-        checked
-            .expression_type(expr)
-            .ok_or("E-TYPED: missing checked expression type")?,
-        context,
-        admission,
-    )
 }
 
 fn substitute_logical(
@@ -406,6 +565,9 @@ fn substitute_logical(
     let mut budget = super::logical::Budget::default();
     let result = walk(ty, context, 0, &mut budget)?;
     super::logical::charge_type(&result, &mut budget)?;
+    if matches!(result, Type::Var(_)) {
+        return Err(BARE_RESULT.into());
+    }
     admission.admit(checked, &result)?;
     Ok(result)
 }
@@ -476,6 +638,18 @@ fn match_type(
         _ => return Err("E-TYPED-INSTANCES: inconsistent function substitution".into()),
     }
     Ok(())
+}
+
+pub(super) fn source_child_count(expr: &Expr) -> usize {
+    match expr {
+        Expr::Binary(_, _, _) | Expr::Let(_, _, _) | Expr::LetMut(_, _, _) | Expr::While(_, _) => 2,
+        Expr::If(_, _, _) => 3,
+        Expr::Assign(_, _) | Expr::FieldAssign(_, _, _) => 1,
+        Expr::Call(_, args) => args.len(),
+        Expr::Record(_, fields) => fields.len(),
+        Expr::Match(_, arms) => arms.len().saturating_add(1),
+        _ => 0,
+    }
 }
 
 /// A generalized initializer is represented by its checked static shape and
@@ -877,7 +1051,9 @@ mod tests {
             .iter()
             .position(|f| f.result == typed::Type::Bool)
             .unwrap();
-        let typed::ExprKind::Let { value, .. } = &mut ir.functions[ir.entry].body.kind else {
+        let typed::ExprKind::Let { value, .. } =
+            &mut ir.functions[ir.entry].body.value_expr_mut().unwrap().kind
+        else {
             panic!()
         };
         let typed::ExprKind::Call(id, _) = &mut value.kind else {
@@ -901,13 +1077,15 @@ mod tests {
             .filter(|(_, f)| {
                 f.params.len() == 1
                     && f.params[0].1 == typed::Type::Int
-                    && matches!(f.result, typed::Type::Adt { .. })
+                    && matches!(f.result, typed::ResultRepr::Value(typed::Type::Adt { .. }))
             })
             .map(|(id, _)| id)
             .collect::<Vec<_>>();
         assert_eq!(ids.len(), 2);
         assert_ne!(ir.functions[ids[0]].result, ir.functions[ids[1]].result);
-        let typed::ExprKind::Binary(_, left, _) = &mut ir.functions[ir.entry].body.kind else {
+        let typed::ExprKind::Binary(_, left, _) =
+            &mut ir.functions[ir.entry].body.value_expr_mut().unwrap().kind
+        else {
             panic!()
         };
         let typed::ExprKind::Call(_, args) = &mut left.kind else {

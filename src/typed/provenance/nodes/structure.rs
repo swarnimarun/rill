@@ -174,6 +174,7 @@ fn child_count(node: TypedNodeRef<'_>) -> usize {
             | CallArg::InoutOwner(_) => 0,
         },
         TypedNodeRef::Expression(expression) => match &expression.kind {
+            ExprKind::NoStorageLet { .. } => 0,
             ExprKind::Record { fields, .. } => fields.len(),
             ExprKind::Call(_, arguments) => arguments.len(),
             ExprKind::Constructor { fields, .. } => fields.len(),
@@ -266,6 +267,7 @@ fn child_at(node: TypedNodeRef<'_>, index: usize) -> Option<(TypedChildRole, Typ
             | CallArg::InoutOwner(_) => None,
         },
         Node::Expression(value) => match &value.kind {
+            ExprKind::NoStorageLet { .. } => None,
             ExprKind::Record { fields, .. } => fields.get(index).map(|(declaration, value)| {
                 (
                     Role::RecordField(index),
@@ -432,6 +434,7 @@ fn copy_type(ty: Type, typed: &TypedMain, budget: &mut BodyBudget) -> Result<(),
 
 fn copy_operation(kind: &ExprKind) -> Result<(), String> {
     match kind {
+        ExprKind::NoStorageLet { .. } => Err(outside("no-normal control result")),
         ExprKind::Int(_)
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
@@ -577,8 +580,8 @@ pub(super) fn enumerate<'a>(
             role: TypedChildRole::FunctionRoot,
             node: TypedNodeRef::Function {
                 params: &function.params,
-                result: &function.result,
-                body: &function.body,
+                result: function.result.value_ref()?,
+                body: function.body.value_expr()?,
             },
         });
         while let Some(occurrence) = pending.pop() {
@@ -765,6 +768,7 @@ pub(super) fn fingerprint(
         TypedNodeRef::Expression(expression) => Fingerprint::Expression(
             expression.ty,
             match &expression.kind {
+                ExprKind::NoStorageLet { .. } => return Err(outside("no-normal control result")),
                 ExprKind::Int(value) => ExpressionFingerprint::Int(*value),
                 ExprKind::Str(value) => {
                     budget.work(value.len())?;
@@ -862,8 +866,8 @@ mod tests {
     fn function(body: ExprNode) -> TypedFunction {
         TypedFunction {
             params: Vec::new(),
-            result: body.ty,
-            body,
+            result: (body.ty).into(),
+            body: body.into(),
             param_cleanup: Vec::new(),
         }
     }
@@ -1412,7 +1416,9 @@ mod tests {
         drop(rows);
         // Also dismantle this deliberately deep test fixture iteratively;
         // recursive Box destruction must not obscure the visitor's behavior.
-        let mut body = typed.functions.pop().unwrap().body;
+        let crate::typed::Computation::Value(mut body) = typed.functions.pop().unwrap().body else {
+            panic!("expected value body")
+        };
         while let ExprKind::Assign(_, next) = body.kind {
             body = *next;
         }
@@ -1532,10 +1538,10 @@ mod tests {
             Type::RawPointer(crate::typed::PointerTypeId(0)),
         ] {
             let mut typed = program(int(1));
-            typed.functions[0].body.ty = ty;
+            typed.functions[0].body.value_expr_mut().unwrap().ty = ty;
             assert_boundary(&typed, "native type");
             let mut typed = program(int(1));
-            typed.functions[0].result = ty;
+            typed.functions[0].result = (ty).into();
             assert_boundary(&typed, "native type");
             for mode in [ParamMode::Value, ParamMode::Read, ParamMode::Inout] {
                 let mut typed = program(int(1));
@@ -1569,10 +1575,10 @@ mod tests {
             Type::Adt { id: 0, owned: true },
         ] {
             let mut typed = program(int(1));
-            typed.functions[0].body.ty = ty;
+            typed.functions[0].body.value_expr_mut().unwrap().ty = ty;
             assert_boundary(&typed, "owner type");
             let mut typed = program(int(1));
-            typed.functions[0].result = ty;
+            typed.functions[0].result = (ty).into();
             assert_boundary(&typed, "owner type");
             for mode in [ParamMode::Value, ParamMode::Read, ParamMode::Inout] {
                 let mut typed = program(int(1));
@@ -1628,7 +1634,7 @@ mod tests {
         });
         assert_boundary(&typed, "native declarations or includes");
         let mut typed = program(int(1));
-        typed.functions[0].body.ty = Type::Adt {
+        typed.functions[0].body.value_expr_mut().unwrap().ty = Type::Adt {
             id: usize::MAX,
             owned: false,
         };

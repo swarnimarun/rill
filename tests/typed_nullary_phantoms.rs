@@ -389,21 +389,33 @@ fn nullary_layout_does_not_relax_root_loan_conflicts() {
 }
 
 #[test]
-fn unknown_payloads_and_unconstrained_nonreturning_results_remain_unsupported() {
+fn unknown_payloads_remain_unsupported_after_no_normal_admission() {
     for source in [
         "type O<a> = None | Some(a)\nfn main() { let f = None; match f { None => 42 | Some(_) => 0 } }",
-        "fn forever() { forever() }\nfn main() { let unused = forever(); 42 }",
-        "fn forever() { forever() }\nfn main() { if false { let unused = forever(); 0 } else { 42 } }",
+        "type O<a> = None | Some(a)\nfn main() { None }",
     ] {
         let program = parser::parse(source).unwrap();
         let checked = check::analyze(&program).unwrap_or_else(|e| panic!("{source}: {e}"));
         let error = typed::lower_main(&checked).unwrap_err();
         assert!(error.starts_with("E-TYPED-UNSUPPORTED:"), "{source}: {error}");
-        // Do not run the nonreturning controls or conflate typed rejection with
-        // rejection by the source checker or by the separate uniform backend.
+        // Unknown physical payloads remain outside typed representation;
+        // no-normal admission does not erase their storage demand.
     }
     // K2 moves the exact Mark, weak Stamp and Link<Flag<opaque>> controls to
     // typed_phantom_products.rs. Option<opaque> remains a negative here.
+}
+
+#[test]
+fn bare_nonreturning_results_preserve_nullary_prefixes_and_branch_selection() {
+    for (source, expected) in [
+        ("fn forever() { forever() }\nfn main() { let unused = forever(); 42 }".to_string(), None),
+        ("fn forever() { forever() }\nfn main() { if false { let unused = forever(); 0 } else { 42 } }".to_string(), Some("42")),
+        (format!("{FLAG}fn forever() {{ forever() }}\nfn main() {{ let f = if true {{ Off }} else {{ On }}; let unused = forever(); match f {{ Off => 42 | On => 0 }} }}"), None),
+    ] {
+        // These former negatives now require real typed execution/emission,
+        // including the existing call-depth trap rather than a dummy value.
+        compare(&source, expected);
+    }
 }
 
 #[test]
@@ -482,11 +494,41 @@ fn closed_mapping_controls_and_semantic_error_precedence_are_unchanged() {
     let nodes = lower_main_with_copy_node_origins(sources).unwrap();
     assert_eq!(typed::emit_c(functions.typed()).unwrap(), before);
     assert_eq!(typed::emit_c(nodes.typed()).unwrap(), before);
-    for source in [
-        format!("{FLAG}fn forever() {{ forever() }}\nfn main() {{ let f = if true {{ Off }} else {{ On }}; let unused = forever(); match f {{ Off => 42 | On => 0 }} }}"),
-        "type O<a> = None | Some(a)\nfn main() { None }".to_string(),
+    for (tail, expected) in [
+        (
+            "let unused = forever(); match f { Off => 42 | On => 0 }",
+            None,
+        ),
+        (
+            "if false { let unused = forever(); match f { Off => 0 | On => 1 } } else { 42 }",
+            Some("42"),
+        ),
     ] {
-        let path = fixture.write("bad.rill", &source);
+        let source = format!("{FLAG}fn forever() {{ forever() }}\nfn main() {{ let f = if true {{ Off }} else {{ On }}; {tail} }}");
+        let path = fixture.write("combined.rill", &source);
+        let sources = load_program_with_sources(&path).unwrap();
+        let checked = check::analyze(sources.program()).unwrap();
+        let ordinary = typed::lower_main(&checked).unwrap();
+        typed::verify(&ordinary).unwrap();
+        let emitted = typed::emit_c(&ordinary).unwrap();
+        assert!(!emitted.contains("rl_value") && emitted.contains("static void rl_fn_"));
+        match expected {
+            Some(value) => assert_eq!(typed::evaluate(&ordinary).unwrap().to_string(), value),
+            None => assert_eq!(typed::evaluate(&ordinary).unwrap_err(), "runtime trap"),
+        }
+        for error in [
+            lower_main_with_function_origins(sources.clone()).unwrap_err(),
+            lower_main_with_copy_node_origins(sources).unwrap_err(),
+        ] {
+            assert!(error.starts_with("E-TYPED-UNSUPPORTED:"), "{error}");
+            assert!(error.contains("no-normal"), "{error}");
+        }
+    }
+    for source in [
+        "type O<a> = None | Some(a)\nfn main() { None }",
+        "type O<a> = None | Some(a)\nfn main() { let f = None; match f { None => 42 | Some(_) => 0 } }",
+    ] {
+        let path = fixture.write("bad.rill", source);
         let sources = load_program_with_sources(&path).unwrap();
         let ordinary = match check::analyze(sources.program()) {
             Ok(checked) => typed::lower_main(&checked).unwrap_err(),

@@ -217,18 +217,26 @@ pub(super) fn has_native_representation(typed: &TypedMain) -> bool {
                     .any(|ty| ty.is_raw())
         })
         || typed.functions.iter().any(|function| {
-            function.result.is_raw()
+            matches!(function.result, super::ResultRepr::Value(ty) if ty.is_raw())
                 || function.params.iter().any(|(_, ty, _)| ty.is_raw())
-                || super::any_expr(&function.body, &|kind| {
-                    matches!(
-                        kind,
-                        super::ExprKind::ForeignCall(..)
-                            | super::ExprKind::ForeignConst(..)
-                            | super::ExprKind::ForeignConvert(..)
-                            | super::ExprKind::NullPointer
-                            | super::ExprKind::IsNull(..)
-                    )
-                })
+                || {
+                    let predicate = |kind: &super::ExprKind| {
+                        matches!(
+                            kind,
+                            super::ExprKind::ForeignCall(..)
+                                | super::ExprKind::ForeignConst(..)
+                                | super::ExprKind::ForeignConvert(..)
+                                | super::ExprKind::NullPointer
+                                | super::ExprKind::IsNull(..)
+                        )
+                    };
+                    match &function.body {
+                        super::Computation::Value(value) => super::any_expr(value, &predicate),
+                        super::Computation::NoNormal(value) => {
+                            value.any_value_root(&mut |value| super::any_expr(value, &predicate))
+                        }
+                    }
+                }
         })
 }
 
@@ -238,6 +246,12 @@ fn lower_with_trace(
 ) -> Result<FunctionOriginProgram, String> {
     let checked = check::analyze(sources.program())?;
     let (typed, instances) = super::lower_main_traced(&checked, Some(&mut trace), None)?;
+    if super::has_control_extension(&typed) {
+        return Err(
+            "E-TYPED-UNSUPPORTED: function origin index does not map no-normal control results"
+                .into(),
+        );
+    }
     if typed.adts.iter().any(|adt| adt.symbolic.is_some()) {
         return Err(
             "E-TYPED-UNSUPPORTED: function origin index does not map opaque logical arguments"
@@ -596,7 +610,7 @@ fn validate(
         let params = &source.params;
         if params.len() != function.params.len()
             || instance.params.len() != function.params.len()
-            || !signature_matches(&instance.result, function.result, typed, trace)?
+            || !signature_matches(&instance.result, function.result.value()?, typed, trace)?
         {
             return Err(fail(
                 "typed instance signature differs from source specialization",
@@ -826,7 +840,7 @@ mod tests {
                 .starts_with("E-TYPED-SOURCE-MAP:")
         );
         bridge.functions.push(saved);
-        typed.functions[0].result = super::super::Type::Bool;
+        typed.functions[0].result = (super::super::Type::Bool).into();
         assert!(
             validate(&sources, &checked, &typed, &instances, &bridge, &mut trace)
                 .unwrap_err()

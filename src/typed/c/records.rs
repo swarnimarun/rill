@@ -51,14 +51,20 @@ impl Emitter<'_> {
         }
         result
     }
-    pub(super) fn record(&mut self, result: &str, ty: &str, fields: &[(usize, ExprNode)]) {
-        let values = fields
-            .iter()
-            .map(|(index, field)| (*index, self.expr(field)))
-            .collect::<Vec<_>>();
+    pub(super) fn record(
+        &mut self,
+        result: &str,
+        ty: &str,
+        fields: &[(usize, ExprNode)],
+    ) -> EmitOutcome {
+        let mut values = Vec::with_capacity(fields.len());
+        for (index, field) in fields {
+            values.push((*index, emit_value!(self.expr(field))));
+        }
         writeln!(self.out, "{ty} {result} = ({ty}){{0}};").unwrap();
         for (index, value) in values {
             writeln!(self.out, "{result}.f{index} = {value};").unwrap();
         }
+        EmitOutcome::Value(result.to_owned())
     }
 }

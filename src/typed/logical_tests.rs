@@ -435,7 +435,12 @@ fn local_opaque_classes_are_scoped_to_each_source_function_instance() {
         .iter()
         .position(|scope| *scope == own_scope)
         .unwrap();
-    let ExprKind::Let { value, .. } = &mut program.functions[function].body.kind else {
+    let ExprKind::Let { value, .. } = &mut program.functions[function]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     let ExprKind::If(_, yes, _) = &mut value.kind else {
@@ -468,7 +473,12 @@ fn borrowed_symbolic_slots_require_the_exact_nominal_instance() {
         program.functions[ids[0]].params[0].1,
         program.functions[ids[1]].params[0].1
     );
-    let ExprKind::Let { body, .. } = &mut program.functions[program.entry].body.kind else {
+    let ExprKind::Let { body, .. } = &mut program.functions[program.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     let ExprKind::Let { body, .. } = &mut body.kind else {
@@ -673,7 +683,12 @@ fn product_body_binders_do_not_escape_through_physical_fields() {
         .iter()
         .position(|s| *s == scope)
         .unwrap();
-    let ExprKind::Let { value, .. } = &mut program.functions[function].body.kind else {
+    let ExprKind::Let { value, .. } = &mut program.functions[function]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     let ExprKind::If(_, yes, _) = &mut value.kind else {
@@ -704,7 +719,11 @@ fn consistent_product_schema_rewrite_still_fails_checked_source_correspondence()
     let definition = program.adts[id].symbolic.as_ref().unwrap().definition;
     program.logical.declarations[definition].variants[0].fields[0].name = "bool".into();
     program.adts[id].variants[0].fields[0] = Type::Bool;
-    let ExprKind::Constructor { fields, .. } = &mut program.functions[program.entry].body.kind
+    let ExprKind::Constructor { fields, .. } = &mut program.functions[program.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
     else {
         panic!()
     };

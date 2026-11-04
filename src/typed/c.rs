@@ -1,9 +1,21 @@
 //! C lowering for the provisional scalar, string, vector and finite-value IR.
+// A terminal child has no temporary to consume. This macro is used only inside
+// expression-emission routines with an EmitOutcome return contract.
+macro_rules! emit_value {
+    ($outcome:expr) => {
+        match $outcome {
+            EmitOutcome::Value(value) => value,
+            EmitOutcome::NoNormal => return EmitOutcome::NoNormal,
+        }
+    };
+}
+
 mod adt;
 mod allocation;
 mod copy_match;
 mod foreign;
 mod records;
+mod results;
 mod vectors;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
@@ -25,7 +37,7 @@ const RUNTIME: &str = r#"#include <stdint.h>
 typedef struct { unsigned char unused; } rl_unit;
 typedef struct { const unsigned char *data; size_t len; } rl_str;
 _Static_assert(CHAR_BIT == 8, "Rill strings require 8-bit bytes");
-static void rl_trap(void) { fputs("rill: runtime trap\n", stderr); exit(1); }
+_Noreturn static void rl_trap(void) { fputs("rill: runtime trap\n", stderr); exit(1); }
 static unsigned rl_call_depth;
 static void rl_enter(void) { if (rl_call_depth >= 32) rl_trap(); ++rl_call_depth; }
 static void rl_leave(void) { --rl_call_depth; }
@@ -50,6 +62,10 @@ static int32_t rl_checked(int op, int32_t x, int32_t y) {
 /// this after `lower_main`; this verifier does not replace source checking.
 pub fn emit_c(program: &TypedMain) -> Result<String, String> {
     super::verify(program)?;
+    emit_verified(program)
+}
+
+fn emit_verified(program: &TypedMain) -> Result<String, String> {
     let mut out = program.native.config.preamble()?;
     out.push_str(RUNTIME);
     crate::c_import::abi::emit_declarations(
@@ -83,20 +99,35 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
     emitter.out.push_str("_Static_assert(sizeof(int) <= 64 && sizeof(_Bool) <= 64 && sizeof(int32_t) <= 64 && sizeof(rl_unit) <= 64 && sizeof(rl_str) <= 64 && sizeof(uint8_t) <= 64 && sizeof(uint32_t) <= 64 && sizeof(uint64_t) <= 64 && sizeof(float) <= 64, \"unsupported typed value layout\");\n");
     if program.adts.iter().any(|adt| adt.owned)
         || program.functions.iter().any(|function| {
-            function.result.is_owner()
+            matches!(function.result, super::ResultRepr::Value(ty) if ty.is_owner())
                 || function.params.iter().any(|(_, ty, _)| ty.is_owner())
-                || contains_owner(&function.body)
+                || match &function.body {
+                    super::Computation::Value(value) => contains_owner(value),
+                    super::Computation::NoNormal(value) => {
+                        value.any_value_root(&mut contains_owner)
+                    }
+                }
         })
     {
         emitter.out.push_str(allocation::RUNTIME);
     }
     let mut capacities = BTreeSet::new();
     for function in &program.functions {
-        collect_type(function.result, &mut capacities);
+        if let super::ResultRepr::Value(ty) = function.result {
+            collect_type(ty, &mut capacities);
+        }
         for (_, ty, _) in &function.params {
             collect_type(*ty, &mut capacities);
         }
-        collect_expr(&function.body, &mut capacities);
+        match &function.body {
+            super::Computation::Value(value) => collect_expr(value, &mut capacities),
+            super::Computation::NoNormal(value) => {
+                value.any_value_root(&mut |value| {
+                    collect_expr(value, &mut capacities);
+                    false
+                });
+            }
+        }
     }
     for adt in &program.adts {
         for variant in &adt.variants {
@@ -128,7 +159,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         write!(
             emitter.out,
             "\nstatic {} rl_fn_{id}(",
-            c_type(function.result)
+            result_type(&function.result)
         )
         .unwrap();
         if function.params.is_empty() {
@@ -157,7 +188,7 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
         write!(
             emitter.out,
             "\nstatic {} rl_fn_{id}(",
-            c_type(function.result)
+            result_type(&function.result)
         )
         .unwrap();
         if function.params.is_empty() {
@@ -176,26 +207,47 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
             emitter.add_cost(*ty);
             emitter.add_cost(*ty);
         }
-        let result = emitter.expr(&function.body);
+        let result = match &function.body {
+            super::Computation::Value(value) => emitter.expr(value),
+            super::Computation::NoNormal(value) => emitter.no_normal(value),
+        };
         if emitter.frame_cost > 1024 * 1024 {
             return Err("E-C-STACK: estimated typed frame exceeds 1 MiB limit".into());
         }
-        for local in &function.param_cleanup {
-            emitter.drop_cleanup(local);
+        match result {
+            EmitOutcome::Value(result) => {
+                for local in &function.param_cleanup {
+                    emitter.drop_cleanup(local);
+                }
+                writeln!(emitter.out, "rl_leave(); return {result};\n}}").unwrap();
+            }
+            EmitOutcome::NoNormal => {
+                // An impossible normal return must trap, never manufacture the
+                // function's declared value or discharge a frame early.
+                emitter.out.push_str("rl_trap();\n}\n");
+            }
         }
-        writeln!(emitter.out, "rl_leave(); return {result};\n}}").unwrap();
     }
     let entry = &program.functions[program.entry];
+    if matches!(entry.result, super::ResultRepr::NoNormal(_)) {
+        writeln!(
+            emitter.out,
+            "\nint main(void) {{ rl_fn_{}(); rl_trap(); }}",
+            program.entry
+        )
+        .unwrap();
+        return Ok(emitter.out);
+    }
     writeln!(
         emitter.out,
         "\nint main(void) {{ {} result = rl_fn_{}();",
-        c_type(entry.result),
+        c_type(entry.result.value()?),
         program.entry
     )
     .unwrap();
-    match entry.result {
+    match entry.result.value()? {
         Type::CU8 | Type::CU32 | Type::CU64 | Type::CF32 | Type::RawPointer(_) => {
-            adt::print_value(&mut emitter, entry.result, "result");
+            adt::print_value(&mut emitter, entry.result.value()?, "result");
             emitter.out.push_str("fputc('\\n', stdout);\n");
         }
         Type::Int => emitter
@@ -217,6 +269,12 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
     Ok(emitter.out)
 }
 
+fn result_type(result: &super::ResultRepr) -> String {
+    match result {
+        super::ResultRepr::Value(ty) => c_type(*ty),
+        super::ResultRepr::NoNormal(_) => "void".into(),
+    }
+}
 fn c_type(ty: Type) -> String {
     match ty {
         Type::Int => "int32_t".into(),
@@ -259,6 +317,14 @@ fn collect_type(ty: Type, output: &mut BTreeSet<usize>) {
 fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
     collect_type(expr.ty, output);
     match &expr.kind {
+        ExprKind::NoStorageLet { value, body, .. } => {
+            value.any_value_root(&mut |value| {
+                collect_expr(value, output);
+                false
+            });
+            collect_expr(body, output);
+        }
+
         ExprKind::ForeignCall(_, args) => {
             for arg in args {
                 if let ForeignArg::Value(value) = arg {
@@ -355,6 +421,10 @@ fn contains_owner(expr: &ExprNode) -> bool {
         return true;
     }
     match &expr.kind {
+        ExprKind::NoStorageLet { value, body, .. } => {
+            value.any_value_root(&mut contains_owner) || contains_owner(body)
+        }
+
         ExprKind::ForeignCall(_, args) => args
             .iter()
             .any(|arg| matches!(arg, ForeignArg::Value(value) if contains_owner(value))),
@@ -400,6 +470,13 @@ fn contains_owner(expr: &ExprNode) -> bool {
     }
 }
 
+/// Compile-time emission outcome, never a runtime Rill value.
+#[derive(Debug)]
+enum EmitOutcome {
+    Value(String),
+    NoNormal,
+}
+
 struct Emitter<'a> {
     out: String,
     next: usize,
@@ -427,29 +504,99 @@ impl Emitter<'_> {
         self.next += 1;
         name
     }
-    fn expr(&mut self, expr: &ExprNode) -> String {
+    fn call_arguments(&mut self, id: usize, args: &[CallArg]) -> Option<Vec<String>> {
+        let mut values = Vec::new();
+        for (arg, (_, arg_ty, mode)) in args.iter().zip(&self.program.functions[id].params) {
+            match arg {
+                CallArg::Value(arg) => {
+                    values.push(match self.expr(arg) {
+                        EmitOutcome::Value(value) => value,
+                        EmitOutcome::NoNormal => return None,
+                    });
+                    self.add_cost(arg.ty);
+                }
+                CallArg::ReadCopy(local) | CallArg::InoutCopy(local) => {
+                    let temporary = self.temp();
+                    self.add_cost(*arg_ty);
+                    let param_ty = parameter_type(*arg_ty, *mode);
+                    let place = self.copy_place(*local);
+                    writeln!(self.out, "{param_ty} {temporary} = &({place});").unwrap();
+                    values.push(temporary);
+                }
+                CallArg::ReadField(place) | CallArg::InoutField(place) => {
+                    let temporary = self.temp();
+                    self.add_cost(*arg_ty);
+                    let param_ty = parameter_type(*arg_ty, *mode);
+                    let place = self.field_place(place);
+                    writeln!(self.out, "{param_ty} {temporary} = &({place});").unwrap();
+                    values.push(temporary);
+                }
+                CallArg::ReadTemporary(value) => {
+                    let value = match self.expr(value) {
+                        EmitOutcome::Value(value) => value,
+                        EmitOutcome::NoNormal => return None,
+                    };
+                    let temporary = self.temp();
+                    self.add_cost(*arg_ty);
+                    let param_ty = parameter_type(*arg_ty, *mode);
+                    writeln!(self.out, "{param_ty} {temporary} = &{value};").unwrap();
+                    values.push(temporary);
+                }
+                CallArg::ReadOwner(local) | CallArg::InoutOwner(local) => {
+                    let temporary = self.temp();
+                    self.add_cost(*arg_ty);
+                    let param_ty = parameter_type(*arg_ty, *mode);
+                    writeln!(self.out, "{param_ty} {temporary} = rl_l_{};", local.0).unwrap();
+                    values.push(temporary);
+                }
+                CallArg::Move(local) => {
+                    let temporary = self.temp();
+                    self.add_cost(*arg_ty);
+                    let owner_ty = c_type(*arg_ty);
+                    writeln!(
+                        self.out,
+                        "{owner_ty} {temporary} = rl_l_{}; rl_l_{} = {};",
+                        local.0,
+                        local.0,
+                        adt::zero(*arg_ty)
+                    )
+                    .unwrap();
+                    values.push(temporary);
+                }
+            }
+        }
+        Some(values)
+    }
+    fn expr(&mut self, expr: &ExprNode) -> EmitOutcome {
+        // A no-storage sequence keeps its concrete source type but has no
+        // normal emitted result. Do not allocate/name/cost a fictitious slot.
+        if let ExprKind::NoStorageLet { value, .. } = &expr.kind {
+            return self.no_normal(value);
+        }
         let result = self.temp();
         let ty = c_type(expr.ty);
         self.add_cost(expr.ty);
         match &expr.kind {
-            ExprKind::ForeignCall(id, args) => self.foreign_call(&result, *id, args),
+            ExprKind::NoStorageLet { .. } => unreachable!("handled without a result slot"),
+
+            ExprKind::ForeignCall(id, args) => return self.foreign_call(&result, *id, args),
             ExprKind::ForeignConst(id) => self.foreign_constant(&result, *id),
             ExprKind::ForeignConvert(conversion, input) => {
-                self.foreign_convert(&result, &ty, *conversion, input)
+                return self.foreign_convert(&result, &ty, *conversion, input);
             }
             ExprKind::NullPointer => writeln!(self.out, "{ty} {result} = NULL;").unwrap(),
             ExprKind::IsNull(input) => {
-                let input = self.expr(input);
+                let input = emit_value!(self.expr(input));
                 writeln!(self.out, "int {result} = ({input} == NULL);").unwrap();
             }
-            ExprKind::Vector(op, args) => self.vector(&result, &ty, *op, args),
-            ExprKind::Record { fields, .. } => self.record(&result, &ty, fields),
+            ExprKind::Vector(op, args) => return self.vector(&result, &ty, *op, args),
+            ExprKind::Record { fields, .. } => return self.record(&result, &ty, fields),
             ExprKind::FieldRead(place) => {
                 let value = self.field_place(place);
                 writeln!(self.out, "{ty} {result} = {value};").unwrap();
             }
             ExprKind::FieldAssign(place, value) => {
-                let value = self.expr(value);
+                let value = emit_value!(self.expr(value));
                 let place = self.field_place(place);
                 writeln!(
                     self.out,
@@ -461,14 +608,16 @@ impl Emitter<'_> {
                 kind,
                 input,
                 layout,
-            } => self.try_allocation(&result, *kind, input, layout),
-            ExprKind::CopyMatch { value, arms } => self.match_copy(&result, &ty, value, arms),
+            } => return self.try_allocation(&result, *kind, input, layout),
+            ExprKind::CopyMatch { value, arms } => {
+                return self.match_copy(&result, &ty, value, arms)
+            }
             ExprKind::Constructor {
                 adt,
                 variant,
                 fields,
-            } => self.constructor(&result, &ty, *adt, *variant, fields),
-            ExprKind::Match { value, arms } => self.match_value(&result, &ty, value, arms),
+            } => return self.constructor(&result, &ty, *adt, *variant, fields),
+            ExprKind::Match { value, arms } => return self.match_value(&result, &ty, value, arms),
             ExprKind::Int(n) => writeln!(self.out, "{ty} {result} = INT32_C({n});").unwrap(),
             ExprKind::Str(value) => {
                 let mut literal = String::from("\"");
@@ -490,15 +639,15 @@ impl Emitter<'_> {
                 let Type::Bytes(n) = value.ty else {
                     unreachable!()
                 };
-                let value = self.expr(value);
+                let value = emit_value!(self.expr(value));
                 writeln!(self.out, "(void){value}; {ty} {result} = INT32_C({n});").unwrap();
             }
             ExprKind::BytesGet(value, index) => {
                 let Type::Bytes(n) = value.ty else {
                     unreachable!()
                 };
-                let value = self.expr(value);
-                let index = self.expr(index);
+                let value = emit_value!(self.expr(value));
+                let index = emit_value!(self.expr(index));
                 writeln!(
                     self.out,
                     "{ty} {result} = rl_bytes_{n}_get({value}, {index});"
@@ -509,9 +658,9 @@ impl Emitter<'_> {
                 let Type::Bytes(n) = value.ty else {
                     unreachable!()
                 };
-                let value = self.expr(value);
-                let index = self.expr(index);
-                let byte = self.expr(byte);
+                let value = emit_value!(self.expr(value));
+                let index = emit_value!(self.expr(index));
+                let byte = emit_value!(self.expr(byte));
                 writeln!(
                     self.out,
                     "{ty} {result} = rl_bytes_{n}_set({value}, {index}, {byte});"
@@ -519,12 +668,12 @@ impl Emitter<'_> {
                 .unwrap();
             }
             ExprKind::ByteLen(value) => {
-                let value = self.expr(value);
+                let value = emit_value!(self.expr(value));
                 writeln!(self.out, "{ty} {result} = rl_byte_len({value});").unwrap();
             }
             ExprKind::ByteAt(value, index) => {
-                let value = self.expr(value);
-                let index = self.expr(index);
+                let value = emit_value!(self.expr(value));
+                let index = emit_value!(self.expr(index));
                 writeln!(self.out, "{ty} {result} = rl_byte_at({value}, {index});").unwrap();
             }
             ExprKind::Bool(value) => {
@@ -536,62 +685,9 @@ impl Emitter<'_> {
                 writeln!(self.out, "{ty} {result} = {place};").unwrap();
             }
             ExprKind::Call(id, args) => {
-                let mut values = Vec::new();
-                for (arg, (_, arg_ty, mode)) in args.iter().zip(&self.program.functions[*id].params)
-                {
-                    match arg {
-                        CallArg::Value(arg) => {
-                            values.push(self.expr(arg));
-                            self.add_cost(arg.ty);
-                        }
-                        CallArg::ReadCopy(local) | CallArg::InoutCopy(local) => {
-                            let temporary = self.temp();
-                            self.add_cost(*arg_ty);
-                            let param_ty = parameter_type(*arg_ty, *mode);
-                            let place = self.copy_place(*local);
-                            writeln!(self.out, "{param_ty} {temporary} = &({place});").unwrap();
-                            values.push(temporary);
-                        }
-                        CallArg::ReadField(place) | CallArg::InoutField(place) => {
-                            let temporary = self.temp();
-                            self.add_cost(*arg_ty);
-                            let param_ty = parameter_type(*arg_ty, *mode);
-                            let place = self.field_place(place);
-                            writeln!(self.out, "{param_ty} {temporary} = &({place});").unwrap();
-                            values.push(temporary);
-                        }
-                        CallArg::ReadTemporary(value) => {
-                            let value = self.expr(value);
-                            let temporary = self.temp();
-                            self.add_cost(*arg_ty);
-                            let param_ty = parameter_type(*arg_ty, *mode);
-                            writeln!(self.out, "{param_ty} {temporary} = &{value};").unwrap();
-                            values.push(temporary);
-                        }
-                        CallArg::ReadOwner(local) | CallArg::InoutOwner(local) => {
-                            let temporary = self.temp();
-                            self.add_cost(*arg_ty);
-                            let param_ty = parameter_type(*arg_ty, *mode);
-                            writeln!(self.out, "{param_ty} {temporary} = rl_l_{};", local.0)
-                                .unwrap();
-                            values.push(temporary);
-                        }
-                        CallArg::Move(local) => {
-                            let temporary = self.temp();
-                            self.add_cost(*arg_ty);
-                            let owner_ty = c_type(*arg_ty);
-                            writeln!(
-                                self.out,
-                                "{owner_ty} {temporary} = rl_l_{}; rl_l_{} = {};",
-                                local.0,
-                                local.0,
-                                adt::zero(*arg_ty)
-                            )
-                            .unwrap();
-                            values.push(temporary);
-                        }
-                    }
-                }
+                let Some(values) = self.call_arguments(*id, args) else {
+                    return EmitOutcome::NoNormal;
+                };
                 writeln!(
                     self.out,
                     "{ty} {result} = rl_fn_{id}({});",
@@ -616,7 +712,7 @@ impl Emitter<'_> {
                 self.add_cost(owner_ty);
                 match init {
                     OwnerInit::Alloc(value) => {
-                        let value = self.expr(value);
+                        let value = emit_value!(self.expr(value));
                         writeln!(
                             self.out,
                             "int32_t *rl_l_{} = rl_box_i32_abort({value});",
@@ -625,7 +721,7 @@ impl Emitter<'_> {
                         .unwrap();
                     }
                     OwnerInit::BytesAlloc(value) => {
-                        let value = self.expr(value);
+                        let value = emit_value!(self.expr(value));
                         writeln!(
                             self.out,
                             "rl_owned_bytes *rl_l_{} = rl_owned_bytes_new({value});",
@@ -634,7 +730,7 @@ impl Emitter<'_> {
                         .unwrap();
                     }
                     OwnerInit::Call(value) | OwnerInit::Expr(value) => {
-                        let value = self.expr(value);
+                        let value = emit_value!(self.expr(value));
                         let owner_ty = c_type(owner_ty);
                         writeln!(self.out, "{owner_ty} rl_l_{} = {value};", local.0).unwrap();
                     }
@@ -651,7 +747,7 @@ impl Emitter<'_> {
                         .unwrap();
                     }
                 }
-                let value = self.expr(body);
+                let value = emit_value!(self.expr(body));
                 if let Some(id) = cleanup {
                     self.drop_cleanup(id);
                 }
@@ -671,7 +767,7 @@ impl Emitter<'_> {
                 writeln!(self.out, "{ty} {result} = *rl_l_{};", local.0).unwrap()
             }
             ExprKind::OwnerWrite(local, value) => {
-                let value = self.expr(value);
+                let value = emit_value!(self.expr(value));
                 writeln!(
                     self.out,
                     "*rl_l_{} = {value}; {ty} {result} = (rl_unit){{0}};",
@@ -683,7 +779,7 @@ impl Emitter<'_> {
                 writeln!(self.out, "{ty} {result} = (int32_t)rl_l_{}->len;", local.0).unwrap();
             }
             ExprKind::OwnerBytesGet(local, index) => {
-                let index = self.expr(index);
+                let index = emit_value!(self.expr(index));
                 writeln!(
                     self.out,
                     "{ty} {result} = rl_owned_bytes_get(rl_l_{}, {index});",
@@ -692,14 +788,14 @@ impl Emitter<'_> {
                 .unwrap();
             }
             ExprKind::OwnerBytesSet(local, index, value) => {
-                let index = self.expr(index);
-                let value = self.expr(value);
+                let index = emit_value!(self.expr(index));
+                let value = emit_value!(self.expr(value));
                 writeln!(self.out, "rl_owned_bytes_set(rl_l_{}, {index}, {value}); {ty} {result} = (rl_unit){{0}};", local.0).unwrap();
             }
             ExprKind::Let {
                 local, value, body, ..
             } => {
-                let value_temp = self.expr(value);
+                let value_temp = emit_value!(self.expr(value));
                 self.add_cost(value.ty);
                 writeln!(
                     self.out,
@@ -708,11 +804,11 @@ impl Emitter<'_> {
                     local.0
                 )
                 .unwrap();
-                let body_temp = self.expr(body);
+                let body_temp = emit_value!(self.expr(body));
                 writeln!(self.out, "{ty} {result} = {body_temp};").unwrap();
             }
             ExprKind::Assign(id, value) => {
-                let value_temp = self.expr(value);
+                let value_temp = emit_value!(self.expr(value));
                 let place = self.copy_place(*id);
                 writeln!(
                     self.out,
@@ -721,22 +817,41 @@ impl Emitter<'_> {
                 .unwrap();
             }
             ExprKind::If(condition, yes, no) => {
-                let condition = self.expr(condition);
+                let condition = emit_value!(self.expr(condition));
                 writeln!(self.out, "{ty} {result}; if ({condition}) {{").unwrap();
                 let yes = self.expr(yes);
-                writeln!(self.out, "{result} = {yes}; }} else {{").unwrap();
+                if let EmitOutcome::Value(value) = &yes {
+                    writeln!(self.out, "{result} = {value};").unwrap();
+                }
+                self.out.push_str("} else {\n");
                 let no = self.expr(no);
-                writeln!(self.out, "{result} = {no}; }}").unwrap();
+                if let EmitOutcome::Value(value) = &no {
+                    writeln!(self.out, "{result} = {value};").unwrap();
+                }
+                self.out.push_str("}\n");
+                if matches!((yes, no), (EmitOutcome::NoNormal, EmitOutcome::NoNormal)) {
+                    return EmitOutcome::NoNormal;
+                }
             }
             ExprKind::While(condition, body) => {
                 self.out.push_str("for (;;) {\n");
-                let condition = self.expr(condition);
+                let condition = match self.expr(condition) {
+                    EmitOutcome::Value(condition) => condition,
+                    EmitOutcome::NoNormal => {
+                        self.out.push_str("}\n");
+                        return EmitOutcome::NoNormal;
+                    }
+                };
                 writeln!(self.out, "if (!{condition}) break;").unwrap();
-                let body = self.expr(body);
-                writeln!(self.out, "(void){body}; }} {ty} {result} = (rl_unit){{0}};").unwrap();
+                if let EmitOutcome::Value(body) = self.expr(body) {
+                    writeln!(self.out, "(void){body};").unwrap();
+                }
+                // The condition's false edge is a genuine normal predecessor,
+                // even when every entered iteration has no normal successor.
+                writeln!(self.out, "}} {ty} {result} = (rl_unit){{0}};").unwrap();
             }
             ExprKind::Binary(op, left, right) => {
-                let left_temp = self.expr(left);
+                let left_temp = emit_value!(self.expr(left));
                 if matches!(op, BinaryOp::And | BinaryOp::Or) {
                     let condition = if *op == BinaryOp::And {
                         left_temp.clone()
@@ -744,15 +859,17 @@ impl Emitter<'_> {
                         format!("!{left_temp}")
                     };
                     writeln!(self.out, "{ty} {result}; if ({condition}) {{").unwrap();
-                    let right_temp = self.expr(right);
+                    if let EmitOutcome::Value(right_temp) = self.expr(right) {
+                        writeln!(self.out, "{result} = {right_temp};").unwrap();
+                    }
                     writeln!(
                         self.out,
-                        "{result} = {right_temp}; }} else {{ {result} = {}; }}",
+                        "}} else {{ {result} = {}; }}",
                         i32::from(*op == BinaryOp::Or)
                     )
                     .unwrap();
                 } else {
-                    let right_temp = self.expr(right);
+                    let right_temp = emit_value!(self.expr(right));
                     let expression = match op {
                         BinaryOp::Add => format!("rl_checked(0, {left_temp}, {right_temp})"),
                         BinaryOp::Sub => format!("rl_checked(1, {left_temp}, {right_temp})"),
@@ -776,6 +893,6 @@ impl Emitter<'_> {
                 }
             }
         }
-        result
+        EmitOutcome::Value(result)
     }
 }

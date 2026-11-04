@@ -39,7 +39,12 @@ fn metadata_is_independently_validated_before_execution_or_emission() {
     rejects(&forged);
 }
 fn constructor(program: &mut TypedMain) -> &mut ExprNode {
-    let ExprKind::OwnerLet { body, .. } = &mut program.functions[program.entry].body.kind else {
+    let ExprKind::OwnerLet { body, .. } = &mut program.functions[program.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     let ExprKind::OwnerLet {
@@ -84,7 +89,12 @@ fn constructor_tags_fields_and_declared_types_are_validated() {
     rejects(&forged);
 }
 fn match_node(program: &mut TypedMain) -> &mut ExprNode {
-    let ExprKind::OwnerLet { body, .. } = &mut program.functions[program.entry].body.kind else {
+    let ExprKind::OwnerLet { body, .. } = &mut program.functions[program.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     let ExprKind::OwnerLet { body, .. } = &mut body.kind else {

@@ -213,3 +213,18 @@ finite Copy field-schema reconstruction, including nested symbolic fields and
 passed 762 default and 810 importer-enabled tests, both strict Clippy and Windows
 compile modes, plus independent malformed-layout and native/C checks. Genuinely
 unknown stored payloads and bare unresolved/no-return values remain out of scope.
+
+## Nonreturning results
+
+The bounded K3 representation has [integrated acceptance](verification/2026-11-04-nonreturning-results.md)
+on source `bdd878fe`: 860 default and 908 importer-enabled tests, both strict
+Clippy modes and both Windows GNU compile checks. Independent validation adds
+15 retained private regressions and 80 GCC/Clang O0/O2 executions with exact
+argument/depth events. Existing K1/K2 negative expectations were explicitly
+migrated where K3 adds support; unknown physical payloads remain rejected.
+
+Bare recursive results use no storage or fabricated values. Mandatory source
+correspondence and separate source/IR flow proofs precede consumption. See the
+[bounded contract](blockers/nonreturning-results.md) for current exclusions;
+interrupted eager arguments and discarded returning results are next separate
+representation tasks. The full language plan remains open.

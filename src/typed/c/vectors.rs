@@ -59,8 +59,17 @@ static void rl_print_vector(rl_u8x16 value) {
 "#;
 
 impl Emitter<'_> {
-    pub(super) fn vector(&mut self, result: &str, ty: &str, op: VectorOp, args: &[ExprNode]) {
-        let values = args.iter().map(|arg| self.expr(arg)).collect::<Vec<_>>();
+    pub(super) fn vector(
+        &mut self,
+        result: &str,
+        ty: &str,
+        op: VectorOp,
+        args: &[ExprNode],
+    ) -> EmitOutcome {
+        let mut values = Vec::with_capacity(args.len());
+        for argument in args {
+            values.push(emit_value!(self.expr(argument)));
+        }
         let call = match op {
             VectorOp::Load => {
                 let Type::Bytes(n) = args[0].ty else {
@@ -83,5 +92,6 @@ impl Emitter<'_> {
             }
         };
         writeln!(self.out, "{ty} {result} = {call};").unwrap();
+        EmitOutcome::Value(result.to_owned())
     }
 }

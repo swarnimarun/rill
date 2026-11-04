@@ -111,7 +111,7 @@ independently verified tag-only layouts. Their combined acceptance passed
 see [nullary-phantom verification](verification/2026-11-03-nullary-phantoms.md).
 Other unresolved real uses and weak monotypes still require a separately
 proved representation. Fixed-layout phantom products have bounded acceptance below;
-nonreturning results remain subsequent bounded kernel work. Existing native
+bounded nonreturning results now have the accepted K3 representation below. Existing native
 `i32`/`bool` calls and constants, `unit` results and direct static `cstr`
 arguments now use explicit typed operations and retain the full native manifest.
 Existing unsigned/float/raw-pointer transport now also uses the checked typed
@@ -190,3 +190,19 @@ The optional [Copy-body origin index](typed-copy-node-origins.md) now adds exact
 typed expression, operand, pattern and capture/shape correspondence on the
 combined native checkpoint. Its [full verification](verification/2026-11-03-copy-node-origins.md)
 passed; broader owner/native, storage and generated-C mappings remain open.
+
+## Nonreturning-result acceptance and next representation tasks
+
+K3 now retains bare recursive result identities separately from ordinary value
+storage, with mandatory source correspondence and independent exact-instance
+flow verification. Arguments, branches, unused immutable divergent lets and
+actual recursive depth behavior are preserved. The [final K3 matrix](verification/2026-11-04-nonreturning-results.md)
+passes 860 default and 908 importer-enabled tests, both strict lint and Windows
+compile modes, and 80 independent GCC/Clang C executions. This is not P1 completion.
+
+Next, specify and implement interrupted eager value arguments such as
+`ignore(forever())`: retain ordered prefixes and source suffix evidence, create
+no unknown argument storage, and never enter the outer callee. Then address
+discarded normally-returning unknown results separately. Keep used/mutable
+layoutless bindings and observable unknown payloads outside those bounded
+contracts until their representation and verification rules are established.

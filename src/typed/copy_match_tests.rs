@@ -9,7 +9,12 @@ fn sample() -> TypedMain {
     lower("type Option<a> = None | Some(a)\nfn main() { match Some(Some(42)) { Some(Some(x)) => x | Some(None) => 1 | None => 0 } }")
 }
 fn arms(program: &mut TypedMain) -> &mut Vec<CopyArm> {
-    let ExprKind::CopyMatch { arms, .. } = &mut program.functions[program.entry].body.kind else {
+    let ExprKind::CopyMatch { arms, .. } = &mut program.functions[program.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     arms
@@ -126,7 +131,12 @@ fn copy_matches_transfer_outer_owners_once_and_retain_cleanup_order() {
 #[test]
 fn verifier_rejects_copy_match_consumption_and_inconsistent_owner_joins() {
     let mut typed = lower("fn main() { let b = system_box_i32_abort(42); let value = match true { true => move b | false => move b }; box_read(value) }");
-    let ExprKind::OwnerLet { local, body, .. } = &mut typed.functions[typed.entry].body.kind else {
+    let ExprKind::OwnerLet { local, body, .. } = &mut typed.functions[typed.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     let ExprKind::OwnerLet {
@@ -149,7 +159,12 @@ fn verifier_rejects_copy_match_consumption_and_inconsistent_owner_joins() {
     rejects(&typed, "cannot copy an owner");
 
     let mut typed = lower("fn take(b) { box_read(b) }\nfn main() { let b = system_box_i32_abort(42); match true { true => take(move b) | false => take(move b) } }");
-    let ExprKind::OwnerLet { body, .. } = &mut typed.functions[typed.entry].body.kind else {
+    let ExprKind::OwnerLet { body, .. } = &mut typed.functions[typed.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     let ExprKind::CopyMatch { arms, .. } = &mut body.kind else {
@@ -166,7 +181,9 @@ fn verifier_rejects_copy_match_consumption_and_inconsistent_owner_joins() {
 fn copy_match_call_traversal_retains_owner_recursion_rejection() {
     let mut typed = lower("fn helper() { 42 }\nfn main() { let b = system_box_i32_abort(0); match true { true => helper() | false => 0 } }");
     let entry = typed.entry;
-    let ExprKind::OwnerLet { body, .. } = &mut typed.functions[entry].body.kind else {
+    let ExprKind::OwnerLet { body, .. } =
+        &mut typed.functions[entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::CopyMatch { arms, .. } = &mut body.kind else {
@@ -180,7 +197,9 @@ fn copy_match_call_traversal_retains_owner_recursion_rejection() {
 fn pattern_matrix_matches_every_boolean_product_pattern_subset() {
     let base =
         lower("type Pair = Pair(bool, bool)\nfn main() { match Pair(true, false) { _ => 42 } }");
-    let ExprKind::CopyMatch { value, .. } = &base.functions[base.entry].body.kind else {
+    let ExprKind::CopyMatch { value, .. } =
+        &base.functions[base.entry].body.value_expr().unwrap().kind
+    else {
         panic!()
     };
     let Type::Adt { id, .. } = value.ty else {
@@ -256,9 +275,9 @@ fn wide_pattern_matrix_has_an_explicit_bounded_work_policy() {
         entry: 0,
         functions: vec![TypedFunction {
             params: vec![],
-            result: Type::Int,
+            result: (Type::Int).into(),
             param_cleanup: vec![],
-            body: ExprNode {
+            body: (ExprNode {
                 ty: Type::Int,
                 kind: ExprKind::CopyMatch {
                     value: Box::new(ExprNode {
@@ -287,7 +306,8 @@ fn wide_pattern_matrix_has_an_explicit_bounded_work_policy() {
                         },
                     }],
                 },
-            },
+            })
+            .into(),
         }],
     };
     rejects(&program, "pattern analysis budget exceeded");

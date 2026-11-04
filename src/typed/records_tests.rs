@@ -15,7 +15,7 @@ fn int(n: i32) -> ExprNode {
     }
 }
 fn body(p: &mut TypedMain) -> &mut ExprNode {
-    &mut p.functions[p.entry].body
+    p.functions[p.entry].body.value_expr_mut().unwrap()
 }
 fn tail(expr: &mut ExprNode) -> &mut ExprNode {
     if matches!(expr.kind, ExprKind::Let { .. }) {

@@ -11,7 +11,12 @@ fn arguments(expr: &mut ExprNode) -> &mut Vec<CallArg> {
     }
 }
 fn root(program: &TypedMain) -> LocalId {
-    let ExprKind::Let { local, .. } = &program.functions[program.entry].body.kind else {
+    let ExprKind::Let { local, .. } = &program.functions[program.entry]
+        .body
+        .value_expr()
+        .unwrap()
+        .kind
+    else {
         panic!()
     };
     *local
@@ -51,19 +56,29 @@ fn independent_copy_loan_verifier_checks_identity_modes_and_types() {
         let entry = bad.entry;
         match case {
             0 => {
-                arguments(&mut bad.functions[entry].body)[0] = CallArg::ReadCopy(LocalId(u32::MAX))
+                arguments(bad.functions[entry].body.value_expr_mut().unwrap())[0] =
+                    CallArg::ReadCopy(LocalId(u32::MAX))
             }
             1 => {
-                arguments(&mut bad.functions[entry].body)[1] = CallArg::ReadTemporary(ExprNode {
-                    ty: Type::Bool,
-                    kind: ExprKind::Bool(true),
-                })
+                arguments(bad.functions[entry].body.value_expr_mut().unwrap())[1] =
+                    CallArg::ReadTemporary(ExprNode {
+                        ty: Type::Bool,
+                        kind: ExprKind::Bool(true),
+                    })
             }
-            2 => arguments(&mut bad.functions[entry].body)[1] = CallArg::InoutCopy(id),
+            2 => {
+                arguments(bad.functions[entry].body.value_expr_mut().unwrap())[1] =
+                    CallArg::InoutCopy(id)
+            }
             3 => bad.functions[0].params[0].2 = ParamMode::Value,
-            4 => arguments(&mut bad.functions[entry].body)[0] = CallArg::Value(int(21)),
+            4 => {
+                arguments(bad.functions[entry].body.value_expr_mut().unwrap())[0] =
+                    CallArg::Value(int(21))
+            }
             5 => {
-                let ExprKind::Let { value, .. } = &mut bad.functions[entry].body.kind else {
+                let ExprKind::Let { value, .. } =
+                    &mut bad.functions[entry].body.value_expr_mut().unwrap().kind
+                else {
                     panic!()
                 };
                 **value = ExprNode {
@@ -73,11 +88,13 @@ fn independent_copy_loan_verifier_checks_identity_modes_and_types() {
             }
             6 => {
                 bad.functions[0].params[1].2 = ParamMode::Inout;
-                arguments(&mut bad.functions[entry].body)[1] = CallArg::InoutCopy(id);
+                arguments(bad.functions[entry].body.value_expr_mut().unwrap())[1] =
+                    CallArg::InoutCopy(id);
             }
             _ => {
                 bad.functions[0].params[0].2 = ParamMode::Inout;
-                arguments(&mut bad.functions[entry].body)[0] = CallArg::InoutCopy(id);
+                arguments(bad.functions[entry].body.value_expr_mut().unwrap())[0] =
+                    CallArg::InoutCopy(id);
             }
         }
         assert!(verify(&bad).is_err(), "case {case}");
@@ -107,14 +124,16 @@ fn later_reads_writes_and_exclusive_aliases_are_rejected() {
     let mut bad = original.clone();
     let id = root(&bad);
     let entry = bad.entry;
-    arguments(&mut bad.functions[entry].body)[1] = CallArg::Value(ExprNode {
+    arguments(bad.functions[entry].body.value_expr_mut().unwrap())[1] = CallArg::Value(ExprNode {
         ty: Type::Int,
         kind: ExprKind::Read(id),
     });
     rejects(&bad, "invalid ordinary read");
     let mut bad = original;
     let entry = bad.entry;
-    let ExprKind::Let { mutable, .. } = &mut bad.functions[entry].body.kind else {
+    let ExprKind::Let { mutable, .. } =
+        &mut bad.functions[entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     *mutable = false;
@@ -122,12 +141,13 @@ fn later_reads_writes_and_exclusive_aliases_are_rejected() {
     let mut bad=checked("fn both(inout a, inout b) { a <- b }\nfn main() { let mut x = 1; let mut y = 2; both(inout x, inout y) }");
     let id = root(&bad);
     let entry = bad.entry;
-    arguments(&mut bad.functions[entry].body)[1] = CallArg::InoutCopy(id);
+    arguments(bad.functions[entry].body.value_expr_mut().unwrap())[1] = CallArg::InoutCopy(id);
     rejects(&bad, "invalid Copy root loan");
     let mut bad = checked("fn add(read a, b) { a + b }\nfn main() { let mut x = 1; add(x, 2) }");
     let id = root(&bad);
     let entry = bad.entry;
-    arguments(&mut bad.functions[entry].body)[1] = CallArg::Value(write_then(id, int(2)));
+    arguments(bad.functions[entry].body.value_expr_mut().unwrap())[1] =
+        CallArg::Value(write_then(id, int(2)));
     rejects(&bad, "invalid assignment");
 }
 #[test]
@@ -135,7 +155,9 @@ fn nested_call_release_does_not_erase_enclosing_loan() {
     let mut bad=checked("fn get(read a) { a + 0 }\nfn add(read a, b) { a + b }\nfn main() { let mut x = 1; add(x, { let z = get(x); z }) }");
     let id = root(&bad);
     let entry = bad.entry;
-    let CallArg::Value(value) = &mut arguments(&mut bad.functions[entry].body)[1] else {
+    let CallArg::Value(value) =
+        &mut arguments(bad.functions[entry].body.value_expr_mut().unwrap())[1]
+    else {
         panic!()
     };
     let ExprKind::Let { body, .. } = &mut value.kind else {
@@ -148,7 +170,7 @@ fn nested_call_release_does_not_erase_enclosing_loan() {
 fn shared_parameter_cannot_be_written_or_exclusively_reborrowed() {
     let mut bad = checked("fn observe(read x) { x + 0 }\nfn main() { observe(42) }");
     let id = bad.functions[0].params[0].0;
-    bad.functions[0].body = write_then(id, int(42));
+    bad.functions[0].body = (write_then(id, int(42))).into();
     rejects(&bad, "invalid assignment");
     let mut bad=checked("fn bump(inout x) { x <- x + 1 }\nfn forward(inout x) { bump(inout x) }\nfn main() { let mut n = 1; forward(inout n) }");
     bad.functions[1].params[0].2 = ParamMode::Read;
@@ -165,12 +187,13 @@ fn read_temporary_visits_owner_effects_and_hidden_calls() {
     assert_eq!((state.allocations, state.frees), (1, 1));
     assert!(emit_c(&program).unwrap().contains("rl_box_i32_abort"));
     let entry = program.entry;
-    arguments(&mut program.functions[entry].body)[0] = CallArg::ReadTemporary(ExprNode {
-        ty: Type::Int,
-        kind: ExprKind::Call(entry, vec![]),
-    });
-    let body = program.functions[entry].body.clone();
-    program.functions[entry].body = ExprNode {
+    arguments(program.functions[entry].body.value_expr_mut().unwrap())[0] =
+        CallArg::ReadTemporary(ExprNode {
+            ty: Type::Int,
+            kind: ExprKind::Call(entry, vec![]),
+        });
+    let body = program.functions[entry].body.value_expr().unwrap().clone();
+    program.functions[entry].body = (ExprNode {
         ty: Type::Int,
         kind: ExprKind::OwnerLet {
             local: LocalId(u32::MAX),
@@ -182,7 +205,8 @@ fn read_temporary_visits_owner_effects_and_hidden_calls() {
                 tree: CleanupTree::DropWholeOwner,
             }),
         },
-    };
+    })
+    .into();
     rejects(&program, "recursive");
 }
 #[test]
@@ -210,7 +234,8 @@ fn allocation_metadata_and_failure_are_rechecked_inside_read_temporary() {
         assert_eq!((state.allocations, state.frees), (count, count));
     }
     let entry = program.entry;
-    let CallArg::ReadTemporary(value) = &mut arguments(&mut program.functions[entry].body)[0]
+    let CallArg::ReadTemporary(value) =
+        &mut arguments(program.functions[entry].body.value_expr_mut().unwrap())[0]
     else {
         panic!()
     };

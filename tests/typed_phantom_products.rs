@@ -299,7 +299,7 @@ fn unused_products_and_selected_branches_preserve_runtime_traps() {
 }
 
 #[test]
-fn genuinely_unknown_fields_and_bare_no_return_results_stay_unsupported() {
+fn genuinely_unknown_physical_fields_stay_unsupported_after_no_normal_admission() {
     for source in [
         "type Option<a> = None | Some(a)\nfn main() { None }",
         "type Option<a> = None | Some(a)\nfn make() { None }\nfn main() { let unused = make(); 42 }",
@@ -307,14 +307,23 @@ fn genuinely_unknown_fields_and_bare_no_return_results_stay_unsupported() {
         "type Option<a> = None | Some(a)\ntype Store<a> = { value: Option<a> }\nfn make() { record Store { value = None } }\nfn main() { let unused = make(); 42 }",
         "type Store<a> = { value: a }\nfn forever() { forever() }\nfn main() { let unused = record Store { value = forever() }; 42 }",
         "type Option<a> = None | Some(a)\nfn main() { if false { let weak = if true { None } else { None }; 0 } else { 42 } }",
-        "fn forever() { forever() }\nfn main() { let unused = forever(); 42 }",
-        "fn forever() { forever() }\nfn main() { if false { let unused = forever(); 0 } else { 42 } }",
     ] {
         let program = parser::parse(source).unwrap();
         let checked = check::analyze(&program).unwrap_or_else(|e| panic!("{source}: {e}"));
         let error = typed::lower_main(&checked).unwrap_err();
         assert!(error.starts_with("E-TYPED-UNSUPPORTED:"), "{source}: {error}");
         // Source accepted does not mean representable, and these controls can diverge.
+    }
+}
+
+#[test]
+fn bare_nonreturning_results_preserve_finite_product_prefixes_and_branches() {
+    for (source, expected) in [
+        ("fn forever() { forever() }\nfn main() { let unused = forever(); 42 }".to_string(), None),
+        ("fn forever() { forever() }\nfn main() { if false { let unused = forever(); 0 } else { 42 } }".to_string(), Some("42")),
+        (format!("{MARK}fn forever() {{ forever() }}\nfn main() {{ let p = if true {{ Mark(42) }} else {{ Mark(0) }}; let unused = forever(); match p {{ Mark(n) => n }} }}"), None),
+    ] {
+        compare(&source, expected);
     }
 }
 
@@ -458,12 +467,37 @@ fn optional_origins_explicitly_reject_opaque_products_after_ordinary_success() {
 
 #[test]
 fn optional_origin_errors_keep_ordinary_semantic_precedence() {
+    for (tail, expected) in [
+        ("let unused = forever(); match p { Mark(n) => n }", None),
+        (
+            "if false { let unused = forever(); match p { Mark(n) => n } } else { 42 }",
+            Some("42"),
+        ),
+    ] {
+        let source = format!("{MARK}fn forever() {{ forever() }}\nfn main() {{ let p = if true {{ Mark(42) }} else {{ Mark(0) }}; {tail} }}");
+        let fixture = Fixture::new();
+        let path = fixture.write("combined.rill", &source);
+        let sources = load_program_with_sources(&path).unwrap();
+        let (ordinary, emitted) = lower(sources.program(), &source);
+        assert!(emitted.contains("static void rl_fn_"));
+        match expected {
+            Some(value) => assert_eq!(typed::evaluate(&ordinary).unwrap().to_string(), value),
+            None => assert_eq!(typed::evaluate(&ordinary).unwrap_err(), "runtime trap"),
+        }
+        for error in [
+            lower_main_with_function_origins(sources.clone()).unwrap_err(),
+            lower_main_with_copy_node_origins(sources).unwrap_err(),
+        ] {
+            assert!(error.starts_with("E-TYPED-UNSUPPORTED:"), "{error}");
+            assert!(error.contains("no-normal"), "{error}");
+        }
+    }
     for source in [
-        format!("{MARK}fn forever() {{ forever() }}\nfn main() {{ let p = if true {{ Mark(42) }} else {{ Mark(0) }}; let unused = forever(); match p {{ Mark(n) => n }} }}"),
-        "type Option<a> = None | Some(a)\nfn main() { None }".into(),
+        "type Option<a> = None | Some(a)\nfn main() { None }",
+        "type Option<a> = None | Some(a)\nfn make() { None }\nfn main() { let unused = make(); 42 }",
     ] {
         let fixture = Fixture::new();
-        let path = fixture.write("main.rill", &source);
+        let path = fixture.write("main.rill", source);
         let sources = load_program_with_sources(&path).unwrap();
         let checked = check::analyze(sources.program()).unwrap();
         let ordinary = typed::lower_main(&checked).unwrap_err();

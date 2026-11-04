@@ -80,6 +80,7 @@ pub(super) struct OpaqueBinding {
 
 #[derive(Clone, Debug, Default)]
 pub(super) struct Metadata {
+    pub control: Option<std::sync::Arc<super::control::Frozen>>,
     pub domain: Option<Domain>,
     pub declarations: Vec<TypeDecl>,
     pub source_functions: Vec<String>,
@@ -223,7 +224,7 @@ fn schema_atom(ty: &TypeExpr) -> Option<SourceType> {
 
 /// Independently check the full generic declaration graph, including inactive
 /// variants and nominal arguments. No active constructor is an erasure proof.
-fn schema_dependencies(
+pub(super) fn schema_dependencies(
     decls: &[TypeDecl],
     budget: &mut Budget,
 ) -> Result<Vec<Dependencies>, String> {
@@ -405,6 +406,7 @@ impl Metadata {
             scope_sources[instance.scope] = instance.source;
         }
         let result = Self {
+            control: None,
             domain: Some(instances.domain.clone()),
             declarations: checked.program.types.clone(),
             source_functions: checked
@@ -587,7 +589,11 @@ impl Metadata {
         if program.adts.len() > 1024 || program.functions.len() > 1024 {
             return Err(LIMIT.into());
         }
-        let symbolic = program.adts.iter().any(|a| a.symbolic.is_some());
+        let symbolic = program.adts.iter().any(|a| a.symbolic.is_some())
+            || program
+                .functions
+                .iter()
+                .any(|f| matches!(f.result, super::ResultRepr::NoNormal(_)));
         if !symbolic {
             if self.domain.is_some()
                 || !self.binders.is_empty()
@@ -599,6 +605,7 @@ impl Metadata {
                 return Err(INVALID.into());
             }
             return Ok(Facts {
+                domain: None,
                 adt_binders: vec![HashSet::new(); program.adts.len()],
                 allowed: vec![HashSet::new(); program.functions.len()],
             });
@@ -780,7 +787,7 @@ impl Metadata {
                     .iter()
                     .map(|(_, ty, mode)| (*ty, *mode as u8))
                     .collect::<Vec<_>>(),
-                function.result,
+                function.result.clone(),
             )) {
                 return Err(INVALID.into());
             }
@@ -790,7 +797,10 @@ impl Metadata {
                 .params
                 .iter()
                 .map(|(_, ty, _)| ty)
-                .chain(std::iter::once(&function.result))
+                .chain(match &function.result {
+                    super::ResultRepr::Value(ty) => Some(ty),
+                    super::ResultRepr::NoNormal(_) => None,
+                })
             {
                 if let Type::Adt { id, .. } = ty {
                     let binders = adt_binders.get(*id).ok_or(INVALID)?;
@@ -798,9 +808,19 @@ impl Metadata {
                     visible.extend(binders);
                 }
             }
+            if let super::ResultRepr::NoNormal(result) = &function.result {
+                budget.charge(1)?;
+                if Some(&result.domain) != self.domain.as_ref()
+                    || result.index >= self.binders.len()
+                {
+                    return Err(INVALID.into());
+                }
+                visible.insert(result.index);
+            }
             allowed.push(visible);
         }
         Ok(Facts {
+            domain: self.domain.clone(),
             adt_binders,
             allowed,
         })
@@ -808,10 +828,23 @@ impl Metadata {
 }
 
 pub(super) struct Facts {
+    domain: Option<Domain>,
     adt_binders: Vec<HashSet<usize>>,
     allowed: Vec<HashSet<usize>>,
 }
 impl Facts {
+    pub fn opaque_in_scope(&self, id: &OpaqueId, function: usize) -> Result<(), String> {
+        if self.domain.as_ref() != Some(&id.domain)
+            || !self
+                .allowed
+                .get(function)
+                .ok_or(INVALID)?
+                .contains(&id.index)
+        {
+            return Err("E-TYPED-LOGICAL: opaque result escaped its instance scope".into());
+        }
+        Ok(())
+    }
     pub fn in_scope(&self, ty: Type, function: usize) -> Result<(), String> {
         if let Type::Adt { id, .. } = ty {
             let binders = self.adt_binders.get(id).ok_or(INVALID)?;

@@ -14,10 +14,16 @@ mod adt_tests;
 mod adt_verify;
 mod adts;
 mod allocation;
+mod control;
+mod control_lower;
+#[cfg(test)]
+mod control_tests;
 mod copy_loans;
 #[cfg(test)]
 mod copy_loans_tests;
 mod copy_match;
+#[cfg(test)]
+mod independent_nonreturning_tests;
 use copy_loans::{CopyLocals, CopySlot};
 #[cfg(test)]
 mod copy_match_tests;
@@ -42,6 +48,10 @@ mod logical;
 mod logical_tests;
 pub use logical::{LogicalType, OpaqueId, SymbolicInstance};
 mod places;
+mod results;
+pub use results::{
+    Computation, NoNormalArm, NoNormalExpr, NoNormalKind, NoStorageBinding, ResultRepr,
+};
 pub mod provenance;
 pub use initialization::{Cleanup, CleanupTree, Initialization};
 pub use places::Place;
@@ -166,6 +176,11 @@ pub struct ExprNode {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    NoStorageLet {
+        binding: NoStorageBinding,
+        value: Box<NoNormalExpr>,
+        body: Box<ExprNode>,
+    },
     TryAlloc {
         kind: SystemAllocationKind,
         input: Box<ExprNode>,
@@ -281,8 +296,8 @@ pub struct TypedMain {
 #[derive(Clone, Debug)]
 struct TypedFunction {
     params: Vec<(LocalId, Type, ParamMode)>,
-    result: Type,
-    body: ExprNode,
+    result: ResultRepr,
+    body: Computation,
     param_cleanup: Vec<Cleanup>,
 }
 
@@ -337,11 +352,33 @@ fn lower_main_traced<'source>(
             "E-TYPED-OWNER: owner programs cannot use foreign declarations or values".into(),
         );
     }
-    let instances = instances::Instances::discover_traced(checked, trace)?;
-    let registry = adts::Registry::build(checked, &instances, &native)?;
+    let mut control = None;
+    let instances = match instances::Instances::discover_traced(checked, trace) {
+        Ok(instances) => instances,
+        Err(error) if error == instances::BARE_RESULT => {
+            let facts = control::SourceFacts::build(checked)?;
+            let instances = instances::Instances::discover_control(checked, &facts)?;
+            control = Some(facts);
+            instances
+        }
+        Err(error) => return Err(error),
+    };
+    let registry = if control.is_some() {
+        adts::Registry::build_control(checked, &instances, &native, control.as_ref())?
+    } else {
+        adts::Registry::build(checked, &instances, &native)?
+    };
+    if let Some(control) = &control {
+        control.preflight_lower(&instances, &registry.types)?;
+    }
+    instances.charge_control(program.functions.len())?;
+    for function in &program.functions {
+        instances.charge_control(function.name.len().saturating_add(function.params.len()))?;
+    }
     let mut lower = Lower {
         native: &native,
-        node_trace: body_trace,
+        node_trace: if control.is_none() { body_trace } else { None },
+        control: control.as_ref(),
         registry,
         checked,
         locals: HashMap::new(),
@@ -375,7 +412,12 @@ fn lower_main_traced<'source>(
         }
         let function = &program.functions[instance.source];
         lower.substitution = &instance.substitution;
-        let result_type = lower.registry.convert(&instance.result)?;
+        let result_type = match instance.result {
+            InferredType::Var(index) if control.is_some() => {
+                ResultRepr::NoNormal(lower.registry.logical.opaque_id(index)?)
+            }
+            _ => ResultRepr::Value(lower.registry.convert(&instance.result)?),
+        };
         let param_types = instance
             .params
             .iter()
@@ -409,10 +451,16 @@ fn lower_main_traced<'source>(
             );
             params.push((id, ty, param.mode));
         }
-        let LoweredExpr {
-            value: body,
-            trace: body_fragment,
-        } = lower.expr_observed(&function.body)?;
+        let (body, body_fragment) = match &result_type {
+            ResultRepr::Value(_) => {
+                let lowered = lower.expr_observed(&function.body)?;
+                (Computation::Value(lowered.value), lowered.trace)
+            }
+            ResultRepr::NoNormal(_) => (
+                Computation::NoNormal(lower.no_normal(&function.body)?),
+                None,
+            ),
+        };
         let mut param_cleanup = Vec::new();
         for (param, (id, ty, mode)) in function.params.iter().zip(&params).rev() {
             if ty.is_owner() && *mode == ParamMode::Value {
@@ -431,7 +479,13 @@ fn lower_main_traced<'source>(
             }
         }
         if let Some(trace) = lower.node_trace.as_deref_mut() {
-            trace.signature(function, &params, &result_type, &body, body_fragment);
+            trace.signature(
+                function,
+                &params,
+                result_type.value_ref()?,
+                body.value_expr()?,
+                body_fragment,
+            );
         }
         result.functions.push(TypedFunction {
             params,
@@ -443,11 +497,17 @@ fn lower_main_traced<'source>(
     result.logical = lower.registry.logical;
     result.native.pointers = lower.registry.pointers;
     result.adts = lower.registry.types;
+    if let Some(control) = control {
+        let proof = control.freeze(&instances)?;
+        proof.verify_source(checked)?;
+        result.logical.control = Some(std::sync::Arc::new(proof));
+    }
     verify(&result)?;
     Ok((result, instances))
 }
 
 struct Lower<'a, 'b> {
+    control: Option<&'a control::SourceFacts<'a, 'b>>,
     node_trace: Option<&'a mut nodes::Trace<'b>>,
     native: &'a NativeManifest,
     registry: adts::Registry,
@@ -469,12 +529,112 @@ impl Lower<'_, '_> {
         Ok(id)
     }
     fn source_type(&self, expr: &Expr) -> Result<InferredType, String> {
-        instances::expression_type(
-            self.checked,
-            expr,
-            self.substitution,
-            &self.instances.admission,
-        )
+        self.instances
+            .expression_result_type(self.checked, expr, self.substitution, self.control)
+    }
+    fn call_arguments(
+        &mut self,
+        expr: &Expr,
+        name: &str,
+        args: &[Expr],
+    ) -> Result<(usize, Vec<CallArg>), String> {
+        self.instances
+            .charge_control(args.len().saturating_mul(3))?;
+        let param_types = args
+            .iter()
+            .map(|arg| self.source_type(arg))
+            .collect::<Result<Vec<_>, _>>()?;
+        for ty in &param_types {
+            self.instances.reserve_control_type(ty, 1)?;
+        }
+        let id = self
+            .instances
+            .call(name, param_types.clone(), self.source_type(expr)?)?;
+        let modes = self
+            .function_modes
+            .get(name)
+            .ok_or("E-TYPED: missing function modes")?
+            .clone();
+        if modes.len() != args.len() {
+            return Err("E-TYPED: invalid function modes".into());
+        }
+        let mut lowered = Vec::new();
+        let loans: Vec<_> = self
+            .locals
+            .iter()
+            .map(|(name, local)| {
+                (
+                    name.clone(),
+                    local.id,
+                    local.shared,
+                    local.loaned,
+                    local.field_loans.clone(),
+                )
+            })
+            .collect();
+        for (ordinal, ((arg, ty), mode)) in args.iter().zip(&param_types).zip(modes).enumerate() {
+            if self.registry.convert(ty)?.is_owner() {
+                let source = match (mode, arg) {
+                    (ParamMode::Value, Expr::Move(source))
+                    | (ParamMode::Read, Expr::Var(source))
+                    | (ParamMode::Inout, Expr::Inout(source)) => source,
+                    _ => return Err("E-TYPED-OWNER: wrong owner argument mode".into()),
+                };
+                let local = self
+                    .locals
+                    .get_mut(source)
+                    .ok_or("E-TYPED-OWNER: unknown owner root")?;
+                if local.ty != self.registry.convert(ty)?
+                    || !local.initialization.fully_initialized()
+                {
+                    return Err("E-TYPED-OWNER: invalid owner root".into());
+                }
+                match mode {
+                    ParamMode::Value => {
+                        if local.mode != ParamMode::Value || local.loaned || local.shared != 0 {
+                            return Err("E-TYPED-OWNER: invalid move".into());
+                        }
+                        places::take(local, &[], &self.registry.types)?;
+                        lowered.push(CallArg::Move(local.id));
+                    }
+                    ParamMode::Read => {
+                        if local.loaned {
+                            return Err("E-TYPED-OWNER: overlapping loan".into());
+                        }
+                        local.shared = local
+                            .shared
+                            .checked_add(1)
+                            .ok_or("E-TYPED-OWNER: too many shared loans")?;
+                        lowered.push(CallArg::ReadOwner(local.id));
+                    }
+                    ParamMode::Inout => {
+                        if !local.mutable || local.loaned || local.shared != 0 {
+                            return Err("E-TYPED-OWNER: overlapping loan".into());
+                        }
+                        local.loaned = true;
+                        lowered.push(CallArg::InoutOwner(local.id));
+                    }
+                }
+            } else {
+                let ty = self.registry.convert(ty)?;
+                let argument = self.copy_argument_observed(arg, ty, mode)?;
+                if let Some(trace) = self.node_trace.as_deref_mut() {
+                    trace.attach(NodeRole::CallArgument(ordinal), argument.1);
+                }
+                lowered.push(argument.0);
+            }
+        }
+        for (name, id, shared, loaned, fields) in loans {
+            let local = self
+                .locals
+                .get_mut(&name)
+                .filter(|local| local.id == id)
+                .ok_or("E-TYPED-LOAN: lost loan scope")?;
+            local.shared = shared;
+            local.loaned = loaned;
+            local.field_loans = fields;
+        }
+        Ok((id, lowered))
     }
     fn expr(&mut self, expr: &Expr) -> Result<ExprNode, String> {
         self.expr_observed(expr).map(|lowered| lowered.value)
@@ -612,7 +772,22 @@ impl Lower<'_, '_> {
                 ExprKind::Read(local.id)
             }
             Expr::Let(name, value, body) | Expr::LetMut(name, value, body) => {
-                let owner_type = self.registry.convert(&self.source_type(value)?)?;
+                let source_type = self.source_type(value)?;
+                if matches!(source_type, InferredType::Var(_)) {
+                    let binding = self
+                        .control
+                        .ok_or(instances::BARE_RESULT)?
+                        .no_storage_binding(expr, &self.instances.domain)?;
+                    return Ok(ExprNode {
+                        ty,
+                        kind: ExprKind::NoStorageLet {
+                            binding,
+                            value: Box::new(self.no_normal(value)?),
+                            body: Box::new(self.expr(body)?),
+                        },
+                    });
+                }
+                let owner_type = self.registry.convert(&source_type)?;
                 let is_owner = owner_type.is_owner();
                 if is_owner {
                     let init = match &**value {
@@ -873,102 +1048,7 @@ impl Lower<'_, '_> {
                 Box::new(self.expr_child(&args[1], NodeRole::BuiltinOperand(1))?),
             ),
             Expr::Call(name, args) => {
-                let param_types = args
-                    .iter()
-                    .map(|arg| self.source_type(arg))
-                    .collect::<Result<Vec<_>, _>>()?;
-                let id = self
-                    .instances
-                    .call(name, param_types.clone(), self.source_type(expr)?)?;
-                let modes = self
-                    .function_modes
-                    .get(name)
-                    .ok_or("E-TYPED: missing function modes")?
-                    .clone();
-                if modes.len() != args.len() {
-                    return Err("E-TYPED: invalid function modes".into());
-                }
-                let mut lowered = Vec::new();
-                let loans: Vec<_> = self
-                    .locals
-                    .iter()
-                    .map(|(name, local)| {
-                        (
-                            name.clone(),
-                            local.id,
-                            local.shared,
-                            local.loaned,
-                            local.field_loans.clone(),
-                        )
-                    })
-                    .collect();
-                for (ordinal, ((arg, ty), mode)) in
-                    args.iter().zip(&param_types).zip(modes).enumerate()
-                {
-                    if self.registry.convert(ty)?.is_owner() {
-                        let source = match (mode, arg) {
-                            (ParamMode::Value, Expr::Move(source))
-                            | (ParamMode::Read, Expr::Var(source))
-                            | (ParamMode::Inout, Expr::Inout(source)) => source,
-                            _ => return Err("E-TYPED-OWNER: wrong owner argument mode".into()),
-                        };
-                        let local = self
-                            .locals
-                            .get_mut(source)
-                            .ok_or("E-TYPED-OWNER: unknown owner root")?;
-                        if local.ty != self.registry.convert(ty)?
-                            || !local.initialization.fully_initialized()
-                        {
-                            return Err("E-TYPED-OWNER: invalid owner root".into());
-                        }
-                        match mode {
-                            ParamMode::Value => {
-                                if local.mode != ParamMode::Value
-                                    || local.loaned
-                                    || local.shared != 0
-                                {
-                                    return Err("E-TYPED-OWNER: invalid move".into());
-                                }
-                                places::take(local, &[], &self.registry.types)?;
-                                lowered.push(CallArg::Move(local.id));
-                            }
-                            ParamMode::Read => {
-                                if local.loaned {
-                                    return Err("E-TYPED-OWNER: overlapping loan".into());
-                                }
-                                local.shared = local
-                                    .shared
-                                    .checked_add(1)
-                                    .ok_or("E-TYPED-OWNER: too many shared loans")?;
-                                lowered.push(CallArg::ReadOwner(local.id));
-                            }
-                            ParamMode::Inout => {
-                                if !local.mutable || local.loaned || local.shared != 0 {
-                                    return Err("E-TYPED-OWNER: overlapping loan".into());
-                                }
-                                local.loaned = true;
-                                lowered.push(CallArg::InoutOwner(local.id));
-                            }
-                        }
-                    } else {
-                        let ty = self.registry.convert(ty)?;
-                        let argument = self.copy_argument_observed(arg, ty, mode)?;
-                        if let Some(trace) = self.node_trace.as_deref_mut() {
-                            trace.attach(NodeRole::CallArgument(ordinal), argument.1);
-                        }
-                        lowered.push(argument.0);
-                    }
-                }
-                for (name, id, shared, loaned, fields) in loans {
-                    let local = self
-                        .locals
-                        .get_mut(&name)
-                        .filter(|local| local.id == id)
-                        .ok_or("E-TYPED-LOAN: lost loan scope")?;
-                    local.shared = shared;
-                    local.loaned = loaned;
-                    local.field_loans = fields;
-                }
+                let (id, lowered) = self.call_arguments(expr, name, args)?;
                 ExprKind::Call(id, lowered)
             }
             Expr::Binary(op, a, b) => ExprKind::Binary(
@@ -1006,6 +1086,16 @@ impl Lower<'_, '_> {
 /// local identity, mutability, and operation types. This is not an ownership
 /// or effect proof and must not be used to bypass the source checker.
 pub fn verify(program: &TypedMain) -> Result<(), String> {
+    if let Some(proof) = &program.logical.control {
+        // This performs bounded actual-tree and frozen-witness preflight before
+        // any generic recursive consumer. It proves correspondence to a frozen
+        // witness; lower_main separately checked that witness against source.
+        proof.verify_structure(program)?;
+    } else if has_control_extension(program) {
+        return Err(
+            "E-TYPED-CONTROL: no-normal representation requires the canonical source proof".into(),
+        );
+    }
     program.native.verify()?;
     let logical_facts = program.logical.verify(program)?;
     adts::verify(&program.adts)?;
@@ -1020,7 +1110,7 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
     }
     for function in &program.functions {
         let error = std::cell::RefCell::new(None);
-        any_expr(&function.body, &|kind| {
+        any_computation(&function.body, &|kind| {
             if let ExprKind::TryAlloc { kind, layout, .. } = kind {
                 if let Err(e) = allocation::validate(
                     *kind,
@@ -1041,7 +1131,7 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
         .functions
         .get(program.entry)
         .ok_or("E-TYPED: invalid entry")?;
-    if entry.result.is_owner() {
+    if matches!(entry.result, ResultRepr::Value(ty) if ty.is_owner()) {
         return Err("E-TYPED-OWNER: main cannot return an owner".into());
     }
     if !entry.params.is_empty() {
@@ -1055,9 +1145,9 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
                 .as_ref()
                 .is_some_and(|logical| logical.dependencies.owner)
     }) || program.functions.iter().any(|f| {
-        f.result.is_owner()
+        matches!(f.result, ResultRepr::Value(ty) if ty.is_owner())
             || f.params.iter().any(|(_, ty, _)| ty.is_owner())
-            || any_expr(&f.body, &|kind| {
+            || any_computation(&f.body, &|kind| {
                 matches!(
                     kind,
                     ExprKind::TryAlloc { .. }
@@ -1083,12 +1173,12 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
                         .chain(adt.variants.iter().flat_map(|v| &v.fields))
                         .any(|ty| ty.is_raw())
             })
-            || program
-                .functions
-                .iter()
-                .any(|f| f.result.is_raw() || f.params.iter().any(|(_, ty, _)| ty.is_raw()))
             || program.functions.iter().any(|f| {
-                any_expr(&f.body, &|kind| {
+                matches!(f.result, ResultRepr::Value(ty) if ty.is_raw())
+                    || f.params.iter().any(|(_, ty, _)| ty.is_raw())
+            })
+            || program.functions.iter().any(|f| {
+                any_computation(&f.body, &|kind| {
                     matches!(
                         kind,
                         ExprKind::ForeignCall(..)
@@ -1106,19 +1196,30 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
         }
         verify_acyclic_calls(program)?;
     }
+    let pattern_work = program
+        .logical
+        .control
+        .as_ref()
+        .map(|_| std::cell::RefCell::new(100_000usize));
     let mut ids = HashSet::new();
     for (function_index, function) in program.functions.iter().enumerate() {
         let context = VerifyContext {
+            pattern_work: pattern_work.as_ref(),
             functions: &program.functions,
             adts: &program.adts,
             native: &program.native,
             logical: &logical_facts,
             function: function_index,
         };
-        adts::validate_type(function.result, &program.adts)?;
-        logical_facts.in_scope(function.result, function_index)?;
-        program.native.validate_type(function.result)?;
-        if matches!(function.result, Type::Bytes(n) if n > 256) {
+        match &function.result {
+            ResultRepr::Value(ty) => {
+                adts::validate_type(*ty, &program.adts)?;
+                logical_facts.in_scope(*ty, function_index)?;
+                program.native.validate_type(*ty)?;
+            }
+            ResultRepr::NoNormal(id) => logical_facts.opaque_in_scope(id, function_index)?,
+        }
+        if matches!(function.result, ResultRepr::Value(Type::Bytes(n)) if n > 256) {
             return Err("E-TYPED: invalid buffer capacity".into());
         }
         let mut scope = HashMap::new();
@@ -1146,7 +1247,15 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
                 },
             );
         }
-        if verify_expr(&function.body, &mut scope, &mut ids, &context)? != function.result {
+        let actual_result = match &function.body {
+            Computation::Value(value) => {
+                ResultRepr::Value(verify_expr(value, &mut scope, &mut ids, &context)?)
+            }
+            Computation::NoNormal(value) => ResultRepr::NoNormal(results::verify_no_normal(
+                value, &mut scope, &mut ids, &context,
+            )?),
+        };
+        if actual_result != function.result {
             return Err("E-TYPED: wrong function result type".into());
         }
         let mut expected = Vec::new();
@@ -1170,11 +1279,105 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
 }
 
 struct VerifyContext<'a> {
+    pattern_work: Option<&'a std::cell::RefCell<usize>>,
     logical: &'a logical::Facts,
     function: usize,
     functions: &'a [TypedFunction],
     adts: &'a [AdtType],
     native: &'a NativeManifest,
+}
+
+fn verify_call_arguments(
+    id: usize,
+    args: &[CallArg],
+    scope: &mut HashMap<LocalId, Local>,
+    ids: &mut HashSet<LocalId>,
+    context: &VerifyContext<'_>,
+) -> Result<ResultRepr, String> {
+    let functions = context.functions;
+    let adts = context.adts;
+    let function = functions
+        .get(id)
+        .ok_or("E-TYPED: invalid function identity")?;
+    if args.len() != function.params.len() {
+        return Err("E-TYPED: wrong call arity".into());
+    }
+    let loans: Vec<_> = scope
+        .iter()
+        .map(|(id, local)| (*id, local.shared, local.loaned, local.field_loans.clone()))
+        .collect();
+    for (arg, (_, ty, mode)) in args.iter().zip(&function.params) {
+        match (arg, ty, mode) {
+            (CallArg::Move(id), ty, ParamMode::Value) if ty.is_owner() => {
+                let owner = scope
+                    .get_mut(id)
+                    .ok_or("E-TYPED-OWNER: unknown move source")?;
+                if owner.ty != *ty
+                    || owner.mode != ParamMode::Value
+                    || !owner.initialization.fully_initialized()
+                    || owner.loaned
+                    || owner.shared != 0
+                {
+                    return Err("E-TYPED-OWNER: invalid move argument".into());
+                }
+                places::take(owner, &[], adts)?;
+            }
+            (CallArg::ReadOwner(id), ty, ParamMode::Read) if ty.is_owner() => {
+                let owner = scope
+                    .get_mut(id)
+                    .ok_or("E-TYPED-OWNER: unknown read root")?;
+                if owner.ty != *ty || !owner.initialization.fully_initialized() || owner.loaned {
+                    return Err("E-TYPED-OWNER: invalid shared loan".into());
+                }
+                owner.shared = owner
+                    .shared
+                    .checked_add(1)
+                    .ok_or("E-TYPED-OWNER: too many shared loans")?;
+            }
+            (CallArg::InoutOwner(id), ty, ParamMode::Inout) if ty.is_owner() => {
+                let owner = scope
+                    .get_mut(id)
+                    .ok_or("E-TYPED-OWNER: unknown inout root")?;
+                if owner.ty != *ty
+                    || !owner.initialization.fully_initialized()
+                    || !owner.mutable
+                    || owner.loaned
+                    || owner.shared != 0
+                {
+                    return Err("E-TYPED-OWNER: invalid exclusive loan".into());
+                }
+                owner.loaned = true;
+            }
+            (CallArg::ReadCopy(id), ty, ParamMode::Read) if !ty.is_owner() => {
+                copy_loans::verify_root(*id, *ty, ParamMode::Read, scope)?;
+            }
+            (CallArg::InoutCopy(id), ty, ParamMode::Inout) if !ty.is_owner() => {
+                copy_loans::verify_root(*id, *ty, ParamMode::Inout, scope)?;
+            }
+            (CallArg::ReadField(place), ty, ParamMode::Read) if !ty.is_owner() => {
+                field_loans::verify_field(place, *ty, ParamMode::Read, scope, adts)?;
+            }
+            (CallArg::InoutField(place), ty, ParamMode::Inout) if !ty.is_owner() => {
+                field_loans::verify_field(place, *ty, ParamMode::Inout, scope, adts)?;
+            }
+            (CallArg::Value(value), ty, ParamMode::Value)
+            | (CallArg::ReadTemporary(value), ty, ParamMode::Read)
+                if !ty.is_owner() =>
+            {
+                if verify_expr(value, scope, ids, context)? != *ty {
+                    return Err("E-TYPED: wrong call argument type".into());
+                }
+            }
+            _ => return Err("E-TYPED-OWNER: invalid call argument mode".into()),
+        }
+    }
+    for (id, shared, loaned, fields) in loans {
+        let local = scope.get_mut(&id).ok_or("E-TYPED: lost call scope")?;
+        local.shared = shared;
+        local.loaned = loaned;
+        local.field_loans = fields;
+    }
+    Ok(function.result.clone())
 }
 
 fn verify_expr(
@@ -1183,7 +1386,6 @@ fn verify_expr(
     ids: &mut HashSet<LocalId>,
     context: &VerifyContext<'_>,
 ) -> Result<Type, String> {
-    let functions = context.functions;
     let adts = context.adts;
     if expr.ty.is_owner()
         && !matches!(
@@ -1209,6 +1411,10 @@ fn verify_expr(
         return Err("E-TYPED: invalid buffer capacity".into());
     }
     let ty = match &expr.kind {
+        ExprKind::NoStorageLet { value, body, .. } => {
+            results::verify_no_normal(value, scope, ids, context)?;
+            verify_expr(body, scope, ids, context)?
+        }
         ExprKind::ForeignCall(id, args) => foreign::verify_call(*id, args, scope, ids, context)?,
         ExprKind::ForeignConst(id) => foreign::verify_constant(*id, context.native)?,
         ExprKind::ForeignConvert(conversion, input) => {
@@ -1463,91 +1669,7 @@ fn verify_expr(
             result
         }
         ExprKind::Call(id, args) => {
-            let function = functions
-                .get(*id)
-                .ok_or("E-TYPED: invalid function identity")?;
-            if args.len() != function.params.len() {
-                return Err("E-TYPED: wrong call arity".into());
-            }
-            let loans: Vec<_> = scope
-                .iter()
-                .map(|(id, local)| (*id, local.shared, local.loaned, local.field_loans.clone()))
-                .collect();
-            for (arg, (_, ty, mode)) in args.iter().zip(&function.params) {
-                match (arg, ty, mode) {
-                    (CallArg::Move(id), ty, ParamMode::Value) if ty.is_owner() => {
-                        let owner = scope
-                            .get_mut(id)
-                            .ok_or("E-TYPED-OWNER: unknown move source")?;
-                        if owner.ty != *ty
-                            || owner.mode != ParamMode::Value
-                            || !owner.initialization.fully_initialized()
-                            || owner.loaned
-                            || owner.shared != 0
-                        {
-                            return Err("E-TYPED-OWNER: invalid move argument".into());
-                        }
-                        places::take(owner, &[], adts)?;
-                    }
-                    (CallArg::ReadOwner(id), ty, ParamMode::Read) if ty.is_owner() => {
-                        let owner = scope
-                            .get_mut(id)
-                            .ok_or("E-TYPED-OWNER: unknown read root")?;
-                        if owner.ty != *ty
-                            || !owner.initialization.fully_initialized()
-                            || owner.loaned
-                        {
-                            return Err("E-TYPED-OWNER: invalid shared loan".into());
-                        }
-                        owner.shared = owner
-                            .shared
-                            .checked_add(1)
-                            .ok_or("E-TYPED-OWNER: too many shared loans")?;
-                    }
-                    (CallArg::InoutOwner(id), ty, ParamMode::Inout) if ty.is_owner() => {
-                        let owner = scope
-                            .get_mut(id)
-                            .ok_or("E-TYPED-OWNER: unknown inout root")?;
-                        if owner.ty != *ty
-                            || !owner.initialization.fully_initialized()
-                            || !owner.mutable
-                            || owner.loaned
-                            || owner.shared != 0
-                        {
-                            return Err("E-TYPED-OWNER: invalid exclusive loan".into());
-                        }
-                        owner.loaned = true;
-                    }
-                    (CallArg::ReadCopy(id), ty, ParamMode::Read) if !ty.is_owner() => {
-                        copy_loans::verify_root(*id, *ty, ParamMode::Read, scope)?;
-                    }
-                    (CallArg::InoutCopy(id), ty, ParamMode::Inout) if !ty.is_owner() => {
-                        copy_loans::verify_root(*id, *ty, ParamMode::Inout, scope)?;
-                    }
-                    (CallArg::ReadField(place), ty, ParamMode::Read) if !ty.is_owner() => {
-                        field_loans::verify_field(place, *ty, ParamMode::Read, scope, adts)?;
-                    }
-                    (CallArg::InoutField(place), ty, ParamMode::Inout) if !ty.is_owner() => {
-                        field_loans::verify_field(place, *ty, ParamMode::Inout, scope, adts)?;
-                    }
-                    (CallArg::Value(value), ty, ParamMode::Value)
-                    | (CallArg::ReadTemporary(value), ty, ParamMode::Read)
-                        if !ty.is_owner() =>
-                    {
-                        if verify_expr(value, scope, ids, context)? != *ty {
-                            return Err("E-TYPED: wrong call argument type".into());
-                        }
-                    }
-                    _ => return Err("E-TYPED-OWNER: invalid call argument mode".into()),
-                }
-            }
-            for (id, shared, loaned, fields) in loans {
-                let local = scope.get_mut(&id).ok_or("E-TYPED: lost call scope")?;
-                local.shared = shared;
-                local.loaned = loaned;
-                local.field_loans = fields;
-            }
-            function.result
+            verify_call_arguments(*id, args, scope, ids, context)?.value()?
         }
         ExprKind::BytesNew(n) if *n <= 256 => Type::Bytes(*n),
         ExprKind::BytesNew(_) => return Err("E-TYPED: invalid buffer capacity".into()),
@@ -1696,11 +1818,28 @@ fn verify_expr(
     Ok(ty)
 }
 
+fn has_control_extension(program: &TypedMain) -> bool {
+    control::has_extension(program)
+}
+
+fn any_computation(computation: &Computation, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
+    match computation {
+        Computation::Value(value) => any_expr(value, predicate),
+        Computation::NoNormal(value) => {
+            value.any_value_root(&mut |value| any_expr(value, predicate))
+        }
+    }
+}
+
 fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
     if predicate(&expr.kind) {
         return true;
     }
     match &expr.kind {
+        ExprKind::NoStorageLet { value, body, .. } => {
+            value.any_value_root(&mut |value| any_expr(value, predicate)) || any_expr(body, predicate)
+        }
+
         ExprKind::ForeignCall(_, args) => args.iter().any(|arg| matches!(arg, ForeignArg::Value(value) if any_expr(value, predicate))),
         ExprKind::Vector(_,args)=>args.iter().any(|arg|any_expr(arg,predicate)),
         ExprKind::CopyMatch { value, arms } => {
@@ -1744,6 +1883,11 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
 
 fn collect_calls(expr: &ExprNode, out: &mut Vec<usize>) {
     match &expr.kind {
+        ExprKind::NoStorageLet { value, body, .. } => {
+            value.visit_calls(out);
+            collect_calls(body, out);
+        }
+
         ExprKind::ForeignCall(_, args) => {
             for arg in args {
                 if let ForeignArg::Value(value) = arg {
@@ -1830,7 +1974,7 @@ fn verify_acyclic_calls(program: &TypedMain) -> Result<(), String> {
     let mut indegree = vec![0usize; program.functions.len()];
     for function in &program.functions {
         let mut targets = Vec::new();
-        collect_calls(&function.body, &mut targets);
+        collect_calls(function.body.value_expr()?, &mut targets);
         for &target in &targets {
             let degree = indegree
                 .get_mut(target)
@@ -1924,9 +2068,14 @@ fn evaluate_function(
             _ => return Err("E-TYPED-OWNER: invalid runtime argument".into()),
         }
     }
-    let result = if function.result.is_owner() {
+    let result = if let Computation::NoNormal(body) = &function.body {
+        match results::evaluate_no_normal(body, &mut locals, program, depth, state, &mut owners) {
+            Ok(never) => match never {},
+            Err(error) => Err(error),
+        }
+    } else if function.result.value()?.is_owner() {
         evaluate_owner_expr(
-            &function.body,
+            function.body.value_expr()?,
             &mut locals,
             program,
             depth,
@@ -1936,7 +2085,7 @@ fn evaluate_function(
         .map(EvalArg::Owner)
     } else {
         evaluate_expr(
-            &function.body,
+            function.body.value_expr()?,
             &mut locals,
             program,
             depth,
@@ -1976,6 +2125,13 @@ fn evaluate_expr(
 ) -> Result<crate::interpreter::Value, String> {
     use crate::interpreter::Value;
     match &expr.kind {
+        ExprKind::NoStorageLet { value, .. } => {
+            match results::evaluate_no_normal(value, locals, program, depth, state, owners) {
+                Ok(never) => match never {},
+                Err(error) => Err(error),
+            }
+        }
+
         ExprKind::ForeignCall(id, args) => {
             for arg in args {
                 if let ForeignArg::Value(value) = arg {
@@ -2663,7 +2819,7 @@ mod tests {
             locals.insert(outer, Value::Int(99));
             let mut owners = HashMap::new();
             let actual = evaluate_expr(
-                &typed.functions[typed.entry].body,
+                typed.functions[typed.entry].body.value_expr().unwrap(),
                 &mut locals,
                 &typed,
                 1,
@@ -2729,7 +2885,7 @@ mod tests {
         let ir = lower_main(&checked).unwrap();
         assert_eq!(ir.functions[ir.entry].result, Type::CU32);
         assert!(matches!(
-            ir.functions[ir.entry].body.kind,
+            ir.functions[ir.entry].body.value_expr().unwrap().kind,
             ExprKind::ForeignConvert(ForeignConvert::U32, _)
         ));
         assert!(!emit_c(&ir).unwrap().contains("rl_value"));
@@ -2746,11 +2902,12 @@ mod tests {
             functions: vec![TypedFunction {
                 params: vec![],
                 param_cleanup: vec![],
-                result: Type::Int,
-                body: ExprNode {
+                result: (Type::Int).into(),
+                body: (ExprNode {
                     ty: Type::Int,
                     kind: ExprKind::Read(LocalId(0)),
-                },
+                })
+                .into(),
             }],
         };
         assert!(verify(&p).unwrap_err().contains("outside local scope"));
@@ -2763,11 +2920,12 @@ mod tests {
             functions: vec![TypedFunction {
                 params: vec![],
                 param_cleanup: vec![],
-                result: Type::Bool,
-                body: ExprNode {
+                result: (Type::Bool).into(),
+                body: (ExprNode {
                     ty: Type::Bool,
                     kind: ExprKind::Int(1),
-                },
+                })
+                .into(),
             }],
         };
         assert!(verify(&p)
@@ -2793,8 +2951,8 @@ mod tests {
             functions: vec![TypedFunction {
                 params: vec![],
                 param_cleanup: vec![],
-                result: Type::Int,
-                body,
+                result: (Type::Int).into(),
+                body: body.into(),
             }],
         };
         assert!(verify(&program).unwrap_err().contains("invalid byte_len"));
@@ -2815,8 +2973,8 @@ mod tests {
             functions: vec![TypedFunction {
                 params: vec![],
                 param_cleanup: vec![],
-                result: Type::Bool,
-                body,
+                result: (Type::Bool).into(),
+                body: body.into(),
             }],
         };
         assert!(verify(&program).unwrap_err().contains("invalid binary"));
@@ -2845,8 +3003,8 @@ mod tests {
             functions: vec![TypedFunction {
                 params: vec![],
                 param_cleanup: vec![],
-                result: Type::Int,
-                body,
+                result: (Type::Int).into(),
+                body: body.into(),
             }],
         };
         assert!(verify(&program).unwrap_err().contains("invalid bytes_get"));
@@ -2863,8 +3021,8 @@ mod tests {
             functions: vec![TypedFunction {
                 params: vec![],
                 param_cleanup: vec![],
-                result: Type::Bytes(257),
-                body,
+                result: (Type::Bytes(257)).into(),
+                body: body.into(),
             }],
         };
         assert!(verify(&program)
@@ -2882,8 +3040,8 @@ mod tests {
             functions: vec![TypedFunction {
                 params: vec![],
                 param_cleanup: vec![],
-                result: body.ty,
-                body,
+                result: (body.ty).into(),
+                body: body.into(),
             }],
         }
     }
@@ -2948,14 +3106,14 @@ mod tests {
             functions: vec![
                 TypedFunction {
                     params: vec![],
-                    result: Type::Int,
-                    body: owned(0, bytes_alloc(), call, None),
+                    result: (Type::Int).into(),
+                    body: (owned(0, bytes_alloc(), call, None)).into(),
                     param_cleanup: vec![],
                 },
                 TypedFunction {
                     params: vec![(LocalId(1), Type::OwnedI32, ParamMode::Value)],
-                    result: Type::Int,
-                    body: int(0),
+                    result: (Type::Int).into(),
+                    body: (int(0)).into(),
                     param_cleanup: vec![Cleanup {
                         local: LocalId(1),
                         tree: CleanupTree::DropWholeOwner,
@@ -2982,14 +3140,14 @@ mod tests {
                 functions: vec![
                     TypedFunction {
                         params: vec![],
-                        result: Type::Int,
-                        body: owned(0, bytes_alloc(), call, Some(0)),
+                        result: (Type::Int).into(),
+                        body: (owned(0, bytes_alloc(), call, Some(0))).into(),
                         param_cleanup: vec![],
                     },
                     TypedFunction {
                         params: vec![(LocalId(1), Type::OwnedI32, mode)],
-                        result: Type::Int,
-                        body: int(0),
+                        result: (Type::Int).into(),
+                        body: (int(0)).into(),
                         param_cleanup: vec![],
                     },
                 ],
@@ -3113,8 +3271,8 @@ mod tests {
             params: (0..count)
                 .map(|i| (LocalId(i), Type::OwnedI32, ParamMode::Value))
                 .collect(),
-            result: Type::Int,
-            body: int(0),
+            result: (Type::Int).into(),
+            body: (int(0)).into(),
             param_cleanup: cleanup
                 .into_iter()
                 .map(|local| Cleanup {
@@ -3127,10 +3285,10 @@ mod tests {
             ty: Type::Int,
             kind: ExprKind::Call(0, args),
         };
-        let main = |body| TypedFunction {
+        let main = |body: ExprNode| TypedFunction {
             params: vec![],
-            result: Type::Int,
-            body,
+            result: (Type::Int).into(),
+            body: body.into(),
             param_cleanup: vec![],
         };
         let p = TypedMain {
@@ -3166,8 +3324,8 @@ mod tests {
             .contains("invalid call argument mode"));
         let scalar = TypedFunction {
             params: vec![(LocalId(0), Type::Int, ParamMode::Value)],
-            result: Type::Int,
-            body: int(0),
+            result: (Type::Int).into(),
+            body: (int(0)).into(),
             param_cleanup: vec![],
         };
         let p = TypedMain {
@@ -3212,14 +3370,14 @@ mod tests {
                 .enumerate()
                 .map(|(i, mode)| (LocalId(i as u32 + 1), Type::OwnedI32, mode))
                 .collect(),
-            result: Type::Int,
-            body: int(0),
+            result: (Type::Int).into(),
+            body: (int(0)).into(),
             param_cleanup: vec![],
         };
-        let main = |body| TypedFunction {
+        let main = |body: ExprNode| TypedFunction {
             params: vec![],
-            result: Type::Int,
-            body,
+            result: (Type::Int).into(),
+            body: body.into(),
             param_cleanup: vec![],
         };
         let call = |id, args| ExprNode {
@@ -3287,8 +3445,8 @@ mod tests {
         verify(&good).unwrap();
         let bad_move = TypedFunction {
             params: vec![(LocalId(1), Type::OwnedI32, ParamMode::Read)],
-            result: Type::Int,
-            body: owned(2, OwnerInit::Move(LocalId(1)), int(0), Some(2)),
+            result: (Type::Int).into(),
+            body: (owned(2, OwnerInit::Move(LocalId(1)), int(0), Some(2))).into(),
             param_cleanup: vec![],
         };
         let program = TypedMain {
@@ -3327,14 +3485,14 @@ mod tests {
                 (LocalId(1), Type::OwnedI32, ParamMode::Read),
                 (LocalId(2), Type::Int, ParamMode::Value),
             ],
-            result: Type::Int,
-            body: int(0),
+            result: (Type::Int).into(),
+            body: (int(0)).into(),
             param_cleanup: vec![],
         };
         let inner = TypedFunction {
             params: vec![(LocalId(3), Type::OwnedI32, ParamMode::Inout)],
-            result: Type::Int,
-            body: int(0),
+            result: (Type::Int).into(),
+            body: (int(0)).into(),
             param_cleanup: vec![],
         };
         let inner_call = ExprNode {
@@ -3350,8 +3508,8 @@ mod tests {
         };
         let main = TypedFunction {
             params: vec![],
-            result: Type::Int,
-            body: owned(0, alloc(1), outer_call, Some(0)),
+            result: (Type::Int).into(),
+            body: (owned(0, alloc(1), outer_call, Some(0))).into(),
             param_cleanup: vec![],
         };
         let program = TypedMain {
@@ -3371,10 +3529,10 @@ mod tests {
             ty: Type::Int,
             kind: ExprKind::Call(id, vec![]),
         };
-        let function = |body| TypedFunction {
+        let function = |body: ExprNode| TypedFunction {
             params: vec![],
-            result: Type::Int,
-            body,
+            result: (Type::Int).into(),
+            body: body.into(),
             param_cleanup: vec![],
         };
         let p = TypedMain {
@@ -3448,10 +3606,11 @@ mod tests {
         assert!(verify(&borrow_return).is_err());
 
         let mut copied_return = typed.clone();
-        copied_return.functions[0].body = ExprNode {
+        copied_return.functions[0].body = (ExprNode {
             ty: Type::OwnedI32,
             kind: ExprKind::Read(returned_param),
-        };
+        })
+        .into();
         assert!(verify(&copied_return).is_err());
 
         let mut recursive = typed.clone();
@@ -3459,7 +3618,7 @@ mod tests {
             ty: Type::OwnedI32,
             kind: ExprKind::Call(0, vec![CallArg::Move(returned_param)]),
         };
-        recursive.functions[0].body = ExprNode {
+        recursive.functions[0].body = (ExprNode {
             ty: Type::OwnedI32,
             kind: ExprKind::OwnerLet {
                 local: LocalId(900),
@@ -3471,11 +3630,12 @@ mod tests {
                 }),
                 cleanup: None,
             },
-        };
+        })
+        .into();
         assert!(verify(&recursive).unwrap_err().contains("recursive"));
 
         let mut invalid_initializer = typed.clone();
-        invalid_initializer.functions[0].body = ExprNode {
+        invalid_initializer.functions[0].body = (ExprNode {
             ty: Type::OwnedI32,
             kind: ExprKind::OwnerLet {
                 local: LocalId(900),
@@ -3490,13 +3650,14 @@ mod tests {
                 }),
                 cleanup: None,
             },
-        };
+        })
+        .into();
         assert!(verify(&invalid_initializer)
             .unwrap_err()
             .contains("direct call"));
 
         let mut ordinary_let = typed;
-        ordinary_let.functions[0].body = ExprNode {
+        ordinary_let.functions[0].body = (ExprNode {
             ty: Type::OwnedI32,
             kind: ExprKind::Let {
                 local: LocalId(900),
@@ -3510,7 +3671,8 @@ mod tests {
                     kind: ExprKind::OwnerMove(LocalId(900)),
                 }),
             },
-        };
+        })
+        .into();
         assert!(verify(&ordinary_let).unwrap_err().contains("explicit init"));
     }
 

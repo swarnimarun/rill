@@ -88,8 +88,12 @@ impl Emitter<'_> {
         adt: usize,
         variant: usize,
         fields: &[ExprNode],
-    ) {
-        let fields = fields.iter().map(|f| self.expr(f)).collect::<Vec<_>>();
+    ) -> EmitOutcome {
+        let mut values = Vec::with_capacity(fields.len());
+        for field in fields {
+            values.push(emit_value!(self.expr(field)));
+        }
+        let fields = values;
         writeln!(
             self.out,
             "{ty} {result} = ({ty}){{0}}; {result}.tag = {variant};"
@@ -99,6 +103,7 @@ impl Emitter<'_> {
             writeln!(self.out, "{result}.payload.v{variant}.f{index} = {value};").unwrap();
         }
         let _ = adt;
+        EmitOutcome::Value(result.to_owned())
     }
     pub(super) fn match_value(
         &mut self,
@@ -106,14 +111,15 @@ impl Emitter<'_> {
         ty: &str,
         value: &ExprNode,
         arms: &[super::super::AdtArm],
-    ) {
+    ) -> EmitOutcome {
         let Type::Adt { id, .. } = value.ty else {
             unreachable!()
         };
         let value_ty = value.ty;
-        let value = self.expr(value);
+        let value = emit_value!(self.expr(value));
         writeln!(self.out, "{ty} {result}; switch ({value}.tag) {{").unwrap();
         let mut has_default = false;
+        let mut normal = false;
         for arm in arms {
             let fields = if let Some(tag) = arm.variant {
                 writeln!(self.out, "case {tag}: {{").unwrap();
@@ -137,16 +143,24 @@ impl Emitter<'_> {
                     }
                 }
             }
-            let body = self.expr(&arm.body);
-            for id in &arm.cleanup {
-                self.drop_cleanup(id);
+            if let EmitOutcome::Value(body) = self.expr(&arm.body) {
+                normal = true;
+                for id in &arm.cleanup {
+                    self.drop_cleanup(id);
+                }
+                writeln!(self.out, "{result} = {body}; break;").unwrap();
             }
-            writeln!(self.out, "{result} = {body}; break; }}").unwrap();
+            self.out.push_str("}\n");
         }
         if !has_default {
             self.out.push_str("default: rl_trap();\n");
         }
         self.out.push_str("}\n");
+        if normal {
+            EmitOutcome::Value(result.to_owned())
+        } else {
+            EmitOutcome::NoNormal
+        }
     }
 }
 

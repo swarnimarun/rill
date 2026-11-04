@@ -35,8 +35,9 @@ cargo run -- build examples/factorial.rill -o /tmp/factorial --zig-cc --link-arg
 ```
 
 Arguments are passed directly to the compiler without shell parsing. `emit-c`
-writes the C source to standard output. The evaluator and built program print
-the result of the zero-argument `main` function followed by a newline.
+writes the C source to standard output. A normally returning zero-argument
+`main` prints its result followed by a newline. A proved nonreturning main has
+no result to print; its actual computation and traps are preserved.
 
 Conservative source formatting is available without loading dependencies:
 
@@ -106,6 +107,11 @@ The accepted [K2 phantom-product increment](docs/typed-phantom-products.md)
 supports complete finite Copy records/enums with unresolved logical arguments,
 including `Option<Flag<opaque>>`; genuine unknown physical payloads remain out
 of scope. Independent and full aggregate acceptance are recorded in that contract.
+The bounded [nonreturning-result representation](docs/blockers/nonreturning-results.md)
+now preserves bare recursive results and unused immutable divergent lets without
+fabricating storage or a return value. The [integrated K3 checks](docs/verification/2026-11-04-nonreturning-results.md)
+pass 860 default and 908 importer-enabled tests. Eager layoutless arguments,
+used/mutable layoutless bindings and unknown stored payloads remain unsupported.
 
 The subset includes signed 32-bit integers, booleans, unit, arithmetic,
 comparisons, short-circuit `&&` and `||`, generic algebraic types and exhaustive

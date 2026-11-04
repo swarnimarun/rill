@@ -298,7 +298,9 @@ fn consumers_reject_forged_cleanup_trees_independently() {
         },
     ] {
         let mut bad = original.clone();
-        let ExprKind::OwnerLet { cleanup, .. } = &mut bad.functions[bad.entry].body.kind else {
+        let ExprKind::OwnerLet { cleanup, .. } =
+            &mut bad.functions[bad.entry].body.value_expr_mut().unwrap().kind
+        else {
             panic!()
         };
         cleanup.as_mut().unwrap().tree = tree;

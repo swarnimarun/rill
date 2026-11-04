@@ -9,10 +9,11 @@ impl Emitter<'_> {
         ty: &str,
         value: &ExprNode,
         arms: &[CopyArm],
-    ) {
+    ) -> EmitOutcome {
         let value_type = value.ty;
-        let value = self.expr(value);
+        let value = emit_value!(self.expr(value));
         writeln!(self.out, "{ty} {result};").unwrap();
+        let mut normal = false;
         for (index, arm) in arms.iter().enumerate() {
             if index != 0 {
                 self.out.push_str("else ");
@@ -20,13 +21,21 @@ impl Emitter<'_> {
             let condition = condition(&arm.pattern, &value);
             writeln!(self.out, "if ({condition}) {{").unwrap();
             self.bind_pattern(&arm.pattern, value_type, &value);
-            let body = self.expr(&arm.body);
-            writeln!(self.out, "{result} = {body}; }}").unwrap();
+            if let EmitOutcome::Value(body) = self.expr(&arm.body) {
+                normal = true;
+                writeln!(self.out, "{result} = {body};").unwrap();
+            }
+            self.out.push_str("}\n");
         }
         self.out.push_str("else { rl_trap(); }\n");
+        if normal {
+            EmitOutcome::Value(result.to_owned())
+        } else {
+            EmitOutcome::NoNormal
+        }
     }
 
-    fn bind_pattern(&mut self, pattern: &CopyPattern, ty: Type, value: &str) {
+    pub(super) fn bind_pattern(&mut self, pattern: &CopyPattern, ty: Type, value: &str) {
         match pattern {
             CopyPattern::Binding(id) => {
                 self.add_cost(ty);
@@ -47,7 +56,7 @@ impl Emitter<'_> {
     }
 }
 
-fn condition(pattern: &CopyPattern, value: &str) -> String {
+pub(super) fn condition(pattern: &CopyPattern, value: &str) -> String {
     match pattern {
         CopyPattern::Wildcard | CopyPattern::Binding(_) | CopyPattern::Unit => "1".into(),
         CopyPattern::Int(n) => format!("({value} == INT32_C({n}))"),

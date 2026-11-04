@@ -20,7 +20,9 @@ fn tail(expr: &mut ExprNode) -> &mut ExprNode {
     }
 }
 fn arguments(p: &mut TypedMain) -> &mut Vec<CallArg> {
-    let ExprKind::Call(_, args) = &mut tail(&mut p.functions[p.entry].body).kind else {
+    let ExprKind::Call(_, args) =
+        &mut tail(p.functions[p.entry].body.value_expr_mut().unwrap()).kind
+    else {
         panic!()
     };
     args
@@ -81,7 +83,9 @@ fn field_operands_recheck_paths_modes_identity_and_authority() {
                 arguments(&mut bad)[1] = CallArg::InoutField(p);
             }
             7 => {
-                let ExprKind::Let { mutable, .. } = &mut bad.functions[bad.entry].body.kind else {
+                let ExprKind::Let { mutable, .. } =
+                    &mut bad.functions[bad.entry].body.value_expr_mut().unwrap().kind
+                else {
                     panic!()
                 };
                 *mutable = false;
@@ -93,7 +97,9 @@ fn field_operands_recheck_paths_modes_identity_and_authority() {
         rejects(&bad);
     }
     let mut bad=lower("type P = { x: i32 }\nfn get(read x: i32) { x }\nfn main() { let owner = system_box_i32_abort(42); let p = record P { x = 0 }; get(p.x) }");
-    let ExprKind::OwnerLet { local, body, .. } = &mut bad.functions[bad.entry].body.kind else {
+    let ExprKind::OwnerLet { local, body, .. } =
+        &mut bad.functions[bad.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     let owner = *local;
@@ -202,10 +208,10 @@ fn later_argument_accesses_and_nested_release_keep_enclosing_intervals() {
 #[test]
 fn read_record_parameters_cannot_write_or_exclusively_forward_fields() {
     let mut bad=lower("type P = { x: i32 }\nfn get(read p: P) { p.x }\nfn main() { let p = record P { x = 42 }; get(p) }");
-    let ExprKind::FieldRead(p) = &bad.functions[0].body.kind else {
+    let ExprKind::FieldRead(p) = &bad.functions[0].body.value_expr().unwrap().kind else {
         panic!()
     };
-    bad.functions[0].body = write(p.clone(), int(42));
+    bad.functions[0].body = (write(p.clone(), int(42))).into();
     rejects(&bad);
     let mut bad=lower("type P = { x: i32 }\nfn bump(inout x) { x <- x + 1 }\nfn forward(inout p: P) { bump(inout p.x) }\nfn main() { let mut p = record P { x = 41 }; forward(inout p) }");
     bad.functions[1].params[0].2 = ParamMode::Read;
@@ -296,9 +302,9 @@ fn field_call_handles_release_on_success_argument_failure_and_depth_trap() {
         ("type P = { x: i32 }\nfn set(inout x, n) { x <- n / 0 }\nfn main() { let mut p = record P { x = 0 }; set(inout p.x, 42) }",false),
     ] {
         let mut program=lower(source);
-        let ExprKind::Let {local,..}=&program.functions[program.entry].body.kind else {panic!()};
+        let ExprKind::Let {local,..}=&program.functions[program.entry].body.value_expr().unwrap().kind else {panic!()};
         let root=*local;
-        let call=tail(&mut program.functions[program.entry].body).clone();
+        let call=tail(program.functions[program.entry].body.value_expr_mut().unwrap()).clone();
         for depth in [1,32] {
             let mut locals=CopyLocals::default();
             locals.insert(root,Value::Record("P".into(),vec![("x".into(),Value::Int(0))]));

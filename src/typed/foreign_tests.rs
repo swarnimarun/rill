@@ -43,20 +43,27 @@ fn rejects_native_ids_arity_operand_kinds_and_result_types() {
     let base = sample();
     let mut cases = Vec::new();
     let mut p = base.clone();
-    p.functions[p.entry].body.kind = ExprKind::ForeignCall(ForeignFunctionId(u32::MAX), vec![]);
+    p.functions[p.entry].body.value_expr_mut().unwrap().kind =
+        ExprKind::ForeignCall(ForeignFunctionId(u32::MAX), vec![]);
     cases.push(p);
     let mut p = base.clone();
-    if let ExprKind::ForeignCall(_, args) = &mut p.functions[p.entry].body.kind {
+    if let ExprKind::ForeignCall(_, args) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    {
         args.pop();
     }
     cases.push(p);
     let mut p = base.clone();
-    if let ExprKind::ForeignCall(_, args) = &mut p.functions[p.entry].body.kind {
+    if let ExprKind::ForeignCall(_, args) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    {
         args[0] = ForeignArg::StaticCStr("wrong".into());
     }
     cases.push(p);
     let mut p = base.clone();
-    if let ExprKind::ForeignCall(_, args) = &mut p.functions[p.entry].body.kind {
+    if let ExprKind::ForeignCall(_, args) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    {
         args[2] = ForeignArg::Value(ExprNode {
             ty: Type::StaticStr,
             kind: ExprKind::Str("wrong".into()),
@@ -64,12 +71,16 @@ fn rejects_native_ids_arity_operand_kinds_and_result_types() {
     }
     cases.push(p);
     let mut p = base.clone();
-    if let ExprKind::ForeignCall(_, args) = &mut p.functions[p.entry].body.kind {
+    if let ExprKind::ForeignCall(_, args) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    {
         args[2] = ForeignArg::StaticCStr("bad\0string".into());
     }
     cases.push(p);
     let mut p = base.clone();
-    if let ExprKind::ForeignCall(_, args) = &mut p.functions[p.entry].body.kind {
+    if let ExprKind::ForeignCall(_, args) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    {
         args[1] = ForeignArg::Value(ExprNode {
             ty: Type::Int,
             kind: ExprKind::Int(1),
@@ -77,14 +88,16 @@ fn rejects_native_ids_arity_operand_kinds_and_result_types() {
     }
     cases.push(p);
     let mut p = base.clone();
-    p.functions[p.entry].result = Type::Bool;
-    p.functions[p.entry].body.ty = Type::Bool;
+    p.functions[p.entry].result = (Type::Bool).into();
+    p.functions[p.entry].body.value_expr_mut().unwrap().ty = Type::Bool;
     cases.push(p);
     let mut p = base.clone();
-    p.functions[p.entry].body.kind = ExprKind::ForeignConst(ForeignConstantId(u32::MAX));
+    p.functions[p.entry].body.value_expr_mut().unwrap().kind =
+        ExprKind::ForeignConst(ForeignConstantId(u32::MAX));
     cases.push(p);
     let mut p = base;
-    p.functions[p.entry].body.kind = ExprKind::ForeignConst(ForeignConstantId(0));
+    p.functions[p.entry].body.value_expr_mut().unwrap().kind =
+        ExprKind::ForeignConst(ForeignConstantId(0));
     cases.push(p); // The bool constant cannot be forged as the i32 function.
     for p in cases {
         reject(&p);
@@ -146,10 +159,11 @@ fn rejects_forged_native_metadata_even_when_unused() {
     };
     cases.push(p);
     for mut p in cases {
-        p.functions[p.entry].body = ExprNode {
+        p.functions[p.entry].body = (ExprNode {
             ty: Type::Int,
             kind: ExprKind::Int(42),
-        };
+        })
+        .into();
         reject(&p);
     }
 }
@@ -157,7 +171,7 @@ fn rejects_forged_native_metadata_even_when_unused() {
 #[test]
 fn unused_raw_abi_metadata_is_allowed_but_forged_runtime_nodes_are_not() {
     let mut p = lower("extern fn unused(x: u32) -> u32; fn main() { 42 }");
-    p.functions[p.entry].body.kind = ExprKind::ForeignCall(
+    p.functions[p.entry].body.value_expr_mut().unwrap().kind = ExprKind::ForeignCall(
         ForeignFunctionId(0),
         vec![ForeignArg::Value(ExprNode {
             ty: Type::Int,
@@ -166,7 +180,8 @@ fn unused_raw_abi_metadata_is_allowed_but_forged_runtime_nodes_are_not() {
     );
     reject(&p);
     let mut p = lower("@include(\"api.h\"); extern const RAW: u64; fn main() { 42 }");
-    p.functions[p.entry].body.kind = ExprKind::ForeignConst(ForeignConstantId(0));
+    p.functions[p.entry].body.value_expr_mut().unwrap().kind =
+        ExprKind::ForeignConst(ForeignConstantId(0));
     reject(&p);
 }
 
@@ -208,7 +223,9 @@ fn source_and_independent_ir_reject_owner_native_mixing() {
 #[test]
 fn native_children_keep_enclosing_exclusive_and_shared_loans() {
     let mut p = lower("extern fn native(x: i32) -> i32; fn sink(inout x, y) { x <- y; } fn main() { let mut x = 1; sink(inout x, native(2)) }");
-    let ExprKind::Let { local, body, .. } = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::Let { local, body, .. } =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::Call(_, args) = &mut body.kind else {
@@ -227,7 +244,9 @@ fn native_children_keep_enclosing_exclusive_and_shared_loans() {
     reject(&p);
 
     let mut p = lower("extern fn native(x: i32) -> i32; fn sink(read x, y) { x + y } fn main() { let mut x = 1; sink(x, native(2)) }");
-    let ExprKind::Let { local, body, .. } = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::Let { local, body, .. } =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::Call(_, args) = &mut body.kind else {
@@ -267,12 +286,20 @@ fn native_children_keep_enclosing_exclusive_and_shared_loans() {
 fn hidden_owner_operations_inside_dead_native_arguments_cannot_evade_visitors() {
     let owner = lower("fn main() { let owner = system_box_i32_abort(7); box_read(owner) }");
     let mut p = sample();
-    let ExprKind::ForeignCall(_, args) = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::ForeignCall(_, args) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
-    args[0] = ForeignArg::Value(owner.functions[owner.entry].body.clone());
-    let native = p.functions[p.entry].body.clone();
-    p.functions[p.entry].body = ExprNode {
+    args[0] = ForeignArg::Value(
+        owner.functions[owner.entry]
+            .body
+            .value_expr()
+            .unwrap()
+            .clone(),
+    );
+    let native = p.functions[p.entry].body.value_expr().unwrap().clone();
+    p.functions[p.entry].body = (ExprNode {
         ty: Type::Int,
         kind: ExprKind::If(
             Box::new(ExprNode {
@@ -285,7 +312,8 @@ fn hidden_owner_operations_inside_dead_native_arguments_cannot_evade_visitors() 
                 kind: ExprKind::Int(42),
             }),
         ),
-    };
+    })
+    .into();
     assert!(verify(&p).unwrap_err().starts_with("E-TYPED-OWNER:"));
     reject(&p);
 }
@@ -345,7 +373,9 @@ fn rejects_forged_pointer_registry_and_distinct_pointer_equality() {
     }
     for wrong in [1, 2, u32::MAX] {
         let mut p = base.clone();
-        let ExprKind::Binary(_, _, right) = &mut p.functions[p.entry].body.kind else {
+        let ExprKind::Binary(_, _, right) =
+            &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+        else {
             panic!()
         };
         right.ty = Type::RawPointer(PointerTypeId(wrong));
@@ -353,7 +383,9 @@ fn rejects_forged_pointer_registry_and_distinct_pointer_equality() {
     }
     for wrong in [1, 2, u32::MAX] {
         let mut p = base.clone();
-        let ExprKind::Binary(_, left, _) = &mut p.functions[p.entry].body.kind else {
+        let ExprKind::Binary(_, left, _) =
+            &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+        else {
             panic!()
         };
         let ExprKind::ForeignCall(_, args) = &mut left.kind else {
@@ -403,22 +435,24 @@ fn rejects_invalid_raw_types_in_unused_adt_arguments_fields_and_capture() {
     let mut p = pointer_sample();
     p.functions.push(TypedFunction {
         params: vec![(LocalId(u32::MAX), invalid, ParamMode::Read)],
-        result: Type::Bool,
-        body: ExprNode {
+        result: (Type::Bool).into(),
+        body: (ExprNode {
             ty: Type::Bool,
             kind: ExprKind::Bool(true),
-        },
+        })
+        .into(),
         param_cleanup: vec![],
     });
     reject(&p);
     let mut p = pointer_sample();
     p.functions.push(TypedFunction {
         params: vec![],
-        result: invalid,
-        body: ExprNode {
+        result: (invalid).into(),
+        body: (ExprNode {
             ty: invalid,
             kind: ExprKind::NullPointer,
-        },
+        })
+        .into(),
         param_cleanup: vec![],
     });
     reject(&p);
@@ -436,7 +470,9 @@ fn rejects_forged_conversion_null_and_raw_operators() {
         let base = lower(&format!("fn main() {{ {name}(7) }}"));
         assert_eq!(base.functions[base.entry].result, ty);
         let mut p = base.clone();
-        let ExprKind::ForeignConvert(_, input) = &mut p.functions[p.entry].body.kind else {
+        let ExprKind::ForeignConvert(_, input) =
+            &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+        else {
             panic!()
         };
         **input = ExprNode {
@@ -445,22 +481,23 @@ fn rejects_forged_conversion_null_and_raw_operators() {
         };
         cases.push(p);
         let mut p = base;
-        p.functions[p.entry].result = Type::Int;
-        p.functions[p.entry].body.ty = Type::Int;
+        p.functions[p.entry].result = (Type::Int).into();
+        p.functions[p.entry].body.value_expr_mut().unwrap().ty = Type::Int;
         cases.push(p);
     }
     let mut p = lower("fn main() { 42 }");
-    p.functions[p.entry].body.kind = ExprKind::NullPointer;
+    p.functions[p.entry].body.value_expr_mut().unwrap().kind = ExprKind::NullPointer;
     cases.push(p);
     let mut p = lower("fn main() { true }");
-    p.functions[p.entry].body.kind = ExprKind::IsNull(Box::new(ExprNode {
-        ty: Type::Int,
-        kind: ExprKind::Int(0),
-    }));
+    p.functions[p.entry].body.value_expr_mut().unwrap().kind =
+        ExprKind::IsNull(Box::new(ExprNode {
+            ty: Type::Int,
+            kind: ExprKind::Int(0),
+        }));
     cases.push(p);
     let mut p = lower("extern fn p() -> ptr<i32>; fn main() { is_null(p()) }");
-    p.functions[p.entry].result = Type::Int;
-    p.functions[p.entry].body.ty = Type::Int;
+    p.functions[p.entry].result = (Type::Int).into();
+    p.functions[p.entry].body.value_expr_mut().unwrap().ty = Type::Int;
     cases.push(p);
     for op in [
         BinaryOp::Add,
@@ -479,7 +516,9 @@ fn rejects_forged_conversion_null_and_raw_operators() {
             "extern fn p() -> ptr<i32>; fn main() { p() == c_null() }",
         ] {
             let mut p = lower(source);
-            let ExprKind::Binary(actual, _, _) = &mut p.functions[p.entry].body.kind else {
+            let ExprKind::Binary(actual, _, _) =
+                &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+            else {
                 panic!()
             };
             *actual = op;
@@ -495,10 +534,16 @@ fn rejects_forged_conversion_null_and_raw_operators() {
 fn new_raw_visitors_do_not_hide_owner_children_or_native_mixing() {
     let owner = lower("fn main() { let owned = system_box_i32_abort(9); box_read(owned) }");
     let mut p = lower("fn main() { u32(1) }");
-    let ExprKind::ForeignConvert(_, value) = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::ForeignConvert(_, value) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
-    **value = owner.functions[owner.entry].body.clone();
+    **value = owner.functions[owner.entry]
+        .body
+        .value_expr()
+        .unwrap()
+        .clone();
     assert!(verify(&p).unwrap_err().starts_with("E-TYPED-OWNER:"));
     reject(&p);
     let mut p = owner;
@@ -523,7 +568,9 @@ fn raw_children_respect_enclosing_rill_loans() {
     let mut p = lower(
         "fn sink(inout x, y) { x <- 0; y } fn main() { let mut x = 1; sink(inout x, u32(2)) }",
     );
-    let ExprKind::Let { local, body, .. } = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::Let { local, body, .. } =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::Call(_, args) = &mut body.kind else {
@@ -548,7 +595,9 @@ fn pointer_field_loans_reject_wrong_projection_and_forwarding_mode() {
     let base = lower(source);
     for wrong in [1, usize::MAX] {
         let mut p = base.clone();
-        let ExprKind::Let { body, .. } = &mut p.functions[p.entry].body.kind else {
+        let ExprKind::Let { body, .. } =
+            &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+        else {
             panic!()
         };
         let ExprKind::Call(_, args) = &mut body.kind else {
@@ -561,7 +610,8 @@ fn pointer_field_loans_reject_wrong_projection_and_forwarding_mode() {
         reject(&p);
     }
     let mut p = base.clone();
-    let ExprKind::Let { body, .. } = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::Let { body, .. } = &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::Call(_, args) = &mut body.kind else {
@@ -573,7 +623,8 @@ fn pointer_field_loans_reject_wrong_projection_and_forwarding_mode() {
     place.path[0].record = usize::MAX;
     reject(&p);
     let mut p = base;
-    let ExprKind::Let { body, .. } = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::Let { body, .. } = &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::Call(_, args) = &mut body.kind else {
@@ -602,7 +653,9 @@ fn raw_operations_reject_before_operand_execution_but_still_verify_children() {
         assert_eq!(crate::interpreter::run_reference(&p), expected, "{source}");
     }
     let mut p = lower("fn main() { u32(1) }");
-    let ExprKind::ForeignConvert(_, input) = &mut p.functions[p.entry].body.kind else {
+    let ExprKind::ForeignConvert(_, input) =
+        &mut p.functions[p.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     input.kind = ExprKind::Read(LocalId(u32::MAX));

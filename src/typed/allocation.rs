@@ -280,9 +280,9 @@ mod tests {
             entry: 0,
             functions: vec![TypedFunction {
                 params: vec![],
-                result: Type::Int,
+                result: (Type::Int).into(),
                 param_cleanup: vec![],
-                body: ExprNode {
+                body: (ExprNode {
                     ty: Type::Int,
                     kind: ExprKind::OwnerLet {
                         local: LocalId(0),
@@ -307,7 +307,8 @@ mod tests {
                             tree: CleanupTree::DropWholeOwner,
                         }),
                     },
-                },
+                })
+                .into(),
             }],
         };
         verify(&program).unwrap();
@@ -317,7 +318,7 @@ mod tests {
         let ExprKind::OwnerLet {
             init: OwnerInit::Expr(node),
             ..
-        } = &mut program.functions[0].body.kind
+        } = &mut program.functions[0].body.value_expr_mut().unwrap().kind
         else {
             panic!()
         };
@@ -326,7 +327,7 @@ mod tests {
         let ExprKind::OwnerLet {
             init: OwnerInit::Expr(node),
             ..
-        } = &mut program.functions[0].body.kind
+        } = &mut program.functions[0].body.value_expr_mut().unwrap().kind
         else {
             panic!()
         };

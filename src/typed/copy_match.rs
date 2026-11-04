@@ -65,7 +65,7 @@ impl Lower<'_, '_> {
         })
     }
 
-    fn copy_pattern(
+    pub(super) fn copy_pattern(
         &mut self,
         pattern: &Pattern,
         ty: Type,
@@ -161,7 +161,9 @@ pub(super) fn verify_match(
     for arm in arms {
         let mut branch = scope.clone();
         let mut bindings = Vec::new();
-        verify_pattern(&arm.pattern, ty, adts, &mut bindings, 0, &mut budget)?;
+        pattern_analysis(context, &mut budget, |budget| {
+            verify_pattern(&arm.pattern, ty, adts, &mut bindings, 0, budget)
+        })?;
         for &(id, ty) in &bindings {
             if !ids.insert(id) {
                 return Err("E-TYPED-MATCH: duplicate pattern binding identity".into());
@@ -196,8 +198,11 @@ pub(super) fn verify_match(
             joined = Some(branch);
         }
     }
+    reserve_rows(context, arms.len())?;
     let rows = arms.iter().map(|a| vec![&a.pattern]).collect::<Vec<_>>();
-    if !exhaustive(&[ty], &rows, adts, &mut budget)? {
+    if !pattern_analysis(context, &mut budget, |budget| {
+        exhaustive_mode(&[ty], &rows, adts, budget, context.pattern_work.is_some())
+    })? {
         return Err("E-TYPED-MATCH: nonexhaustive match".into());
     }
     if let Some(joined) = joined {
@@ -206,13 +211,37 @@ pub(super) fn verify_match(
     result.ok_or_else(|| "E-TYPED-MATCH: empty match".into())
 }
 
+pub(super) fn pattern_analysis<T>(
+    context: &VerifyContext<'_>,
+    fallback: &mut usize,
+    f: impl FnOnce(&mut usize) -> Result<T, String>,
+) -> Result<T, String> {
+    if let Some(work) = context.pattern_work {
+        f(&mut work.borrow_mut())
+    } else {
+        f(fallback)
+    }
+}
+pub(super) fn reserve_rows(context: &VerifyContext<'_>, rows: usize) -> Result<(), String> {
+    if let Some(work) = context.pattern_work {
+        reserve(&mut work.borrow_mut(), rows.saturating_mul(2))?;
+    }
+    Ok(())
+}
+fn reserve(budget: &mut usize, amount: usize) -> Result<(), String> {
+    *budget = budget
+        .checked_sub(amount)
+        .ok_or("E-TYPED-CONTROL-COMPLEXITY: cumulative pattern work limit exceeded")?;
+    Ok(())
+}
+
 fn spend(budget: &mut usize) -> Result<(), String> {
     *budget = budget
         .checked_sub(1)
         .ok_or("E-TYPED-MATCH: pattern analysis budget exceeded")?;
     Ok(())
 }
-fn verify_pattern(
+pub(super) fn verify_pattern(
     pattern: &CopyPattern,
     ty: Type,
     adts: &[AdtType],
@@ -266,15 +295,28 @@ fn irrefutable(pattern: &CopyPattern) -> bool {
 // Pattern-matrix specialization over independently verified concrete types.
 // Wildcards are shared rather than expanded into recursively cloned patterns.
 // A total row ends the check early, avoiding exponential products of wildcards.
-fn exhaustive(
+pub(super) fn exhaustive_mode(
     types: &[Type],
     rows: &[Vec<&CopyPattern>],
     adts: &[AdtType],
     budget: &mut usize,
+    strict: bool,
 ) -> Result<bool, String> {
+    if strict {
+        reserve(budget, types.len().saturating_add(rows.len()))?;
+        for row in rows {
+            reserve(budget, row.len())?;
+        }
+    }
     let mut pending = vec![(types.to_vec(), rows.to_vec())];
     while let Some((types, rows)) = pending.pop() {
         spend(budget)?;
+        if strict {
+            reserve(budget, rows.len())?;
+            for row in &rows {
+                reserve(budget, row.len())?;
+            }
+        }
         if rows.iter().any(|row| row.iter().all(|p| irrefutable(p))) {
             continue;
         }
@@ -286,7 +328,21 @@ fn exhaustive(
         };
         match first {
             Type::Adt { id, .. } => {
+                if strict {
+                    reserve(budget, adts[id].variants.len())?;
+                }
                 for (tag, variant) in adts[id].variants.iter().enumerate() {
+                    if strict {
+                        reserve(
+                            budget,
+                            variant
+                                .fields
+                                .len()
+                                .saturating_add(rest.len())
+                                .saturating_add(rows.len())
+                                .saturating_add(1),
+                        )?;
+                    }
                     let mut next_types = variant.fields.clone();
                     next_types.extend_from_slice(rest);
                     let mut next_rows = Vec::new();
@@ -311,6 +367,12 @@ fn exhaustive(
             }
             Type::Bool => {
                 for b in [false, true] {
+                    if strict {
+                        reserve(
+                            budget,
+                            rest.len().saturating_add(rows.len()).saturating_add(1),
+                        )?;
+                    }
                     let mut next = Vec::new();
                     for row in &rows {
                         *budget = budget
@@ -325,6 +387,12 @@ fn exhaustive(
                 }
             }
             _ => {
+                if strict {
+                    reserve(
+                        budget,
+                        rest.len().saturating_add(rows.len()).saturating_add(1),
+                    )?;
+                }
                 let mut next = Vec::new();
                 for row in &rows {
                     *budget = budget
@@ -369,7 +437,7 @@ pub(super) fn evaluate_match<T>(
     }
     Err("E-TYPED-MATCH: missing runtime arm".into())
 }
-fn matches_value(
+pub(super) fn matches_value(
     pattern: &CopyPattern,
     value: &crate::interpreter::Value,
     program: &TypedMain,
@@ -401,5 +469,20 @@ fn matches_value(
                     .all(|(p, v)| matches_value(p, v, program, bindings))
         }
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod cumulative_control_tests {
+    use super::*;
+    #[test]
+    fn strict_matrix_reservations_precede_clones_and_share_the_limit() {
+        let wildcard = CopyPattern::Wildcard;
+        let rows = vec![vec![&wildcard]];
+        let mut remaining = 7;
+        assert!(exhaustive_mode(&[Type::Int], &rows, &[], &mut remaining, true).unwrap());
+        assert!(exhaustive_mode(&[Type::Int], &rows, &[], &mut remaining, true).is_err());
+        let mut short = 0;
+        assert!(exhaustive_mode(&[Type::Int], &rows, &[], &mut short, true).is_err());
     }
 }

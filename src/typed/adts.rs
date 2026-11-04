@@ -21,6 +21,14 @@ impl Registry {
         instances: &super::instances::Instances,
         native: &super::NativeManifest,
     ) -> Result<Self, String> {
+        Self::build_control(checked, instances, native, None)
+    }
+    pub fn build_control(
+        checked: &CheckedProgram<'_>,
+        instances: &super::instances::Instances,
+        native: &super::NativeManifest,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+    ) -> Result<Self, String> {
         let mut product_work = super::logical::Budget::default();
         let logical = super::logical::Metadata::from_checked_with_budget(
             checked,
@@ -39,24 +47,35 @@ impl Registry {
             products: instances.admission.active(),
         };
         for instance in &instances.list {
-            for ty in instance
-                .params
-                .iter()
-                .chain(std::iter::once(&instance.result))
-            {
+            for ty in &instance.params {
                 registry.register(checked, ty)?;
+            }
+            if matches!(instance.result, SourceType::Var(_)) {
+                if !control
+                    .is_some_and(|facts| facts.function_may_return(instance.source) == Some(false))
+                {
+                    return Err(super::instances::BARE_RESULT.into());
+                }
+            } else {
+                registry.register(checked, &instance.result)?;
             }
         }
         for instance in &instances.list {
+            instances.charge_control(1)?;
             let mut pending = vec![&checked.program.functions[instance.source].body];
             while let Some(expr) = pending.pop() {
-                let ty = super::instances::expression_type(
+                instances.charge_control(1)?;
+                let ty = instances.expression_result_type(
                     checked,
                     expr,
                     &instance.substitution,
-                    &instances.admission,
+                    control,
                 )?;
-                registry.register(checked, &ty)?;
+                if !matches!(ty, SourceType::Var(_)) || control.is_none() {
+                    registry.register(checked, &ty)?;
+                }
+                instances
+                    .charge_control(super::instances::source_child_count(expr).saturating_mul(2))?;
                 super::instances::runtime_children(checked, expr, &mut pending);
             }
         }

@@ -57,7 +57,7 @@ fn reconstructs_one_snapshot_and_two_exact_instances_with_shared_alias_capture()
         value,
         body,
         ..
-    } = &ir.functions[ir.entry].body.kind
+    } = &ir.functions[ir.entry].body.value_expr().unwrap().kind
     else {
         panic!()
     };
@@ -131,7 +131,7 @@ fn unused_shapes_keep_written_leaf_order_and_have_no_fabricated_layout() {
         body,
         mutable,
         ..
-    } = &ir.functions[ir.entry].body.kind
+    } = &ir.functions[ir.entry].body.value_expr().unwrap().kind
     else {
         panic!()
     };
@@ -154,7 +154,7 @@ fn field_only_uses_materialize_only_their_proven_closed_subshapes() {
     assert_eq!(ir.adts[0].arguments, [Type::Int]);
     let ExprKind::Let {
         local, value, body, ..
-    } = &ir.functions[ir.entry].body.kind
+    } = &ir.functions[ir.entry].body.value_expr().unwrap().kind
     else {
         panic!()
     };
@@ -228,7 +228,9 @@ fn concrete_verifier_rejects_forged_capture_type_scope_and_nominal_instance() {
         "{MARK}fn main() {{ let p = Mark(7); let alias = p; ints(alias) + bools(p) }}"
     ));
     let mut bad = ir.clone();
-    let ExprKind::Let { value, .. } = &mut bad.functions[bad.entry].body.kind else {
+    let ExprKind::Let { value, .. } =
+        &mut bad.functions[bad.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     **value = ExprNode {
@@ -237,7 +239,8 @@ fn concrete_verifier_rejects_forged_capture_type_scope_and_nominal_instance() {
     };
     rejected(&bad);
     let mut bad = ir.clone();
-    let ExprKind::Binary(_, left, _) = &mut tail_mut(&mut bad.functions[bad.entry].body).kind
+    let ExprKind::Binary(_, left, _) =
+        &mut tail_mut(bad.functions[bad.entry].body.value_expr_mut().unwrap()).kind
     else {
         panic!()
     };
@@ -247,7 +250,8 @@ fn concrete_verifier_rejects_forged_capture_type_scope_and_nominal_instance() {
     fields[0].kind = ExprKind::Read(LocalId(u32::MAX));
     rejected(&bad);
     let mut bad = ir.clone();
-    let ExprKind::Binary(_, left, right) = &mut tail_mut(&mut bad.functions[bad.entry].body).kind
+    let ExprKind::Binary(_, left, right) =
+        &mut tail_mut(bad.functions[bad.entry].body.value_expr_mut().unwrap()).kind
     else {
         panic!()
     };
@@ -255,7 +259,9 @@ fn concrete_verifier_rejects_forged_capture_type_scope_and_nominal_instance() {
     argument_mut(left).ty = target;
     rejected(&bad);
     let mut bad = ir.clone();
-    let ExprKind::Let { value, .. } = &mut bad.functions[bad.entry].body.kind else {
+    let ExprKind::Let { value, .. } =
+        &mut bad.functions[bad.entry].body.value_expr_mut().unwrap().kind
+    else {
         panic!()
     };
     value.ty = Type::OwnedI32;
@@ -267,7 +273,8 @@ fn generalized_read_is_an_exact_read_temporary_not_a_forged_root_loan() {
     let ir = lower(
         "type M<a> = M(i32)\nfn take(read x: M<i32>) { 42 }\nfn main() { let p = M(7); take(p) }",
     );
-    let ExprKind::Let { local, body, .. } = &ir.functions[ir.entry].body.kind else {
+    let ExprKind::Let { local, body, .. } = &ir.functions[ir.entry].body.value_expr().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::Call(_, args) = &body.kind else {
@@ -279,7 +286,9 @@ fn generalized_read_is_an_exact_read_temporary_not_a_forged_root_loan() {
     assert!(matches!(value.kind, ExprKind::Constructor { .. }));
     for operand in [CallArg::ReadCopy(*local), CallArg::InoutCopy(*local)] {
         let mut bad = ir.clone();
-        let ExprKind::Call(_, args) = &mut tail_mut(&mut bad.functions[bad.entry].body).kind else {
+        let ExprKind::Call(_, args) =
+            &mut tail_mut(bad.functions[bad.entry].body.value_expr_mut().unwrap()).kind
+        else {
             panic!()
         };
         args[0] = operand;
@@ -292,7 +301,8 @@ fn snapshots_are_not_eliminated_when_uses_are_unreachable() {
     let ir = lower(&format!(
         "{MARK}fn main() {{ let p = Mark(7); if false {{ ints(p) + bools(p) }} else {{ 42 }} }}"
     ));
-    let ExprKind::Let { value, body, .. } = &ir.functions[ir.entry].body.kind else {
+    let ExprKind::Let { value, body, .. } = &ir.functions[ir.entry].body.value_expr().unwrap().kind
+    else {
         panic!()
     };
     let ExprKind::Record { fields, .. } = &value.kind else {
@@ -320,7 +330,7 @@ fn capture_layout_origin_is_explicit_and_storage_identity_is_not_layout_identity
     assert_eq!(definition.arguments, [Type::Int]);
     let ExprKind::Let {
         local: old, body, ..
-    } = &ir.functions[ir.entry].body.kind
+    } = &ir.functions[ir.entry].body.value_expr().unwrap().kind
     else {
         panic!()
     };

@@ -9,7 +9,10 @@ fn rejects(program: &TypedMain) {
     assert!(emit_c(program).is_err());
 }
 fn body(program: &mut TypedMain) -> &mut ExprNode {
-    &mut program.functions[program.entry].body
+    program.functions[program.entry]
+        .body
+        .value_expr_mut()
+        .unwrap()
 }
 fn int(n: i32) -> ExprNode {
     ExprNode {

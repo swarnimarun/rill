@@ -396,7 +396,11 @@ fn valid_same_typed_binder_swaps_and_unused_receipts_fail() {
         },
     );
     let error = corrupted_valid_ir("fn main(){let x=1;let y=2;x+y}", |typed| {
-        let crate::typed::ExprKind::Let { body, .. } = &mut typed.functions[typed.entry].body.kind
+        let crate::typed::ExprKind::Let { body, .. } = &mut typed.functions[typed.entry]
+            .body
+            .value_expr_mut()
+            .unwrap()
+            .kind
         else {
             panic!()
         };
@@ -417,7 +421,7 @@ fn valid_result_only_instance_substitution_fails_source_correspondence() {
         assert_eq!(makes.len(),2);
         assert_eq!(makes[0].params.iter().map(|(_,t,_)|t).collect::<Vec<_>>(), makes[1].params.iter().map(|(_,t,_)|t).collect::<Vec<_>>());
         assert_ne!(makes[0].result,makes[1].result);
-        let crate::typed::ExprKind::Binary(_,left,right) = &mut typed.functions[typed.entry].body.kind else {panic!()};
+        let crate::typed::ExprKind::Binary(_,left,right) = &mut typed.functions[typed.entry].body.value_expr_mut().unwrap().kind else {panic!()};
         **left = (**right).clone();
     });
     assert!(error.contains("source rule mismatch"), "{error}");

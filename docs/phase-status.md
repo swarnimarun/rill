@@ -52,6 +52,12 @@ not a replacement for those gates.
   `Option<Flag<opaque>>`, while rejecting actual unknown stored payloads.
   Its full matrix passed 762 default and 810 importer-enabled tests, with
   independent malformed-layout/native/C checks.
+  The accepted [K3 nonreturning-result increment](blockers/nonreturning-results.md)
+  adds mandatory source/control correspondence and no-storage computation results,
+  retaining actual arguments, calls and the depth guard. Its [final matrix](verification/2026-11-04-nonreturning-results.md)
+  passed 860 default and 908 importer-enabled tests plus independent event/C and
+  malformed-proof checks. Eager layoutless arguments and genuinely stored unknown
+  payloads still require separate representation work.
   Other unsupported Copy layouts retain the uniform fallback. This is not P1 or P5 completion; see the
   [F2 evidence and limits](verification/2026-11-03-typed-native-transport.md) and
   [final integrated checks and SDL captures](verification/2026-11-03-typed-native-raw-integration.md).

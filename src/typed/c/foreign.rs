@@ -10,7 +10,7 @@ impl Emitter<'_> {
         result: &str,
         id: ForeignFunctionId,
         args: &[ForeignArg],
-    ) {
+    ) -> EmitOutcome {
         let function = &self.program.native.functions[id.0 as usize];
         let mut values = Vec::new();
         for (arg, param) in args.iter().zip(&function.params) {
@@ -19,7 +19,7 @@ impl Emitter<'_> {
                 ForeignArg::Value(value) => {
                     // expr always writes a fresh local, including a place read.
                     // Later arguments may mutate that original Rill slot.
-                    let value = self.expr(value);
+                    let value = emit_value!(self.expr(value));
                     if param.ty == ExternType::Bool {
                         let abi = self.temp();
                         self.add_cost(Type::Bool);
@@ -54,6 +54,7 @@ impl Emitter<'_> {
             }
             ExternType::CStr => unreachable!("verified native result"),
         }
+        EmitOutcome::Value(result.to_owned())
     }
 
     pub(super) fn foreign_constant(&mut self, result: &str, id: ForeignConstantId) {
@@ -86,8 +87,8 @@ impl Emitter<'_> {
         ty: &str,
         conversion: ForeignConvert,
         input: &ExprNode,
-    ) {
-        let input = self.expr(input);
+    ) -> EmitOutcome {
+        let input = emit_value!(self.expr(input));
         match conversion {
             ForeignConvert::U8 => {
                 writeln!(self.out, "if ({input} < 0 || {input} > 255) rl_trap();").unwrap()
@@ -98,6 +99,7 @@ impl Emitter<'_> {
             ForeignConvert::F32 => {}
         }
         writeln!(self.out, "{ty} {result} = ({ty}){input};").unwrap();
+        EmitOutcome::Value(result.to_owned())
     }
 
     fn foreign_bool(&mut self, result: &str, value: &str) {

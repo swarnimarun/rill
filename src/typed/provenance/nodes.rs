@@ -240,8 +240,8 @@ impl CopyNodeOriginProgram {
         let function = self.typed().functions.get(record.instance.slot)?;
         let mut node = TypedNodeRef::Function {
             params: &function.params,
-            result: &function.result,
-            body: &function.body,
+            result: function.result.value_ref().ok()?,
+            body: function.body.value_expr().ok()?,
         };
         for role in path.into_iter().rev() {
             node = structure::child(node, role)?;
@@ -337,6 +337,13 @@ fn lower_with_budget(
         Some(&mut requests),
         (!native && !owner).then_some(&mut trace),
     )?;
+    if crate::typed::has_control_extension(&typed) {
+        return Err(
+            "E-TYPED-UNSUPPORTED: Copy node origin index does not map no-normal control results"
+                .into(),
+        );
+    }
+
     if typed.adts.iter().any(|adt| adt.symbolic.is_some()) {
         return Err(
             "E-TYPED-UNSUPPORTED: Copy node origin index does not map opaque logical arguments"

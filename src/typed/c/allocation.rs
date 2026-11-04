@@ -64,8 +64,8 @@ impl Emitter<'_> {
         kind: SystemAllocationKind,
         input: &ExprNode,
         layout: &AllocationResultLayout,
-    ) {
-        let input = self.expr(input);
+    ) -> EmitOutcome {
+        let input = emit_value!(self.expr(input));
         let pointer = self.temp();
         let status = self.temp();
         let owner = match kind {
@@ -127,6 +127,7 @@ impl Emitter<'_> {
             .unwrap();
         }
         self.out.push_str("default: rl_trap(); } }\n");
+        EmitOutcome::Value(result.to_owned())
     }
 }
 
