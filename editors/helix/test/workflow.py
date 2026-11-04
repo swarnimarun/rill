@@ -72,6 +72,17 @@ def document_text(trace, uri):
     return source
 
 
+def scope_popup(screen, scope, anchor):
+    """Read the one-line scope popup below the document cursor."""
+    row, column = anchor[0] + 2, anchor[1] + 1
+    if row >= screen.rows - 2 or column + len(scope) > screen.columns:
+        return False
+    line = screen.lines()[row]
+    value = line[column:column + len(scope)]
+    following = line[column + len(scope):column + len(scope) + 1]
+    return value == scope and following in ("", " ", ",")
+
+
 class Editor:
     def __init__(self, hx, root, output, environment, source):
         self.output = output
@@ -207,12 +218,16 @@ def run(options, output):
     formatting = output / "format.rill"
     indent = output / "indent.rill"
     textobjects = output / "textobjects.rill"
-    summary = {"editor": "Helix", "navigation": [], "highlights": [], "completion": []}
+    summary = {"editor": "Helix", "navigation": [], "highlights": [], "completion": [],
+               "scope_theme": "base16_default_dark with true-color enabled for this isolated session"}
     editor = Editor(options.hx, root, output, environment, main)
     try:
         editor.wait(lambda: editor.text(main) == fixtures[main.name], "initial didOpen")
         # Runtime options keep the copied user configuration byte-for-byte intact.
-        for command in ["set auto-completion false", "set lsp.display-inlay-hints false",
+        # Helix's basic-color fallback omits operator scopes. Use a complete
+        # bundled theme for the rendered-scope proof instead of that fallback.
+        for command in ["set true-color true", "theme base16_default_dark",
+                        "set auto-completion false", "set lsp.display-inlay-hints false",
                         "set indent-heuristic tree-sitter", "indent-style 4"]:
             editor.command(command)
         editor.barrier("session-options-ready")
@@ -220,11 +235,12 @@ def run(options, output):
         for row, column, scope in [(2, 4, "function"), (6, 21, "function"), (7, 21, "keyword"),
                                    (10, 30, "operator"), (11, 21, "operator")]:
             editor.open(main, row, column)
-            checkpoint = len(editor.raw)
+            anchor = editor.screen.row, editor.screen.column
             editor.command("tree-sitter-highlight-name")
-            editor.wait(lambda: scope.encode() in editor.raw[checkpoint:], "rendered " + scope)
+            editor.wait(lambda: scope_popup(editor.screen, scope, anchor), "rendered " + scope)
             editor.snapshot(f"highlight-{row}")
-            summary["highlights"].append({"line": row, "column": column, "scope": scope})
+            summary["highlights"].append({"line": row, "column": column, "scope": scope,
+                                          "popup_row": anchor[0] + 2, "popup_column": anchor[1] + 1})
 
         for row, column, target, target_row, target_column in [
                 (5, 23, main, 2, 4), (6, 21, main, 3, 4), (11, 24, main, 10, 9),

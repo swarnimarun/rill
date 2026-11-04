@@ -2,7 +2,8 @@
 """Check the workflow proof's LSP response matching and unsaved text replay."""
 import unittest
 
-from workflow import document_text, response_pairs
+from terminal_screen import TerminalScreen
+from workflow import document_text, response_pairs, scope_popup
 
 
 def event(direction, message, pid=7):
@@ -10,6 +11,18 @@ def event(direction, message, pid=7):
 
 
 class WorkflowEvidenceTest(unittest.TestCase):
+    def test_scope_requires_decoded_popup_at_the_document_cursor(self):
+        screen = TerminalScreen(40, 150)
+        anchor = (9, 36)
+        screen.feed(b"\x1b[39;1H NOR /tmp/operator/function.rill 1 sel 10:30")
+        screen.feed(b"\x1b[3;1Hsource mentions operator")
+        self.assertFalse(scope_popup(screen, "operator", anchor))
+        screen.feed(b"\x1b[12;38Hoper\x1b[12;42Hator ")
+        self.assertTrue(scope_popup(screen, "operator", anchor))
+        self.assertFalse(scope_popup(screen, "function", anchor))
+        screen.feed(b"\x1b[12;38Hoperator_suffix ")
+        self.assertFalse(scope_popup(screen, "operator", anchor))
+
     def test_response_requires_same_request_document_method_and_server(self):
         def request(identifier, method="textDocument/hover", uri="file:///main.rill"):
             return event("client", {"id": identifier, "method": method,

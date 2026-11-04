@@ -125,6 +125,9 @@ exact undo, plus pipeline and split-value indentation using the Tree-sitter
 heuristic. Inside-function selections include the body block, following
 Helix's bundled Rust convention. Both tests preserve all fixture files and
 copied settings. Use a fresh output directory for each run.
+The workflow selects a bundled true-color theme inside its isolated session,
+because Helix's basic-color fallback omits operator scopes. Scope checks read
+the decoded popup beside the cursor; status paths cannot satisfy them.
 Auto-save must be disabled for that test because it edits the real example
 buffer. The test refuses a copied configuration with auto-save enabled.
 
