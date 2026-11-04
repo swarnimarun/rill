@@ -36,7 +36,7 @@ fn primitive(name: &str) -> bool {
             | "f32"
     )
 }
-fn builtin(name: &str) -> bool {
+pub(super) fn builtin(name: &str) -> bool {
     matches!(
         name,
         "byte_len"
@@ -108,6 +108,11 @@ pub fn load_program_snapshot(entry: &Path) -> Result<ProgramSnapshot, ModuleErro
     let graph = super::load(entry)?;
     let program = lower(&graph)?;
     Ok(ProgramSnapshot { program, graph })
+}
+
+/// Resolve/check an already prepared graph without running native tools.
+pub fn lower_graph(graph: &ModuleGraph) -> Result<Program, ModuleError> {
+    lower(graph)
 }
 
 /// Load/check through the same bounded loader and lowering pass, then preserve

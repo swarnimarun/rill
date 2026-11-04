@@ -2,6 +2,7 @@
 mod config_driver;
 #[cfg(all(feature = "c-import", unix))]
 mod import_worker;
+mod native_headers;
 
 use std::{
     env,
@@ -46,65 +47,76 @@ fn run() -> Result<(), String> {
         #[cfg(not(unix))]
         return Err("E-C-CONFIG: configured native commands require Unix supervision and the c-import feature".into());
     }
-    let program =
-        rill::modules::compile::load_program(Path::new(&path)).map_err(|e| e.to_string())?;
-    let native_source = !program.native.includes.is_empty()
-        || !program.native.links.is_empty()
-        || !program.native.packages.is_empty();
-    let resolved = program.native.resolve()?;
     let compiler = options
         .compiler
         .clone()
         .unwrap_or_else(|| env::var_os("CC").unwrap_or_else(|| "cc".into()));
-    let mut cflags = resolved.cflags;
-    cflags.extend(options.c_args.iter().cloned());
+    let mut arguments = options.c_args.clone();
     if options.simd == Simd::Neon {
-        cflags.push("-DRILL_SIMD_NEON=1".into());
+        arguments.push("-DRILL_SIMD_NEON=1".into());
     }
-    let mut link_args = resolved.link_args;
+    let mut prepared = native_headers::load(
+        Path::new(&path),
+        &compiler,
+        options.zig_cc,
+        arguments,
+        false,
+    )?;
+    let program = &prepared.program;
+    let native_source = !program.native.includes.is_empty()
+        || !program.native.links.is_empty()
+        || !program.native.packages.is_empty();
+    let cflags = &prepared.cflags;
+    let mut link_args = prepared.link_args.clone();
     link_args.extend(options.link_args.iter().cloned());
+    let mut output = None;
     match command.to_str() {
         Some("check") => {
             if native_source {
                 rill::c_import::validate_c(
-                    &rill::backend::emit(&program)?,
+                    &rill::backend::emit(program)?,
                     &compiler,
                     options.zig_cc,
-                    &cflags,
+                    cflags,
                 )?;
             }
+            prepared.publish()?;
         }
         Some("run") if !(native_source || options.native) => {
-            println!("{}", rill::interpreter::run(&program)?);
+            output = Some(format!("{}\n", rill::interpreter::run(program)?));
+            prepared.publish()?;
         }
         Some("emit-c") => {
-            let c = rill::backend::emit(&program)?;
+            let c = rill::backend::emit(program)?;
             if native_source {
-                rill::c_import::validate_c(&c, &compiler, options.zig_cc, &cflags)?;
+                rill::c_import::validate_c(&c, &compiler, options.zig_cc, cflags)?;
             }
-            print!("{c}");
+            prepared.publish()?;
+            output = Some(c);
         }
         Some("build") => {
             build_c(
-                &rill::backend::emit(&program)?,
+                &rill::backend::emit(program)?,
                 &compiler,
                 options.zig_cc,
-                &cflags,
+                cflags,
                 &link_args,
                 Path::new(options.output.as_ref().unwrap()),
             )?;
+            prepared.publish()?;
         }
         Some("run") => {
             let directory = RunDirectory::create()?;
             let binary = directory.0.join("program");
             build_c(
-                &rill::backend::emit(&program)?,
+                &rill::backend::emit(program)?,
                 &compiler,
                 options.zig_cc,
-                &cflags,
+                cflags,
                 &link_args,
                 &binary,
             )?;
+            prepared.publish()?;
             let status = Command::new(&binary)
                 .status()
                 .map_err(|e| format!("failed to run native program: {e}"))?;
@@ -113,6 +125,9 @@ fn run() -> Result<(), String> {
             }
         }
         _ => return Err(usage()),
+    }
+    if let Some(output) = output {
+        print!("{output}");
     }
     Ok(())
 }

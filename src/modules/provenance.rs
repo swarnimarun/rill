@@ -27,6 +27,8 @@ pub struct SourceSnapshot {
     /// Canonical filesystem path, or the loader's bundled-module diagnostic path.
     pub path: PathBuf,
     pub text: String,
+    /// Real buffer bytes before any build-generated native declarations.
+    pub original_len: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -275,6 +277,15 @@ pub(super) fn finish(
     program: Program,
     trace: Trace,
 ) -> Result<SourceProgram, ModuleError> {
+    finish_with_original_lengths(graph, program, trace, &BTreeMap::new())
+}
+
+pub(super) fn finish_with_original_lengths(
+    graph: ModuleGraph,
+    program: Program,
+    trace: Trace,
+    original_lengths: &BTreeMap<String, usize>,
+) -> Result<SourceProgram, ModuleError> {
     let mut transfers = BTreeMap::new();
     for transfer in &trace.transfers {
         if transfers
@@ -436,6 +447,10 @@ pub(super) fn finish(
         }
         result.sources.push(SourceSnapshot {
             id: source,
+            original_len: original_lengths
+                .get(&module)
+                .copied()
+                .unwrap_or(input.source.len()),
             module,
             path: input.path,
             text: input.source,

@@ -9,6 +9,7 @@ use std::path::{Path, PathBuf};
 use crate::lexer::{lex, Kind, Token};
 
 pub mod compile;
+pub mod headers;
 pub mod provenance;
 pub mod resolve;
 mod stdlib;
