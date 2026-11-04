@@ -122,3 +122,10 @@ and resource-discovery deadline/cleanup probes then passed.
 The integrated LSP/cache/overlay rerun passed 89 tests across six targets.
 Three fresh launch-helper tests passed, including a post-main infinite loop
 that still reports timeout rather than a language trap.
+
+## Include-only SDL
+
+The SDL binding module now contains only its include/link/pkg-config directives.
+All five direct, Zig, real-capture and lifecycle tests passed again after that
+change, using the default importer-enabled compiler and optimized ordinary
+execution path. The explicit manual binding fixture remains for minimal builds.
