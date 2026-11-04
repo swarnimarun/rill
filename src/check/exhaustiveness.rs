@@ -357,6 +357,7 @@ mod tests {
             parameter_modes: HashMap::new(),
             next_local: 0,
             active_loans: Vec::new(),
+            projections: crate::check::projections::State::default(),
             constructors: HashMap::new(),
             variants: HashMap::new(),
             pending_matches: Vec::new(),

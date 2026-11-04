@@ -185,3 +185,35 @@ independent record retains 715 selected tests and 112 C executions. Overlapping
 and repeated runs are not added. Broader projection inference remains limited,
 owner-record support is unchanged, and P1/C02 remain open. Windows execution is
 not claimed.
+
+
+## Deferred nominal projections
+
+The bounded [projection increment](deferred-projections.md) has
+[integrated acceptance](verification/2026-11-04-deferred-projections.md) on exact
+source `81c8c151`: **1,103 default and 1,151 importer-enabled tests**, formatting,
+both strict all-target lint modes and both Windows GNU compile-only modes pass.
+Each test mode reports zero failures, ignored tests, SKIP notices or warnings.
+Real direct SDL3 runs in both modes; generated bindings and configured O0/O2 SDL
+run in importer mode. No new capture, Windows execution, GPU or physical-input
+claim follows.
+
+Ordinary equalities within one monomorphic component now resolve nominal field
+reads, assignment and read/inout paths before generalization. Exact per-use roots,
+canonical metadata, value restriction, symbolic loan overlap and independent
+typed verification remain enforced. Admission/work budgets are explicit; eager
+paths can also exhaust them. Unresolved standalone components still reject, and
+no structural label search or universal order-independence guarantee is added.
+
+The [independent record](verification/2026-11-04-deferred-projections-independent.md)
+retains 694 selected tests, 112 independent C executions and the clean committed
+340-run replacement of the author matrix. Its eight Clang style warnings and the
+five author/two independent inherited reference-C local-shape rejections remain
+explicit. The [author record](verification/2026-11-04-deferred-projections-author.md)
+keeps the original dirty-worktree provenance and retained preliminary failures.
+Repeated runs are not added to historical or aggregate totals.
+
+This bounded projection task is complete. No layout, owner/native form or
+completed P1/P2/C02 phase gate is claimed. Owned records remain unsupported.
+Broader inference, kinds/skolems, unknown physical storage and optional provenance
+remain open.

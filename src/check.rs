@@ -3,6 +3,7 @@ use crate::ast::{
     BinaryOp, Expr, ExternConst, ExternFunction, ExternType, ParamMode, Pattern, Program, TypeExpr,
 };
 use std::collections::{HashMap, HashSet};
+use std::rc::Rc;
 
 mod alloc;
 pub(crate) mod annotations;
@@ -11,6 +12,7 @@ mod graph;
 mod layout;
 mod owned_types;
 mod ownership;
+mod projections;
 mod solver;
 mod type_cursor;
 pub use owned_types::CheckedVariant;
@@ -45,7 +47,9 @@ struct Scheme {
 #[derive(Clone)]
 struct Loan {
     root: usize,
-    path: Vec<usize>,
+    // Names preserve overlap before nominal identities resolve. Quantified
+    // roots cannot grant exclusive access; see projections::conflicts.
+    path: Rc<[String]>,
     exclusive: bool,
 }
 #[derive(Clone)]
@@ -145,6 +149,7 @@ struct Checker {
     parameter_modes: HashMap<String, Vec<ParamMode>>,
     next_local: usize,
     active_loans: Vec<Loan>,
+    projections: projections::State,
     constructors: HashMap<String, Constructor>,
     variants: HashMap<String, Vec<String>>,
     pending_matches: Vec<(Type, Vec<Pattern>)>,
@@ -160,13 +165,6 @@ struct Checker {
     has_owned: bool,
 }
 impl Checker {
-    fn conflicts(&self, root: usize, path: &[usize], exclusive: bool) -> bool {
-        self.active_loans.iter().any(|loan| {
-            loan.root == root
-                && (loan.path.starts_with(path) || path.starts_with(&loan.path))
-                && (exclusive || loan.exclusive)
-        })
-    }
     fn local_id(&mut self) -> usize {
         let id = self.next_local;
         self.next_local += 1;
@@ -182,6 +180,11 @@ impl Checker {
         self.solver.copy_type(ty)
     }
     fn copy_scheme(&self, scheme: &Scheme) -> Result<Scheme, String> {
+        // Symbolic source loan overlap relies on exclusive roots having one
+        // monotype. Revisit that argument before relaxing this invariant.
+        if !scheme.quantified.is_empty() && (scheme.mutable || scheme.borrowed) {
+            return Err("E-INTERNAL-TYPE: quantified mutable or borrowed local".into());
+        }
         Ok(Scheme {
             quantified: scheme.quantified.clone(),
             ty: self.copy_type(&scheme.ty)?,
@@ -202,6 +205,7 @@ impl Checker {
         })
     }
     fn unify(&mut self, left: Type, right: Type) -> Result<(), String> {
+        self.projections.dirty = true;
         self.solver.unify(left, right)
     }
     fn substitute(&self, ty: &Type, replacements: &HashMap<usize, Type>) -> Result<Type, String> {
@@ -472,49 +476,6 @@ impl Checker {
             .collect::<Result<_, _>>()?;
         Ok((fields, Type::Nominal(c.owner, args)))
     }
-    fn record_field(
-        &mut self,
-        binding: &Scheme,
-        fields: &[String],
-    ) -> Result<(Vec<FieldInfo>, Type), String> {
-        if fields.is_empty() || fields.len() > 16 {
-            return Err("E-RECORD: field path must contain 1 to 16 fields".into());
-        }
-        // Project from this use's instance, never the quantified scheme itself.
-        // Mutable and borrowed roots have empty schemes and retain their type.
-        let mut ty = self.instantiate(binding)?;
-        let mut path = Vec::with_capacity(fields.len());
-        for field in fields {
-            let Type::Nominal(record, args) = self.resolve(&ty)? else {
-                return Err(
-                    "E-RECORD: field access requires a known record type (annotate the parameter)"
-                        .into(),
-                );
-            };
-            let constructor_name = self
-                .variants
-                .get(&record)
-                .and_then(|v| v.first())
-                .ok_or("E-RECORD: unknown record type")?;
-            let constructor = &self.constructors[constructor_name];
-            let names = constructor
-                .record_fields
-                .as_ref()
-                .ok_or("E-RECORD: field access requires a record")?;
-            let index = names
-                .iter()
-                .position(|name| name == field)
-                .ok_or_else(|| format!("E-RECORD: record has no field '{field}'"))?;
-            let params = constructor.params.iter().cloned().zip(args).collect();
-            ty = self.declared_type(&constructor.fields[index], &params)?;
-            path.push(FieldInfo {
-                record,
-                index,
-                arity: names.len(),
-            });
-        }
-        Ok((path, ty))
-    }
     fn infer_pattern(
         &mut self,
         pattern: &Pattern,
@@ -669,7 +630,7 @@ impl Checker {
         if exclusive && !binding.mutable {
             return Err(format!("E-LOAN: {name} root '{root}' must be mutable"));
         }
-        if self.conflicts(binding.local_id, &[], exclusive) {
+        if self.conflicts(binding.local_id, &[], exclusive)? {
             return Err(format!("E-LOAN: cannot borrow root '{root}'"));
         }
         let owner_type = if matches!(name, "box_read" | "box_write") {
@@ -683,7 +644,7 @@ impl Checker {
         let enclosing = self.active_loans.clone();
         self.active_loans.push(Loan {
             root: binding.local_id,
-            path: vec![],
+            path: Rc::from([]),
             exclusive,
         });
         for arg in &args[1..] {
@@ -771,7 +732,7 @@ impl Checker {
                     .map(|binding| self.copy_scheme(binding))
                     .transpose()?
                     .ok_or_else(|| format!("E-NAME: unknown owner '{name}'"))?;
-                if self.conflicts(binding.local_id, &[], true) {
+                if self.conflicts(binding.local_id, &[], true)? {
                     return Err(format!("E-LOAN: cannot move borrowed root '{name}'"));
                 }
                 self.has_owned = true;
@@ -784,7 +745,7 @@ impl Checker {
                     .transpose()?
                 {
                     self.local_uses.insert(expr as *const Expr, s.local_id);
-                    if self.conflicts(s.local_id, &[], false) {
+                    if self.conflicts(s.local_id, &[], false)? {
                         return Err(format!(
                             "E-LOAN: cannot read exclusively borrowed root '{n}'"
                         ));
@@ -858,14 +819,12 @@ impl Checker {
                     .ok_or_else(|| format!("E-NAME: unknown record root '{root}'"))?;
                 self.local_uses
                     .insert(expr as *const Expr, binding.local_id);
-                let (info, ty) = self.record_field(&binding, field)?;
-                let indices: Vec<_> = info.iter().map(|step| step.index).collect();
-                if self.conflicts(binding.local_id, &indices, false) {
+                let ty = self.record_field(expr, &binding, field)?;
+                if self.conflicts(binding.local_id, field, false)? {
                     return Err(format!(
                         "E-LOAN: cannot read exclusively borrowed root '{root}'"
                     ));
                 }
-                self.field_info.insert(expr as *const Expr, info);
                 Ok(ty)
             }
             Expr::FieldAssign(root, field, value) => {
@@ -879,14 +838,12 @@ impl Checker {
                         "E-MUT: cannot assign to immutable binding '{root}'"
                     ));
                 }
-                let (info, field_type) = self.record_field(&binding, field)?;
-                let indices: Vec<_> = info.iter().map(|step| step.index).collect();
-                if self.conflicts(binding.local_id, &indices, true) {
+                let field_type = self.record_field(expr, &binding, field)?;
+                if self.conflicts(binding.local_id, field, true)? {
                     return Err(format!("E-LOAN: cannot write borrowed root '{root}'"));
                 }
                 let ty = self.infer(value, locals)?;
                 self.unify(ty, field_type)?;
-                self.field_info.insert(expr as *const Expr, info);
                 Ok(Type::Unit)
             }
             Expr::Binary(op, a, b) => {
@@ -939,6 +896,9 @@ impl Checker {
                 let inferred = self.infer(value, locals);
                 self.level -= 1;
                 let ty = inferred?;
+                // Discharge before collecting free IDs: solving may replace a
+                // candidate variable with a nominal tree containing other IDs.
+                self.resolve_projections(false)?;
                 let mut free = HashSet::new();
                 self.free_type(&ty, &mut free);
                 let mut env = HashSet::new();
@@ -1015,7 +975,7 @@ impl Checker {
                 if !binding.mutable {
                     return Err(format!("E-MUT: cannot assign to immutable binding '{n}'"));
                 }
-                if self.conflicts(binding.local_id, &[], true) {
+                if self.conflicts(binding.local_id, &[], true)? {
                     return Err(format!("E-LOAN: cannot write borrowed root '{n}'"));
                 }
                 let value = self.infer(value, locals)?;
@@ -1137,14 +1097,12 @@ impl Checker {
                             return Err(format!("E-LOAN: inout root '{name}' must be mutable"));
                         }
                         let (place_path, ty) = if let Some(field) = field {
-                            let (info, ty) = self.record_field(&binding, field)?;
-                            let indices = info.iter().map(|step| step.index).collect();
-                            self.field_info.insert(a as *const Expr, info);
-                            (indices, ty)
+                            let ty = self.record_field(a, &binding, field)?;
+                            (self.source_loan_path(field)?, ty)
                         } else {
-                            (Vec::new(), self.copy_type(&binding.ty)?)
+                            (Rc::from([]), self.copy_type(&binding.ty)?)
                         };
-                        if self.conflicts(binding.local_id, &place_path, true) {
+                        if self.conflicts(binding.local_id, &place_path, true)? {
                             return Err(format!(
                                 "E-LOAN: cannot exclusively borrow borrowed root '{name}'"
                             ));
@@ -1162,16 +1120,14 @@ impl Checker {
                         // A local name borrows its existing root. Any other
                         // expression is evaluated into a fresh call temporary.
                         let place = match a {
-                            Expr::Var(name) => locals.get(name).map(|b| (b.local_id, Vec::new())),
+                            Expr::Var(name) => locals.get(name).map(|b| (b.local_id, Rc::from([]))),
                             Expr::Field(root, field) => {
                                 let binding = locals.get(root).ok_or_else(|| {
                                     format!("E-NAME: unknown record root '{root}'")
                                 })?;
-                                let (info, _) = self.record_field(binding, field)?;
-                                Some((
-                                    binding.local_id,
-                                    info.iter().map(|step| step.index).collect(),
-                                ))
+                                // Infer the projection only once, below. Loan
+                                // identity needs names, not a second instance.
+                                Some((binding.local_id, self.source_loan_path(field)?))
                             }
                             _ => None,
                         };
@@ -1535,6 +1491,7 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         parameter_modes: HashMap::new(),
         next_local: 0,
         active_loans: Vec::new(),
+        projections: projections::State::default(),
         constructors: HashMap::new(),
         variants: HashMap::new(),
         pending_matches: Vec::new(),
@@ -1848,6 +1805,9 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             let body = checker.infer(&f.body, &mut locals)?;
             checker.unify(body, signature.result)?;
         }
+        // No unresolved projection may escape into a generalized signature
+        // or receive caller-driven constraints from a later component.
+        checker.resolve_projections(true)?;
         checker.level -= 1;
         for &i in &group {
             let name = &program.functions[i].name;
@@ -1902,6 +1862,7 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             return Err("E-FFI: c_null/is_null requires a concrete raw C pointer context".into());
         }
     }
+    checker.resolve_projections(true)?;
     let expression_types = checker
         .expression_types
         .iter()

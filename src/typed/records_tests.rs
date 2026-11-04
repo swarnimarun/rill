@@ -187,3 +187,100 @@ fn record_fields_visit_owner_effects_and_cleanup_in_written_order() {
         }
     }
 }
+
+#[test]
+fn deferred_scc_projection_metadata_is_independently_rechecked() {
+    let original = lower(
+        "type P<a> = {value:a;flag:bool}\n\
+         type Q<a> = {value:a;flag:bool}\n\
+         fn first(x){let p=later(x);p.value}\n\
+         fn later(x:P<i32>){if true{x}else{record P{value=first(x);flag=true}}}\n\
+         fn main(){let other=record Q{value=0;flag=false};first(record P{value=42;flag=true})}",
+    );
+    verify(&original).unwrap();
+    assert_eq!(evaluate(&original).unwrap().to_string(), "42");
+    let function = original
+        .functions
+        .iter()
+        .position(|function| {
+            matches!(&function.body.value_expr().unwrap().kind,
+                ExprKind::Let { body, .. } if matches!(body.kind, ExprKind::FieldRead(_)))
+        })
+        .unwrap();
+    let same_shape = original
+        .adts
+        .iter()
+        .position(|adt| adt.name == "Q")
+        .unwrap();
+    let record = original
+        .adts
+        .iter()
+        .position(|adt| adt.name == "P")
+        .unwrap();
+    assert_eq!(
+        original.adts[record].record_fields,
+        original.adts[same_shape].record_fields
+    );
+    assert_eq!(
+        original.adts[record].variants[0].fields,
+        original.adts[same_shape].variants[0].fields
+    );
+    for case in 0..7 {
+        let mut bad = original.clone();
+        let node = tail(bad.functions[function].body.value_expr_mut().unwrap());
+        let ExprKind::FieldRead(place) = &mut node.kind else {
+            panic!("deferred result projection");
+        };
+        match case {
+            0 => place.root = LocalId(u32::MAX),
+            1 => place.path[0].record = same_shape,
+            2 => place.path[0].field = usize::MAX,
+            3 => place.path.clear(),
+            4 => node.ty = Type::Bool,
+            5 => {
+                // Names and fields disagree on the arity of the resolved schema.
+                bad.adts[record].variants[0].fields.pop();
+            }
+            _ => bad.adts[record].record_fields = None,
+        }
+        rejects(&bad);
+    }
+}
+
+#[test]
+fn deferred_projection_local_uses_retain_binding_identity_under_shadowing() {
+    let parsed = crate::parser::parse(
+        "type P={value:i32}\n\
+         fn first(x){let p=later(x);let old=p.value;let p=record P{value=2};old+p.value}\n\
+         fn later(x:P){if true{x}else{record P{value=first(x)}}}\n\
+         fn main(){first(record P{value=40})}",
+    )
+    .unwrap();
+    let checked = crate::check::analyze(&parsed).unwrap();
+    let Expr::Let(_, _, body) = &parsed.functions[0].body else {
+        panic!()
+    };
+    let Expr::Let(_, old, body) = body.as_ref() else {
+        panic!()
+    };
+    let Expr::Let(_, _, body) = body.as_ref() else {
+        panic!()
+    };
+    let Expr::Binary(_, _, new) = body.as_ref() else {
+        panic!()
+    };
+    let old_id = checked.local_use(old).expect("deferred occurrence binding");
+    let new_id = checked.local_use(new).expect("shadowed occurrence binding");
+    assert_ne!(old_id, new_id);
+    for occurrence in [old.as_ref(), new.as_ref()] {
+        let fields = checked.field_info(occurrence).unwrap();
+        assert_eq!(fields.len(), 1);
+        assert_eq!(
+            (fields[0].record.as_str(), fields[0].index, fields[0].arity),
+            ("P", 0, 1)
+        );
+    }
+    let lowered = lower_main(&checked).unwrap();
+    verify(&lowered).unwrap();
+    assert_eq!(evaluate(&lowered).unwrap().to_string(), "42");
+}

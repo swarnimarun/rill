@@ -144,7 +144,7 @@ fn annotations_do_not_generalize_mutable_aliases_or_remove_owner_restrictions() 
 #[path = "support/result_annotation_compatibility.rs"]
 mod compatibility;
 #[test]
-fn unannotated_signatures_and_rejections_equal_the_prechange_baseline() {
+fn unannotated_fingerprint_has_only_the_documented_projection_migration() {
     assert_eq!(
         compatibility::fingerprints(),
         include_str!("support/result_annotation_schemes.txt")

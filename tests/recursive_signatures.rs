@@ -67,17 +67,15 @@ fn constrained_recursive_schemes_keep_exact_quantifier_membership() {
 }
 
 #[test]
-fn historical_unannotated_result_projection_split_is_not_reclassified() {
+fn bounded_deferred_projection_migration_preserves_other_fingerprints() {
     assert_eq!(
         compatibility::fingerprints(),
         include_str!("support/result_annotation_schemes.txt")
     );
-    // An annotated grandcallee does not preconstrain an unannotated intermediate
-    // signature. This bounded pass does not invent deferred projection constraints.
+    // The later projection increment intentionally accepts this intermediate
+    // parameter case through SCC-local body constraints, not annotation guessing.
     let source = "type P={x:i32} fn f(p)->i32{g(p);p.x} fn g(p)->i32{h(p)} fn h(p:P)->i32{if false{f(p)}else{0}} fn main(){42}";
-    assert!(check::check(&parser::parse(source).unwrap())
-        .unwrap_err()
-        .starts_with("E-RECORD"));
+    check::check(&parser::parse(source).unwrap()).unwrap();
 }
 
 #[test]

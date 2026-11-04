@@ -238,10 +238,43 @@ consumers or module cloning. Combined totals can newly reject; the generic
 signature-annotation budget diagnostic is an intentional compatibility change.
 
 The author and independent reports retain their separate selected-test and C-run
-counts. The bounded parameter-timing task is complete, but deferred projection
+counts. The bounded parameter-timing task is complete. Deferred projection
 constraints, unannotated callee-result projection and propagation through
-unconstrained intermediate parameters remain separate work. Preserve modes, loans,
+unconstrained intermediate parameters were separate work at that checkpoint;
+the bounded follow-on below now has acceptance. Preserve modes, loans,
 value restriction, nominal/pointer identity, privacy and exact annotation source
 roles. Owner-record support is unchanged; P1, C02 and general annotated interfaces
 remain open. Do not infer Windows execution or new framebuffer, Zig, AArch64, GPU
 or physical-input evidence from these checks.
+
+
+## Deferred nominal projections
+
+The bounded [projection increment](deferred-projections.md) has
+[integrated acceptance](verification/2026-11-04-deferred-projections.md) on exact
+source `81c8c151`: **1,103 default and 1,151 importer-enabled tests**, formatting,
+both strict all-target lint modes and both Windows GNU compile-only modes pass.
+Each test mode reports zero failures, ignored tests, SKIP notices or warnings.
+Real direct SDL3 runs in both modes; generated bindings and configured O0/O2 SDL
+run in importer mode. No new capture, Windows execution, GPU or physical-input
+claim follows.
+
+Ordinary equalities within one monomorphic component now resolve nominal field
+reads, assignment and read/inout paths before generalization. Exact per-use roots,
+canonical metadata, value restriction, symbolic loan overlap and independent
+typed verification remain enforced. Admission/work budgets are explicit; eager
+paths can also exhaust them. Unresolved standalone components still reject, and
+no structural label search or universal order-independence guarantee is added.
+
+The [independent record](verification/2026-11-04-deferred-projections-independent.md)
+retains 694 selected tests, 112 independent C executions and the clean committed
+340-run replacement of the author matrix. Its eight Clang style warnings and the
+five author/two independent inherited reference-C local-shape rejections remain
+explicit. The [author record](verification/2026-11-04-deferred-projections-author.md)
+keeps the original dirty-worktree provenance and retained preliminary failures.
+Repeated runs are not added to historical or aggregate totals.
+
+This bounded projection task is complete. No layout, owner/native form or
+completed P1/P2/C02 phase gate is claimed. Owned records remain unsupported.
+Broader inference, kinds/skolems, unknown physical storage and optional provenance
+remain open.

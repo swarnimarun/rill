@@ -111,6 +111,88 @@ fn field_operands_recheck_paths_modes_identity_and_authority() {
 }
 
 #[test]
+fn deferred_scc_field_operands_still_require_canonical_paths_modes_and_authority() {
+    let original = lower(
+        "type P={left:i32;right:i32}\n\
+         fn set(inout x,read y){x <- y}\n\
+         fn first(x){let mut p=later(x);set(inout p.left,p.right)}\n\
+         fn later(x:P){if true{x}else{first(x);x}}\n\
+         fn main(){first(record P{left=0;right=42})}",
+    );
+    verify(&original).unwrap();
+    assert_eq!(evaluate(&original).unwrap().to_string(), "()");
+    let function = original
+        .functions
+        .iter()
+        .position(|function| {
+            matches!(
+                function.body.value_expr().unwrap().kind,
+                ExprKind::Let { mutable: true, .. }
+            )
+        })
+        .unwrap();
+    for case in 0..8 {
+        let mut bad = original.clone();
+        let body = bad.functions[function].body.value_expr_mut().unwrap();
+        let ExprKind::Let { mutable, body, .. } = &mut body.kind else {
+            panic!()
+        };
+        let ExprKind::Call(_, args) = &mut body.kind else {
+            panic!()
+        };
+        match case {
+            0 => place(&mut args[0]).root = LocalId(u32::MAX),
+            1 => place(&mut args[0]).path[0].record = usize::MAX,
+            2 => place(&mut args[0]).path[0].field = usize::MAX,
+            3 => place(&mut args[0]).path.clear(),
+            4 => args[0] = CallArg::ReadField(place(&mut args[0]).clone()),
+            5 => args[1] = CallArg::InoutField(place(&mut args[1]).clone()),
+            6 => *mutable = false,
+            _ => {
+                // A valid same-typed path becomes an overlap with the earlier inout loan.
+                let first = place(&mut args[0]).clone();
+                *place(&mut args[1]) = first;
+            }
+        }
+        rejects(&bad);
+    }
+}
+
+#[test]
+fn deferred_projection_does_not_grant_read_parameters_mutation_authority() {
+    let mut bad = lower(
+        "type P={value:i32}\n\
+         fn first(read p){let value=p.value;later(p);value}\n\
+         fn later(read p:P){if false{first(p)}else{0}}\n\
+         fn main(){first(record P{value=42})}",
+    );
+    verify(&bad).unwrap();
+    assert_eq!(evaluate(&bad).unwrap().to_string(), "42");
+    let function = bad
+        .functions
+        .iter()
+        .position(|function| {
+            matches!(&function.body.value_expr().unwrap().kind,
+            ExprKind::Let { value, .. } if matches!(value.kind, ExprKind::FieldRead(..)))
+        })
+        .unwrap();
+    assert_eq!(bad.functions[function].params[0].2, ParamMode::Read);
+    let ExprKind::Let { value, .. } =
+        &mut bad.functions[function].body.value_expr_mut().unwrap().kind
+    else {
+        unreachable!()
+    };
+    let ExprKind::FieldRead(place) = &value.kind else {
+        unreachable!()
+    };
+    **value = write(place.clone(), *value.clone());
+    assert!(verify(&bad)
+        .unwrap_err()
+        .contains("conflicting or immutable field access"));
+    rejects(&bad);
+}
+
+#[test]
 fn prefix_overlap_and_root_intervals_are_independent_of_lowering() {
     for source in [
         "type P = { x: i32; y: i32 }\nfn f(inout a, read b) { a <- b }\nfn main() { let mut p = record P { x = 1; y = 42 }; f(inout p.x, p.y) }",

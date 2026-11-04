@@ -64,12 +64,12 @@ module privacy and unused-declaration validation still apply. The existing
 Parameter/Annotation/TypeArgument source paths remain distinct from FunctionResult;
 no source role or backend representation was added.
 
-This does not solve every inference-order dependency. A projection through an
-unannotated callee result or a still-unconstrained intermediate parameter can
-still fail before later body inference supplies a nominal type. The sixteen-case
-canonical compatibility fixture retains its historical unannotated-result
-reject/accept split and actual quantified-variable membership. Deferred projection
-constraints remain separate work.
+At this signature-only checkpoint, an unannotated callee-result projection or
+still-unconstrained intermediate parameter could fail before later body inference
+supplied its nominal type. The subsequent [deferred-projection increment](deferred-projections.md)
+intentionally migrates compatibility case 5 and the intermediate-parameter example.
+The remaining canonical fingerprints retain actual quantified-variable membership.
+Neither increment establishes universal inference-order independence.
 
 Kinds, skolems, higher-rank interfaces, polymorphic recursion, owner records,
 effects, unknown physical storage and native ABI expansion remain unsupported.

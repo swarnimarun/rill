@@ -94,8 +94,15 @@ Existing closed parameter annotations now constrain a complete recursive group
 before any of its bodies. This bounded [signature-order improvement](docs/recursive-signatures.md)
 also checks all parameter/result trees through shared input budgets and has
 [bounded integrated acceptance](docs/verification/2026-11-04-recursive-signatures.md).
-Combined annotation totals can newly exceed the shared budget. Broader projection
-inference remains open; see the [example](examples/recursive-signatures).
+Combined annotation totals can newly exceed the shared budget; see the
+[example](examples/recursive-signatures). A subsequent bounded
+[deferred-projection increment](docs/deferred-projections.md) resolves nominal
+field reads, assignment and loans from later equalities in the same recursive
+group, retaining ordinary polymorphism and source loan checks. Its
+[integrated acceptance](docs/verification/2026-11-04-deferred-projections.md) passes
+1,103 default and 1,151 importer-enabled tests, both strict lint and Windows
+compile-only modes. Unresolved nominal identities still reject at the component
+boundary; broader inference, layouts and P1/C02 completion remain open.
 Local type annotations and `if` without `else`
 are not supported yet. Legacy `let name arg = expression`, `let ... in`,
 `if ... then ... else ...` and `while ... do ...` remain accepted for compatibility.
