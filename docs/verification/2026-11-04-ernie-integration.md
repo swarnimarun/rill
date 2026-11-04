@@ -109,3 +109,16 @@ launcher now selects GPU; `--cpu` retains the bounded reference.
 Historical performance distributions are preserved in their dated report;
 they were not remeasured during this port. Scripted cursor/focus assertions
 are distinct from physical input testing.
+
+## Saved SDL profile source
+
+The integrated saved-profile SDL test initially failed type checking after
+supplying the required SDK. Its fixture added `u32` around an enum argument
+that the updated game already converted. Removing that second conversion
+preserves the actual game source. The fresh saved O0/O2 SDL regression passed;
+the other 14 configuration tests had passed unchanged. All four native SDK
+and resource-discovery deadline/cleanup probes then passed.
+
+The integrated LSP/cache/overlay rerun passed 89 tests across six targets.
+Three fresh launch-helper tests passed, including a post-main infinite loop
+that still reports timeout rather than a language trap.

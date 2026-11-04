@@ -853,8 +853,8 @@ mod native {
         let source = fs::read_to_string(root.join("examples/sdl3-direct/main.rill"))
             .unwrap()
             .replace("frame < 900", "frame < 3")
-            .replace("SDL_Delay(u32(16))", "SDL_Delay(u32(0))")
-            .replace("sdl.SDL_EVENT_QUIT", "u32(sdl.SDL_EVENT_QUIT)");
+            .replace("SDL_Delay(u32(16))", "SDL_Delay(u32(0))");
+        assert!(source.contains("sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT))"));
         fs::write(f.path("main.rill"), source).unwrap();
         for optimization in ["-O0", "-O2"] {
             let mut capture = f.command();
