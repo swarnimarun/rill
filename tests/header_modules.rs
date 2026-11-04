@@ -1,5 +1,6 @@
 use rill::modules::{self, compile, headers};
 use std::{
+    collections::BTreeMap,
     ffi::OsString,
     fs,
     path::PathBuf,
@@ -457,6 +458,32 @@ fn invalid_generated_source_cannot_mutate_the_module() {
 }
 
 #[test]
+fn successful_build_snapshot_supports_editors_but_never_plain_codegen_loading() {
+    let fixture = Fixture::new("@include(\"api.h\"); fn main() { native_add(20,22) }");
+    let header = fixture.header("api.h", "int native_add(int,int);\n");
+    headers::publish(
+        &fixture.graph(),
+        "@entry",
+        "export extern fn native_add(a: i32, b: i32) -> i32;",
+        &[header],
+    )
+    .unwrap();
+    assert!(compile::load_program(&fixture.root.join("main.rill")).is_err());
+    assert!(compile::load_program_with_sources(&fixture.root.join("main.rill")).is_err());
+    let loaded = compile::load_library_with_sources_and_overlays(
+        &fixture.root.join("main.rill"),
+        &BTreeMap::new(),
+    )
+    .unwrap();
+    assert_eq!(loaded.program().externs[0].name, "native_add");
+    assert_eq!(
+        loaded.sources()[0].original_len,
+        fs::read(fixture.root.join("main.rill")).unwrap().len()
+    );
+    assert!(loaded.sources()[0].text.len() > loaded.sources()[0].original_len);
+}
+
+#[test]
 fn snapshot_validates_transitive_file_bytes_even_when_length_stays_the_same() {
     let fixture = Fixture::new("@include(\"api.h\"); fn main() { native_add(20,22) }");
     let header = fixture.header("api.h", "#include \"nested.h\"\n");
@@ -498,6 +525,17 @@ fn snapshot_matches_the_whole_graph_native_configuration_and_accepts_unsaved_bod
         "import api; @link(\"other\"); fn main() { api.native_add(10,32) }".into();
     assert!(headers::apply_cached(&mut graph).unwrap().is_empty());
     assert!(compile::lower_graph(&graph).is_err());
+    let path = fixture.root.join("main.rill");
+    let overlays = BTreeMap::from([(
+        path.clone(),
+        "import api; @link(\"first\"); fn main() { api.native_add(10,32) }".into(),
+    )]);
+    assert!(compile::load_library_with_sources_and_overlays(&path, &overlays).is_ok());
+    let overlays = BTreeMap::from([(
+        path.clone(),
+        "import api; @link(\"other\"); fn main() { api.native_add(10,32) }".into(),
+    )]);
+    assert!(compile::load_library_with_sources_and_overlays(&path, &overlays).is_err());
 }
 
 #[cfg(unix)]

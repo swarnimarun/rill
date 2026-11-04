@@ -143,10 +143,11 @@ pub fn load_library_with_sources_and_overlays(
     entry: &Path,
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Result<SourceProgram, ModuleError> {
-    let graph = super::load_with_overlays(entry, overlays)?;
+    let mut graph = super::load_with_overlays(entry, overlays)?;
+    let lengths = super::headers::apply_cached(&mut graph)?;
     let mut trace = Trace::default();
     let program = lower_traced(&graph, Some(&mut trace), false)?;
-    provenance::finish(graph, program, trace)
+    provenance::finish_with_original_lengths(graph, program, trace, &lengths)
 }
 
 /// Validate generated bindings as an imported library, not an entry program.
