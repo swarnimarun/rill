@@ -2,7 +2,7 @@
 
 The integration starts at `c3f41ef6027033553bd19202bbf457e5d9a3c9d1`.
 The complete source snapshot is preserved by the local archive branch
-`archive/pre-ernie-20261104` at
+`archive/source-snapshot-69277817` at
 `69277817ff0408c44dacb723bb1edc20da86159d`.
 The original working copy stays intact while the port is developed separately.
 

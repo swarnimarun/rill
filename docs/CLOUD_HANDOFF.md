@@ -37,6 +37,30 @@ with complete declaration checks and source-order captures. The subsequent [raw 
 adds existing unsigned/float/raw-pointer transport to that checked path. P1 and
 P5 remain open.
 
+## Synchronize concurrent work
+
+The local implementation port is published directly on `v1-ernie`. Its
+temporary `port/*` bookmarks and duplicate commits have been removed after
+checking that their changes are retained on the canonical branch. Start new
+cloud work from the current `origin/v1-ernie`, preserving any existing cloud
+working changes before adapting them. Do not resume from an old checkpoint
+without comparing it with the branch head.
+
+```sh
+git fetch origin v1-ernie
+git log --left-right --oneline HEAD...origin/v1-ernie
+```
+
+Integrate incoming commits and retest the combined result. Publish with normal
+fast-forward pushes. If another worker advances the remote, fetch and review
+its changes before trying again. Never overwrite the remote with an older
+checkout. Only committed and pushed cloud changes are visible to another
+workspace; save uncommitted work on its originating worker.
+
+The [integration report](verification/2026-11-04-ernie-integration.md) records
+the actual acceptance state. Historical checkpoint counts below do not replace
+that current evidence.
+
 ## Open the checkpoint
 
 ```sh

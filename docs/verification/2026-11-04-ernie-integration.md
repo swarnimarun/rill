@@ -32,8 +32,10 @@ normal fast-forwards to `v1-ernie`. The configured GPG signer timed out waiting
 for an interactive prompt. These integration commits use a per-command signing
 override; the user's Git configuration remains unchanged.
 Portable capture `9a02114`, negation `c68dd13`, reference compaction `67c5fda`
-and grammar `0e83182` were also pushed normally. Later slices await the final
-integrated gate before publication.
+and grammar `0e83182` were also pushed normally. The subsequent reviewed slices
+were published in four further normal fast-forward batches ending at `af302f5`,
+`647157b`, `f105d7d` and `d2e3554`. The full integrated gate was still running
+when those development checkpoints were published.
 
 ## Portable SDL capture
 
@@ -59,7 +61,7 @@ does not establish hardware-renderer or physical-input support.
 ## Open verification
 
 The functional port is committed and both integrated full suites are running
-on its frozen source. The final Helix workflow is still under investigation.
+on its frozen source. The final Helix workflow passed after the harness correction described below.
 The stopped upstream baseline is described below. No delivery phase is marked
 complete by these slices.
 
@@ -152,3 +154,95 @@ The original isolated upstream run reproduced native launch timeouts and an
 invalid-byte filename filesystem failure. It was stopped after preserving
 those failures, rather than running duplicate C workloads beside the final
 acceptance runs. It is not reported as a completed or passing baseline.
+
+## Final editor workflow
+
+Fresh compiler source `d2e3554` passed the include-only SDL check, real Helix
+smoke and full workflow, and real Neovim with LSP. The final workflow inspected
+28 decoded screens and checked four definition destinations, three accepted
+completions, hover, symbols, unsaved formatting, function/lambda textobjects
+and indentation. Inlay hints and x-to-y signature emphasis were inspected in
+the smoke. Disk sources and copied configuration stayed unchanged; both ends
+completed clean shutdown. Grammar regeneration/query checks passed twelve
+corpus cases and all 56 integrated repository sources.
+
+Three preliminary workflow failures are retained. The scope failure reproduced
+with built-in Rust under Helix's basic-color fallback, which omits the operator
+style. The isolated verification session now explicitly selects true color and
+a complete bundled theme. The first scope-probe predicate could also match a
+directory name; no query change was made from that false positive. The hardened
+gate requires the decoded popup at its cursor-relative cells, with a regression
+rejecting status/source text and partial names. All fifteen Helix helper tests
+passed after this change. Startup and edit deadlines remain unchanged.
+
+Preflight inspection found that installed Helix paths were correct, but the
+then-existing release compiler and parser rejected source result annotations. They were refreshed after the checkout advanced to the published port.
+The release build, original-path SDL interface check, Helix health check and
+installed parser acceptance of the real result-annotation example all passed.
+Editor/language configuration and four queries stayed byte-identical; dated
+backups retain the prior parser and installation files. Existing editor sessions need restarting to load the new
+compiler and parser.
+
+## Filesystem capability limits
+
+An explicit nocapture run confirmed four invalid-byte filename setup checks
+return their documented runtime skip on this filesystem with EPERM: formatting
+source paths, module source paths, selected-import include paths, and saved
+configuration include/compiler paths. Synthetic raw-byte wire/input tests still
+execute. These are capability skips, not evidence of those filesystem paths
+working here. Required SDL/GPU and final editor checks have no skips.
+
+## Native display access for the full gate
+
+The first complete-suite attempts were started inside the execution sandbox.
+Required GPU checks failed with status 77 and native video initialization
+reported no displays, with denied macOS workspace service connections. These
+are failed runs, not accepted GPU skips. The earlier standalone required-device
+run outside the sandbox passed all four tests. The superseded sandbox runs
+were stopped, and both full modes were restarted with native display access,
+the same frozen source/targets, required GPU checks and 256-cubed execution.
+No test, production deadline or device assertion was weakened.
+
+## Synchronization and temporary heads
+
+A fresh remote fetch found no incoming cloud commits ahead of the published
+head. The fixture correction `b758366` was pushed normally, and both canonical
+local/remote refs matched it. The original Jujutsu checkout was advanced without
+dropping its archived source snapshots; its rebuilt release compiler prints
+`42` for the function example in both native and interpreted modes. The exact
+original snapshot is protected by local `archive/source-snapshot-69277817`.
+Jujutsu's original working-change archive also retains the editor-log snapshot.
+
+At the user's request, the five temporary `port/*` bookmarks were removed and
+25 duplicate side-only commits were abandoned. A separate review found 24
+identical patch IDs and one native-default patch whose only adapted difference
+retains the integrated `rill lsp` usage entry. No descendants outside that set
+were present, including through JJ keep refs. Canonical ancestry, archives and
+all other refs were excluded. The three clean completed agent worktrees were
+removed; active verification checkouts remain until their jobs finish.
+
+## Filename fixture variants and minimal acceptance
+
+Outside the sandbox, APFS returns EILSEQ92 for unsupported raw-byte directory
+names, rather than the sandbox EPERM1. The two new importer fixture guards
+initially matched only ErrorKind values that covered EPERM. A repository-wide
+search found exactly those two guards; the formatter and module fixtures
+already handled raw EPERM1/EILSEQ92 precisely. The importer guards now use
+the same macOS-only policy, retaining failures for other errors/platforms.
+This is a test portability correction, not a compiler behavior change.
+The two affected complete targets passed 15 and 22 tests in the corrected
+default run. A focused nocapture command exposes capability reasons:
+
+```sh
+cargo test --locked --test format_cli --test module_origins \
+  --test native_configuration --test selected_c_import utf8 -- --nocapture
+```
+
+The unrestricted minimal-feature full run completed successfully on `f105d7d`:
+1,301 reported passing tests, zero failures/ignored/filtered tests, and zero
+Rust warnings. Required real GPU and 256-cubed checks passed all four tests.
+The two filesystem filename cases report capability skips; they are included
+in Cargo's passing-test count. The later guard changes are inside the disabled
+importer-only test modules, and compiler/library source is unchanged. Both
+strict Clippy modes and formatting passed again on final fixture source
+`b758366`. The corrected complete default run is still pending.
