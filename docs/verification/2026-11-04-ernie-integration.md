@@ -87,3 +87,25 @@ and matching captures. The headless CLI returned `204`. The historical stack
 overflow observation remains in the blocker record, with its obsolete typed
 foreign-transport prerequisite updated to reflect upstream implementation.
 No larger storage or frame-time claim follows from this bounded example.
+
+## GPU voxel demo
+
+The GPU adapter, all seven Metal modules and the controller/cursor fixtures
+are ported together because their pipeline names and shared layouts depend on
+each other. Fresh required-device verification passed all four GPU tests with
+no skips, including actual 256-cubed execution, partial-support leaning,
+O0/O2 framebuffer agreement and native SDL cursor/focus behavior.
+
+```sh
+RILL_REQUIRE_GPU=1 RILL_TEST_GPU_256=1 \
+  cargo test --locked --test sdl3_voxel_gpu -- --nocapture --test-threads=1
+RILL_VOXEL_GPU_DEBUG=1 examples/sdl3-voxel/run.sh --self-test --world 128
+```
+
+The second command passed with Metal API validation enabled, O3/native CPU
+tuning/ThinLTO and all 2,097,152 distance entries checked against independent
+references. The retained geometry/dirty-work assertions also ran. The default
+launcher now selects GPU; `--cpu` retains the bounded reference.
+Historical performance distributions are preserved in their dated report;
+they were not remeasured during this port. Scripted cursor/focus assertions
+are distinct from physical input testing.

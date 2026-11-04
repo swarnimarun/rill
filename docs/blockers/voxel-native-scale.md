@@ -1,7 +1,7 @@
 # Native voxel scale limits
 
 The CPU reference of the SDL3 voxel example keeps its simulation in Rill and
-its world at 8×8×8. This integration slice provides the CPU launcher.
+its world at 8×8×8. The default launcher uses the GPU path described below.
 This is an example core, not completion of the P6 or P10 gates.
 
 ## Evidence from the example
@@ -37,3 +37,15 @@ rigid-body dynamics and GPU compute are separate work. See
 [c-interop.md](../c-interop.md), [owned allocation](owned-allocation.md), and the
 [example's exact supported behavior](../../examples/sdl3-voxel/README.md).
 
+
+## GPU path added after this limit was observed
+
+The default `examples/sdl3-voxel/run.sh` now uses SDL3 GPU storage and external
+Metal compute shaders. Rill schedules the frame graph, with its camera and
+input state remaining small. The tested default is 128³ voxels, and 256³ has
+also executed actual simulation and rendering. This bypasses the CPU inline
+Copy-buffer cost; it does not extend Rill's owned buffers or shader language.
+
+The CPU reference remains available with `--cpu`. GPU support currently requires
+Metal, and fragment-to-fragment contacts and streaming chunks remain open.
+See the [GPU verification evidence](../verification/2026-11-03-sdl3-voxel-gpu.md).
