@@ -139,5 +139,19 @@ normally returning unused immutable enum results through a separate logical-only
 computation, with real call/return effects. This narrows one P1 representation
 gap. Its [integrated checks](verification/2026-11-04-discarded-results.md) passed
 939 default and 987 importer-enabled tests, strict lint and Windows compile modes
-plus independent proof/event/C cases. Direct layoutless records, unknown physical
-storage, observed unknown results and full phase gates remain open.
+plus independent proof/event/C cases. The direct-record follow-on is accepted
+below; unknown physical storage, observed unknown results and full phase gates
+remain open.
+
+
+The accepted direct-record follow-on extends the discard mechanism
+with schema-indexed fields in written evaluation order and no physical record.
+Complete field coverage/substitution, source roles, normal-flow reconstruction
+and preflight bounds remain mandatory. Its [integrated checks](verification/2026-11-04-discarded-records.md)
+passed 996 default and 1,044 importer-enabled tests, both strict lint modes and
+both Windows compile modes. This does not close P1 or broaden unknown storage,
+projections or owner support.
+The [author record](verification/2026-11-04-discarded-records-author.md) reports
+640 focused tests and 188 new-suite GCC/Clang C executions. The separate
+[independent record](verification/2026-11-04-discarded-records-independent.md)
+adds 24 private tests and 156 C executions.

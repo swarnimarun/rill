@@ -411,7 +411,7 @@ fn main() {
         &format!("{O}fn main(){{None}}"),
         None,
     );
-    boundary(&root,"layoutless_record",&format!("{O}type R<a> = {{last:i32;weak:O<a>;first:i32}} fn made(){{record R{{first=1;weak=None;last=2}}}} fn main(){{let weak=made();42}}"),Some("42"));
+    accepted(&root,"layoutless_record",&format!("{O}type R<a> = {{last:i32;weak:O<a>;first:i32}} fn made(){{record R{{first=1;weak=None;last=2}}}} fn main(){{let weak=made();42}}"),Some("42"),None);
     boundary(&root,"projected_local_shape",&format!("{O}type R<a> = {{value:O<a>}} fn main(){{let r=record R{{value=None}};let weak=r.value;42}}"),Some("42"));
     checker_error(&root,"weak_not_generalized",&format!("{O}fn absent(){{None}} fn ints(x:O<i32>){{()}} fn bools(x:O<bool>){{()}} fn main(){{let weak=absent();ints(weak);bools(weak);42}}"));
     checker_error(&root,"loan_overlap",&format!("{O}fn absent(read a:i32,inout b:i32){{None}} fn main(){{let mut n=0;let weak=absent(n,inout n);42}}"));

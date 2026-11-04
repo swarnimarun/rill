@@ -3882,3 +3882,7 @@ mod independent_discarded_internal_tests;
 #[cfg(test)]
 #[path = "typed/independent_discarded_suffix_tests.rs"]
 mod independent_discarded_suffix_tests;
+
+#[cfg(test)]
+#[path = "typed/independent_discarded_record_tests.rs"]
+mod independent_discarded_record_tests;

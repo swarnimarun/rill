@@ -96,7 +96,9 @@ impl Fixture {
 impl Drop for Fixture {
     fn drop(&mut self) {
         // Remove only this test's own temporary files after later authorized execution.
-        let _ = fs::remove_dir_all(&self.0);
+        if std::env::var_os("RILL_RETAIN_TEST_ARTIFACTS").is_none() {
+            let _ = fs::remove_dir_all(&self.0);
+        }
     }
 }
 
@@ -303,8 +305,6 @@ fn genuinely_unknown_physical_fields_stay_unsupported_after_no_normal_admission(
     for source in [
         "type Option<a> = None | Some(a)\nfn main() { None }",
         "type Option<a> = None | Some(a)\ntype Wrap<a> = Wrap(Option<a>)\nfn main() { match Wrap(None) { Wrap(None) => 42 | Wrap(Some(_)) => 0 } }",
-        "type Option<a> = None | Some(a)\ntype Store<a> = { value: Option<a> }\nfn make() { record Store { value = None } }\nfn main() { let unused = make(); 42 }",
-        "type Store<a> = { value: a }\nfn forever() { forever() }\nfn main() { let unused = record Store { value = forever() }; 42 }",
     ] {
         let program = parser::parse(source).unwrap();
         let checked = check::analyze(&program).unwrap_or_else(|e| panic!("{source}: {e}"));
@@ -312,6 +312,18 @@ fn genuinely_unknown_physical_fields_stay_unsupported_after_no_normal_admission(
         assert!(error.starts_with("E-TYPED-UNSUPPORTED:"), "{source}: {error}");
         // Source accepted does not mean representable, and these controls can diverge.
     }
+}
+
+#[test]
+fn direct_discarded_store_fields_preserve_normal_return_and_nonreturn() {
+    compare(
+        "type Option<a> = None | Some(a)\ntype Store<a> = { value: Option<a> }\nfn make() { record Store { value = None } }\nfn main() { let unused = make(); 42 }",
+        Some("42"),
+    );
+    compare(
+        "type Store<a> = { value: a }\nfn forever() { forever() }\nfn main() { let unused = record Store { value = forever() }; 42 }",
+        None,
+    );
 }
 
 #[test]

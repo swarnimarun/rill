@@ -23,6 +23,11 @@ pub enum DiscardKind {
         variant: usize,
         fields: Vec<DiscardExpr>,
     },
+    /// Schema indices in written evaluation order, with no physical record.
+    Record {
+        definition: usize,
+        fields: Vec<(usize, DiscardExpr)>,
+    },
     Let {
         local: LocalId,
         mutable: bool,
@@ -256,6 +261,9 @@ impl Lower<'_, '_> {
                         fields,
                     }
                 }
+                Expr::Record(name, fields) => {
+                    self.discard_record(expression, name, fields, &result)?
+                }
                 _ => {
                     let value = self.expr(expression)?;
                     pure(value.ty)?;
@@ -267,6 +275,73 @@ impl Lower<'_, '_> {
             result,
             occurrence,
             kind,
+        })
+    }
+
+    fn discard_record(
+        &mut self,
+        expression: &Expr,
+        name: &str,
+        fields: &[(String, Expr)],
+        result: &LogicalType,
+    ) -> Result<DiscardKind, String> {
+        const INVALID: &str = "E-TYPED-CONTROL: invalid discarded record construction";
+        let LogicalType::Nominal {
+            definition,
+            arguments,
+        } = result
+        else {
+            return Err(INVALID.into());
+        };
+        let declaration = self.checked.program.types.get(*definition).ok_or(INVALID)?;
+        let names = declaration.record_fields.as_ref().ok_or(INVALID)?;
+        self.instances
+            .charge_control(name.len().saturating_add(declaration.name.len()))?;
+        if name != declaration.name
+            || declaration.params.len() != arguments.len()
+            || declaration.variants.len() != 1
+            || names.len() != fields.len()
+            || declaration.variants[0].fields.len() != fields.len()
+        {
+            return Err(INVALID.into());
+        }
+        let info = self.checked.record_info(expression).ok_or(INVALID)?;
+        self.instances.charge_control(
+            info.constructor
+                .len()
+                .saturating_add(declaration.variants[0].name.len()),
+        )?;
+        if info.constructor != declaration.variants[0].name
+            || info.field_indices.len() != fields.len()
+        {
+            return Err(INVALID.into());
+        }
+        // Reserve the mapping copy, coverage vector and lowered children before
+        // allocation. The independent relation reconstructs this mapping afresh.
+        self.instances
+            .charge_control(fields.len().saturating_mul(3))?;
+        let indices = info.field_indices.clone();
+        let mut seen = vec![false; names.len()];
+        for ((name, _), index) in fields.iter().zip(&indices) {
+            let declared = names.get(*index).ok_or(INVALID)?;
+            self.instances
+                .charge_control(name.len().saturating_add(declared.len()).saturating_add(1))?;
+            if name != declared || seen[*index] {
+                return Err(INVALID.into());
+            }
+            seen[*index] = true;
+        }
+        self.instances.charge_control(seen.len())?;
+        if seen.iter().any(|present| !present) {
+            return Err(INVALID.into());
+        }
+        let mut lowered = Vec::with_capacity(fields.len());
+        for ((_, value), index) in fields.iter().zip(indices) {
+            lowered.push((index, self.discard(value)?));
+        }
+        Ok(DiscardKind::Record {
+            definition: *definition,
+            fields: lowered,
         })
     }
 }
@@ -303,6 +378,9 @@ impl DiscardExpr {
                     }
                 }
                 DiscardKind::Constructor { fields, .. } => pending.extend(fields.iter().rev()),
+                DiscardKind::Record { fields, .. } => {
+                    pending.extend(fields.iter().rev().map(|(_, field)| field));
+                }
                 DiscardKind::Let { value, body, .. } => {
                     if predicate(value) {
                         return true;
@@ -351,6 +429,9 @@ impl DiscardExpr {
                     }
                 }
                 DiscardKind::Constructor { fields, .. } => pending.extend(fields.iter().rev()),
+                DiscardKind::Record { fields, .. } => {
+                    pending.extend(fields.iter().rev().map(|(_, field)| field));
+                }
                 DiscardKind::Let { value, body, .. } => {
                     collect_calls(value, output);
                     pending.push(body);
@@ -413,6 +494,12 @@ pub(super) fn evaluate(
             }
             DiscardKind::Constructor { fields, .. } => {
                 for value in fields {
+                    evaluate(value, locals, program, depth, state, owners)?;
+                }
+                break Ok(());
+            }
+            DiscardKind::Record { fields, .. } => {
+                for (_, value) in fields {
                     evaluate(value, locals, program, depth, state, owners)?;
                 }
                 break Ok(());
@@ -493,6 +580,12 @@ pub(super) fn verify(
             }
             DiscardKind::Constructor { fields, .. } => {
                 for field in fields {
+                    verify(field, scope, ids, context)?;
+                }
+                break Ok(expected.clone());
+            }
+            DiscardKind::Record { fields, .. } => {
+                for (_, field) in fields {
                     verify(field, scope, ids, context)?;
                 }
                 break Ok(expected.clone());

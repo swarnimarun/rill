@@ -459,7 +459,11 @@ impl Instances {
         control: Option<&super::control::SourceFacts<'_, '_>>,
     ) -> Result<bool, String> {
         match expression {
-            Expr::Let(..) | Expr::LetMut(..) | Expr::If(..) | Expr::Match(..) => Ok(true),
+            Expr::Let(..)
+            | Expr::LetMut(..)
+            | Expr::If(..)
+            | Expr::Match(..)
+            | Expr::Record(..) => Ok(true),
             Expr::Call(name, _) if self.functions.contains_key(name) => {
                 self.charge_control(name.len())?;
                 Ok(true)
@@ -512,6 +516,7 @@ impl Instances {
                 Expr::Let(..) | Expr::LetMut(..) => demand,
                 Expr::If(..) if matches!(steps.0, AstStep::Then | AstStep::Else) => demand,
                 Expr::Match(..) if matches!(steps.0, AstStep::Arm(_)) => demand,
+                Expr::Record(..) if structural => Demand::Discard,
                 Expr::Call(name, _)
                     if demand == Demand::Discard
                         && !self.functions.contains_key(name)

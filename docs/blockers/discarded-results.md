@@ -66,8 +66,8 @@ ordinary lowering and verification succeed.
 - Observed unknown results, including `main = None` or `main = absent()`.
 - Used or mutable layoutless bindings, alias reads and tag-only matching of
   unknown-payload enums; actual unknown argument/local/field storage.
-- Direct layoutless record discard. Represented records and field loans retain
-  their existing rules, but there is no record-construction erasure rule here.
+- Direct layoutless record discard is outside the accepted enum checkpoint;
+  the author-only structural follow-on below is awaiting independent/full gates.
 - Generalized local-shape elaboration mixed with the contextual control path,
   including local-shape projections.
 - Newly reached native/owner computations or opaque owner/native schemas.
@@ -126,3 +126,60 @@ pure-source obligation across all retained source nodes and reached-definition
 signatures, including omitted suffixes, from the full declaration dependency
 graph and foreign symbol set. The paired owner/native schema mutations are
 rejected by all public consumers. This check does not reuse lowerer admission.
+
+
+## Direct-record follow-on
+
+The bounded record follow-on has independent and full aggregate acceptance:
+[996 default and 1,044 importer-enabled tests](../verification/2026-11-04-discarded-records.md),
+both strict lint modes and both Windows compile checks. It preserves the enum
+contract above and closes no full phase gate. A representative source is:
+
+```rill
+type O<a> = None | Some(a)
+type R<a> = { left: i32; hole: O<a>; right: i32 }
+fn mark(inout n, d) { n <- n * 10 + d; n }
+fn make(inout n) {
+    record R { right = mark(inout n, 1); hole = None; left = mark(inout n, 2) }
+}
+fn main() { let mut n = 0; let weak = make(inout n); n }
+```
+
+The result is 12. The separate `DiscardKind::Record` retains the canonical
+record definition and pairs of schema indices with logical-only children, in
+written evaluation order. No R/O aggregate, unknown slot, tag or fabricated
+runtime value is created. Fields are evaluated once in that order. A trapping
+or nonreturning field stops later effects, while every field remains retained
+for verification. Calls really enter and return through the existing void ABI.
+
+Demand discovery and layout registration propagate discard only through direct
+record fields, preserving Observe demand and existing mode/loan checks for call
+parameters. Ordinary successful lowering remains first. The extension changes
+neither inference/generalization nor represented record places and projections.
+
+The mandatory relation independently resolves every written label against the
+complete canonical field schema, checks exact nominal identity and full unique
+coverage, substitutes all logical arguments, and checks each child's logical
+result, occurrence and written-ordinal source role. It does not trust the
+checker's cached field indices or a physical ADT layout. Module resolution can
+rename type and constructor symbols separately, so name equality between those
+two namespaces is not assumed. The original CheckedProgram comparison still
+pins every declaration and source operation.
+
+Record field lookups, compared name bytes, coverage storage, substitution and
+child queues share existing cumulative work budgets. Actual-tree depth/width
+preflight includes every field before recursive consumers. Independent positive
+flow is the conjunction of field flows; an empty record returns normally and
+a discard node is never a nonreturn seed. The source-only interrupted-suffix
+purity check and all prior K1/K2/K3/K3b evidence remain mandatory.
+
+Four former rejection fixtures are explicitly migrated: a direct returned R,
+a returned Store, a Store containing `forever()`, and the independent public
+record boundary. The `forever()` fixture must lower successfully and actually
+trap, never continue to 42. Observed, used, mutable, aliased and projected
+layoutless records remain unsupported, as do unknown argument/storage payloads,
+local-shape mixing, unknown nominal interrupted results and new owner/native
+forms. The [author record](../verification/2026-11-04-discarded-records-author.md)
+reports exact author execution. The [independent record](../verification/2026-11-04-discarded-records-independent.md)
+and [integrated acceptance](../verification/2026-11-04-discarded-records.md)
+record the completed bounded review and aggregate gates.

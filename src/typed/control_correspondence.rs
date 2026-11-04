@@ -1025,6 +1025,7 @@ impl<'a> Relation<'a, '_> {
                                 SourceKind::Let(..)
                                     | SourceKind::If(..)
                                     | SourceKind::Match(..)
+                                    | SourceKind::Record(..)
                                     | SourceKind::Call(CallTarget::Function(_), _, _)
                             )
                         {
@@ -1075,6 +1076,9 @@ impl<'a> Relation<'a, '_> {
                                 Actual::Discarded(value),
                             )?;
                         }
+                    }
+                    (SourceKind::Record(..), DiscardKind::Record { definition, fields }) => {
+                        self.discard_record(source, &expected, *definition, fields)?
                     }
                     (
                         SourceKind::Let(binding, value, body),
@@ -1308,6 +1312,92 @@ impl<'a> Relation<'a, '_> {
                     _ => return Err(INVALID.into()),
                 }
             }
+        }
+        Ok(())
+    }
+    fn discard_record(
+        &mut self,
+        source: NodeId,
+        result: &Type,
+        definition: usize,
+        fields: &'a [(usize, DiscardExpr)],
+    ) -> Result<(), String> {
+        let SourceKind::Record(name, written) =
+            &self.frozen.witness.nodes.get(source.0).ok_or(INVALID)?.kind
+        else {
+            return Err(INVALID.into());
+        };
+        let Type::Nominal(nominal, arguments) = result else {
+            return Err(INVALID.into());
+        };
+        let declaration = self
+            .frozen
+            .witness
+            .environment
+            .types
+            .get(definition)
+            .ok_or(INVALID)?;
+        self.budget.charge(
+            name.len()
+                .saturating_add(nominal.len())
+                .saturating_add(declaration.name.len().saturating_mul(2)),
+        )?;
+        let names = declaration.record_fields.as_ref().ok_or(INVALID)?;
+        if name != &declaration.name
+            || nominal != &declaration.name
+            || declaration.params.len() != arguments.len()
+            || declaration.variants.len() != 1
+            || names.len() != declaration.variants[0].fields.len()
+            || names.len() != fields.len()
+            || written.len() != fields.len()
+        {
+            return Err(INVALID.into());
+        }
+        self.budget.charge(names.len())?;
+        let mut seen = vec![false; names.len()];
+        self.budget.charge(fields.len())?;
+        for (ordinal, ((label, source_value), (index, value))) in
+            written.iter().zip(fields).enumerate()
+        {
+            // Reconstruct each written label's schema index from declarations,
+            // without the checker's cached RecordInfo or any runtime layout.
+            self.budget.charge(names.len())?;
+            let mut resolved = None;
+            for (candidate, declared) in names.iter().enumerate() {
+                self.budget
+                    .charge(label.len().saturating_add(declared.len()))?;
+                if label == declared {
+                    resolved = Some(candidate);
+                    break;
+                }
+            }
+            if resolved != Some(*index) {
+                return Err(INVALID.into());
+            }
+            self.budget.charge(1)?;
+            let present = seen.get_mut(*index).ok_or(INVALID)?;
+            if *present {
+                return Err(INVALID.into());
+            }
+            *present = true;
+            let schema = declaration.variants[0].fields.get(*index).ok_or(INVALID)?;
+            let expected =
+                self.frozen
+                    .schema_type(schema, &declaration.params, arguments, self.budget, 0)?;
+            if self.frozen.logical_source(&value.result, self.budget, 0)? != expected {
+                return Err(INVALID.into());
+            }
+            // Source roles use written ordinals, never declaration indices.
+            self.child(
+                source,
+                *source_value,
+                Role::RecordField(ordinal),
+                Actual::Discarded(value),
+            )?;
+        }
+        self.budget.charge(seen.len())?;
+        if seen.iter().any(|present| !present) {
+            return Err(INVALID.into());
         }
         Ok(())
     }
@@ -1749,3 +1839,11 @@ mod tests {
         assert!(frozen.verify_structure(&typed).is_err());
     }
 }
+
+#[cfg(test)]
+#[path = "discarded_record_tests.rs"]
+mod discarded_record_tests;
+
+#[cfg(test)]
+#[path = "independent_discarded_record_budget_tests.rs"]
+mod independent_discarded_record_budget_tests;

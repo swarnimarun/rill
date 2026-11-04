@@ -412,4 +412,14 @@ adds a separate logical-only result for unused immutable bindings, with actual
 calls and constructor operand effects. It does not admit unknown stored payloads
 or observable unresolved main results. Its [integrated verification](docs/verification/2026-11-04-discarded-results.md)
 passes 939 default and 987 importer-enabled tests, strict lint and Windows compile
-checks, plus independent proof/event/C cases. Direct layoutless records remain open.
+checks, plus independent proof/event/C cases. Direct layoutless record discard
+has the further acceptance below.
+
+
+The accepted [direct discarded-record follow-on](docs/blockers/discarded-results.md#direct-record-follow-on)
+extends the logical-only computation to written-order record fields without
+aggregate storage. Effects, traps, real calls and complete field-schema proofs
+are retained. Its [integrated verification](docs/verification/2026-11-04-discarded-records.md)
+passes 996 default and 1,044 importer-enabled tests, strict lint and Windows
+compile checks, plus independent proof/event/C cases. Used, mutable, projected
+or observed layoutless records remain unsupported.

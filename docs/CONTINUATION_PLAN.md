@@ -209,7 +209,12 @@ The bounded [discarded-result increment](blockers/discarded-results.md) now has
 [integrated acceptance](verification/2026-11-04-discarded-results.md): 939 default
 and 987 importer-enabled tests, strict lint and Windows compile checks, plus
 independent proof/event/C cases. It retains actual normal calls and enum operand
-effects without storing unknown results. Next, add direct layoutless records
-under discard demand with independent schema/field/order evidence. Keep used or
-mutable layoutless bindings, observable unknown payloads and local-shape mixing
-outside these contracts until their representation rules are established.
+effects without storing unknown results. The direct layoutless-record follow-on
+has [integrated acceptance](verification/2026-11-04-discarded-records.md): 996
+default and 1,044 importer-enabled tests, strict lint and Windows compile checks,
+plus independent schema/order/effect/C evidence. It creates no aggregate storage.
+Next, implement closed result annotations on braced functions using existing
+concrete types, with unchanged unannotated inference, module privacy and complete
+source/origin coverage. That syntax is not implemented yet. Keep used or mutable
+layoutless bindings, observable unknown payloads and local-shape mixing outside
+these contracts until their representation rules are established.

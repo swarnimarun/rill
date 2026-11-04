@@ -1188,6 +1188,14 @@ impl<'a> IrBuilder<'a> {
                 }
                 inputs
             }
+            DiscardKind::Record { fields, .. } => {
+                self.budget.charge(fields.len())?;
+                let mut inputs = Vec::with_capacity(fields.len());
+                for (_, field) in fields {
+                    inputs.push(self.discarded(field)?);
+                }
+                inputs
+            }
             DiscardKind::Let { value, body, .. } => {
                 self.budget.charge(2)?;
                 vec![self.expression(value)?, self.discarded(body)?]

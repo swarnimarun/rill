@@ -40,7 +40,7 @@ P5 remain open.
 ## Open the checkpoint
 
 ```sh
-git clone --branch v1 git@github.com:swarnimarun/rill.git
+git clone --branch v1-ernie git@github.com:swarnimarun/rill.git
 cd rill
 cargo build --locked
 cargo run -- run examples/blocks/main.rill
@@ -48,8 +48,9 @@ cargo run -- run examples/blocks/main.rill
 
 The local project uses Jujutsu. The `v1` bookmark is published as a Git branch,
 so a cloud workspace needs only Git. This checkpoint has a separate lineage
-from the repository's existing `main`. Continue from `v1`; do not assume it is
-an incremental patch on `main` or rewrite the other branch.
+from the repository's existing `main`. Continue current work from `v1-ernie`;
+original `v1` remains unchanged. Do not treat it as an incremental patch on
+`main` or rewrite the other branch.
 
 Use a recent stable Rust toolchain and a C11 compiler available as `cc`. This
 checkpoint was exercised with Rust/Cargo 1.99.1, Apple Clang 17, Zig 0.17.0 and
@@ -133,8 +134,7 @@ Clang can emit a cosmetic `-x none` warning for a library-only link command.
 
 Use `plan` and `delegate` for phase implementation, `verify` before reporting
 success, and `handoff` when moving environments again, if those skills are
-available. The user requested GPT-6.1 Sol for delegated work. Preserve the
-project's Rust/C direction and record genuine blockers under `docs/blockers/`.
+available. Preserve the project's Rust/C direction and record genuine blockers under `docs/blockers/`.
 
 ## Reconstructed source-tree increment
 
@@ -248,9 +248,9 @@ gates remain open.
 
 The accepted bounded [discard-result implementation](blockers/discarded-results.md)
 adds demand-aware instances, real normal void returns, enum operand effects and
-mandatory full logical/source correspondence. Direct layoutless records,
-local-shape mixing, observed/used/mutable unknown values and new owner/native
-combinations remain excluded. The [integrated record](verification/2026-11-04-discarded-results.md)
+mandatory full logical/source correspondence. Direct record discard has further
+acceptance below. Local-shape mixing, observed/used/mutable unknown values and
+new owner/native combinations remain excluded. The [integrated record](verification/2026-11-04-discarded-results.md)
 passes 939 default and 987 importer-enabled tests, both strict Clippy modes and
 both Windows GNU compile checks, with no dependency skips.
 
@@ -260,4 +260,27 @@ identifies source `ee5763f`: 504 focused GCC tests, 9 additional Clang tests,
 The [independent record](verification/2026-11-04-discarded-results-independent.md)
 adds 25 private proof tests and 212 final C executions; an explicitly migrated
 K3b expectation has 80 further C executions. Known legacy Clang match warnings
-are retained. Direct layoutless records are the next bounded structural task.
+are retained. The accepted direct-record follow-on is described below.
+
+
+## Direct discarded records
+
+A bounded structural follow-on now represents direct record construction under
+discard demand, retaining written field order, canonical schema indices and all
+logical children without an aggregate or local slot. Independent reconstruction
+checks complete field coverage/substitution and source occurrences, while actual
+flow and effects/traps remain preserved. See the
+[bounded contract](blockers/discarded-results.md#direct-record-follow-on).
+[Integrated acceptance](verification/2026-11-04-discarded-records.md) passes
+996 default and 1,044 importer-enabled tests, strict lint and Windows compile
+checks, with no dependency skips. Unknown
+physical storage, used/mutable/projected layoutless values, local-shape mixing,
+unknown nominal interruption and new owner/native forms remain excluded.
+
+The [frozen author record](verification/2026-11-04-discarded-records-author.md)
+identifies source `93046a1`: 640 focused tests, 17 additional Clang tests, 188
+new-suite C executions and 216 older-harness regression executions. Formatting
+and default strict Clippy pass. The [independent record](verification/2026-11-04-discarded-records-independent.md)
+adds 24 private tests, 24 typed cases and 156 C executions. Closed function-result
+annotations are the next bounded source-usability task; that syntax remains
+unimplemented at this checkpoint.

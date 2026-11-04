@@ -216,6 +216,7 @@ impl<'a> Tree<'a> {
             Self::Discarded(node) => match &node.kind {
                 DiscardKind::Call(_, args) => args.len(),
                 DiscardKind::Constructor { fields, .. } => fields.len(),
+                DiscardKind::Record { fields, .. } => fields.len(),
                 DiscardKind::Match { arms, .. } => arms.len().saturating_add(1),
                 _ => 3,
             },
@@ -254,6 +255,11 @@ impl<'a> Tree<'a> {
                 }
                 DiscardKind::Constructor { fields, .. } => {
                     for field in fields {
+                        add(Self::Discarded(field));
+                    }
+                }
+                DiscardKind::Record { fields, .. } => {
+                    for (_, field) in fields {
                         add(Self::Discarded(field));
                     }
                 }

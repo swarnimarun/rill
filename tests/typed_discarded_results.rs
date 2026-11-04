@@ -233,8 +233,14 @@ fn observed_mutable_and_lexically_used_layoutless_results_stay_unsupported() {
             "{source}"
         );
     }
-    let parsed=parser::parse("type R<a> ={x:a} type O<a> =None|Some(a) fn made(){record R{x=None}} fn main(){let weak=made();42}").unwrap();
-    assert!(typed::lower_main(&check::analyze(&parsed).unwrap()).is_err());
+}
+
+#[test]
+fn direct_discarded_record_no_longer_requires_a_physical_layout() {
+    compare(
+        "type R<a> ={x:a} type O<a> =None|Some(a) fn made(){record R{x=None}} fn main(){let weak=made();42}",
+        Some("42"),
+    );
 }
 #[test]
 fn discard_preserves_source_errors() {

@@ -52,6 +52,14 @@ impl Emitter<'_> {
                     }
                     return true;
                 }
+                DiscardKind::Record { fields, .. } => {
+                    for (_, field) in fields {
+                        if !self.discard(field) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
                 DiscardKind::Let {
                     local, value, body, ..
                 } => {

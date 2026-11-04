@@ -808,3 +808,7 @@ mod independent_discarded_relation_tests;
 #[cfg(test)]
 #[path = "independent_discarded_suffix_relation_tests.rs"]
 mod independent_discarded_suffix_relation_tests;
+
+#[cfg(test)]
+#[path = "independent_discarded_record_relation_tests.rs"]
+mod independent_discarded_record_relation_tests;
