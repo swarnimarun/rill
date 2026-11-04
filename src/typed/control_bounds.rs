@@ -21,6 +21,74 @@ impl Witness {
             }
             depths.push(depth);
         }
+        budget.charge(self.nodes.len().checked_mul(2).ok_or(LIMIT)?)?;
+        let mut owned = vec![false; self.nodes.len()];
+        budget.charge(self.functions.len())?;
+        for function in &self.functions {
+            let root = self.nodes.get(function.body.0).ok_or(INVALID)?;
+            if root.parent.is_some() || root.source != function.source || owned[function.body.0] {
+                return Err(INVALID.into());
+            }
+            owned[function.body.0] = true;
+        }
+        for (index, node) in self.nodes.iter().enumerate() {
+            let mut child = |id: NodeId, role: Role| -> Result<(), String> {
+                budget.charge(1)?;
+                let actual = self.nodes.get(id.0).ok_or(INVALID)?;
+                if actual.source != node.source
+                    || actual.parent != Some((NodeId(index), role))
+                    || owned[id.0]
+                {
+                    return Err(INVALID.into());
+                }
+                owned[id.0] = true;
+                Ok(())
+            };
+            match &node.kind {
+                SourceKind::Binary(_, left, right) => {
+                    child(*left, Role::Left)?;
+                    child(*right, Role::Right)?;
+                }
+                SourceKind::Let(_, value, body) => {
+                    child(*value, Role::LetValue)?;
+                    child(*body, Role::LetBody)?;
+                }
+                SourceKind::While(condition, body) => {
+                    child(*condition, Role::Condition)?;
+                    child(*body, Role::WhileBody)?;
+                }
+                SourceKind::If(condition, yes, no) => {
+                    child(*condition, Role::Condition)?;
+                    child(*yes, Role::Then)?;
+                    child(*no, Role::Else)?;
+                }
+                SourceKind::Assign(_, value) | SourceKind::FieldAssign(_, _, value) => {
+                    child(*value, Role::AssignValue)?
+                }
+                SourceKind::Call(_, _, args) => {
+                    for (index, arg) in args.iter().enumerate() {
+                        child(*arg, Role::Argument(index))?;
+                    }
+                }
+                SourceKind::Record(_, fields) => {
+                    for (index, (_, value)) in fields.iter().enumerate() {
+                        child(*value, Role::RecordField(index))?;
+                    }
+                }
+                SourceKind::Match(value, arms) => {
+                    child(*value, Role::MatchValue)?;
+                    for (index, (_, arm)) in arms.iter().enumerate() {
+                        child(*arm, Role::MatchArm(index))?;
+                    }
+                }
+                SourceKind::Pending => return Err(INVALID.into()),
+                _ => {}
+            }
+        }
+        budget.charge(owned.len())?;
+        if owned.iter().any(|value| !value) {
+            return Err(INVALID.into());
+        }
         Ok(())
     }
 }
@@ -145,12 +213,14 @@ impl<'a> Tree<'a> {
     fn child_bound(self) -> usize {
         match self {
             Self::NoNormal(node) => match &node.kind {
+                NoNormalKind::InterruptedCall(call) => call.prefix.len().saturating_add(1),
                 NoNormalKind::Call(_, args) => args.len(),
                 NoNormalKind::Match { arms, .. } => arms.len().saturating_add(1),
                 NoNormalKind::If { .. } => 3,
                 _ => 2,
             },
             Self::Value(node) => match &node.kind {
+                ExprKind::InterruptedCall(call) => call.prefix.len().saturating_add(1),
                 ExprKind::Call(_, args) => args.len(),
                 ExprKind::ForeignCall(_, args) => args.len(),
                 ExprKind::CopyMatch { arms, .. } => arms.len().saturating_add(1),
@@ -166,6 +236,15 @@ impl<'a> Tree<'a> {
     pub(in crate::typed) fn children(self, mut add: impl FnMut(Tree<'a>)) {
         match self {
             Self::NoNormal(node) => match &node.kind {
+                NoNormalKind::InterruptedCall(call) => {
+                    for value in &call.prefix {
+                        add(Self::Value(value));
+                    }
+                    add(match &*call.barrier {
+                        Computation::Value(value) => Self::Value(value),
+                        Computation::NoNormal(value) => Self::NoNormal(value),
+                    });
+                }
                 NoNormalKind::Call(_, args) => {
                     for arg in args {
                         if let CallArg::Value(v) | CallArg::ReadTemporary(v) = arg {
@@ -204,6 +283,15 @@ impl<'a> Tree<'a> {
                             add(Self::Value(v));
                         }
                     }
+                }
+                ExprKind::InterruptedCall(call) => {
+                    for value in &call.prefix {
+                        add(Self::Value(value));
+                    }
+                    add(match &*call.barrier {
+                        Computation::Value(value) => Self::Value(value),
+                        Computation::NoNormal(value) => Self::NoNormal(value),
+                    });
                 }
                 ExprKind::Call(_, args) => {
                     for arg in args {
@@ -400,7 +488,12 @@ pub(in crate::typed) fn has_extension(program: &TypedMain) -> bool {
         while let Some(tree) = pending.pop() {
             match tree {
                 Tree::NoNormal(_) => return true,
-                Tree::Value(value) if matches!(value.kind, ExprKind::NoStorageLet { .. }) => {
+                Tree::Value(value)
+                    if matches!(
+                        value.kind,
+                        ExprKind::NoStorageLet { .. } | ExprKind::InterruptedCall(_)
+                    ) =>
+                {
                     return true
                 }
                 _ => tree.children(|child| pending.push(child)),

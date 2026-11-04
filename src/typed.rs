@@ -50,7 +50,8 @@ pub use logical::{LogicalType, OpaqueId, SymbolicInstance};
 mod places;
 mod results;
 pub use results::{
-    Computation, NoNormalArm, NoNormalExpr, NoNormalKind, NoStorageBinding, ResultRepr,
+    Computation, InterruptedCall, NoNormalArm, NoNormalExpr, NoNormalKind, NoStorageBinding,
+    ResultRepr,
 };
 pub mod provenance;
 pub use initialization::{Cleanup, CleanupTree, Initialization};
@@ -176,6 +177,7 @@ pub struct ExprNode {
 
 #[derive(Clone, Debug)]
 pub enum ExprKind {
+    InterruptedCall(Box<InterruptedCall>),
     NoStorageLet {
         binding: NoStorageBinding,
         value: Box<NoNormalExpr>,
@@ -669,6 +671,12 @@ impl Lower<'_, '_> {
     }
     fn expr_direct(&mut self, expr: &Expr) -> Result<ExprNode, String> {
         let ty = self.registry.convert(&self.source_type(expr)?)?;
+        if let Some(call) = self.interrupted_call(expr)? {
+            return Ok(ExprNode {
+                ty,
+                kind: ExprKind::InterruptedCall(Box::new(call)),
+            });
+        }
         let kind = match expr {
             Expr::Call(name, args) if self.native.function_id(name).is_some() => {
                 self.foreign_call(self.native.function_id(name).unwrap(), args)?
@@ -1411,6 +1419,10 @@ fn verify_expr(
         return Err("E-TYPED: invalid buffer capacity".into());
     }
     let ty = match &expr.kind {
+        ExprKind::InterruptedCall(call) => {
+            results::verify_interrupted(call, scope, ids, context)?;
+            expr.ty
+        }
         ExprKind::NoStorageLet { value, body, .. } => {
             results::verify_no_normal(value, scope, ids, context)?;
             verify_expr(body, scope, ids, context)?
@@ -1836,6 +1848,7 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
         return true;
     }
     match &expr.kind {
+        ExprKind::InterruptedCall(call) => call.any_value_root(&mut |value| any_expr(value, predicate)),
         ExprKind::NoStorageLet { value, body, .. } => {
             value.any_value_root(&mut |value| any_expr(value, predicate)) || any_expr(body, predicate)
         }
@@ -1883,6 +1896,7 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
 
 fn collect_calls(expr: &ExprNode, out: &mut Vec<usize>) {
     match &expr.kind {
+        ExprKind::InterruptedCall(call) => call.visit_calls(out),
         ExprKind::NoStorageLet { value, body, .. } => {
             value.visit_calls(out);
             collect_calls(body, out);
@@ -2125,6 +2139,12 @@ fn evaluate_expr(
 ) -> Result<crate::interpreter::Value, String> {
     use crate::interpreter::Value;
     match &expr.kind {
+        ExprKind::InterruptedCall(call) => {
+            match results::evaluate_interrupted(call, locals, program, depth, state, owners) {
+                Ok(never) => match never {},
+                Err(error) => Err(error),
+            }
+        }
         ExprKind::NoStorageLet { value, .. } => {
             match results::evaluate_no_normal(value, locals, program, depth, state, owners) {
                 Ok(never) => match never {},
@@ -3726,3 +3746,7 @@ mod tests {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "typed/independent_interrupted_tests.rs"]
+mod independent_interrupted_tests;

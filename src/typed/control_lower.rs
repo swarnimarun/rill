@@ -4,6 +4,44 @@
 use super::*;
 
 impl Lower<'_, '_> {
+    pub(super) fn interrupted_call(
+        &mut self,
+        expression: &Expr,
+    ) -> Result<Option<InterruptedCall>, String> {
+        let Some(facts) = self.control else {
+            return Ok(None);
+        };
+        let Some(index) = self
+            .instances
+            .interruption(self.checked, expression, facts)?
+        else {
+            return Ok(None);
+        };
+        let Expr::Call(_, args) = expression else {
+            unreachable!()
+        };
+        let evidence = facts.interrupted_evidence(expression, self.instances, self.substitution)?;
+        self.instances.charge_control(index + 1)?;
+        let mut prefix = Vec::with_capacity(index);
+        for arg in &args[..index] {
+            let value = self.expr(arg)?;
+            if value.ty.is_owner() || value.ty.is_raw() {
+                return Err("E-TYPED-UNSUPPORTED: interrupted prefix requires Copy storage".into());
+            }
+            prefix.push(value);
+        }
+        let barrier = if matches!(self.source_type(&args[index])?, InferredType::Var(_)) {
+            Computation::NoNormal(self.no_normal(&args[index])?)
+        } else {
+            Computation::Value(self.expr(&args[index])?)
+        };
+        Ok(Some(InterruptedCall {
+            evidence,
+            prefix,
+            barrier: Box::new(barrier),
+        }))
+    }
+
     pub(super) fn no_normal(&mut self, expression: &Expr) -> Result<NoNormalExpr, String> {
         self.instances.charge_control(1)?;
         let facts = self.control.ok_or(instances::BARE_RESULT)?;
@@ -17,6 +55,13 @@ impl Lower<'_, '_> {
         let occurrence = facts.occurrence(expression)?;
         let kind = match expression {
             Expr::Call(name, args) => {
+                if let Some(call) = self.interrupted_call(expression)? {
+                    return Ok(NoNormalExpr {
+                        result,
+                        occurrence,
+                        kind: NoNormalKind::InterruptedCall(Box::new(call)),
+                    });
+                }
                 let (callee, args) = self.call_arguments(expression, name, args)?;
                 NoNormalKind::Call(callee, args)
             }
@@ -146,6 +191,24 @@ mod tests {
         assert!(typed::verify(program).is_err());
         assert!(typed::evaluate(program).is_err());
         assert!(typed::emit_c(program).is_err());
+    }
+
+    #[test]
+    fn interrupted_eager_calls_keep_real_barriers_and_no_outer_instances() {
+        for source in [
+            "fn spin() { spin() } fn ignore(x) { 42 } fn main() { ignore(spin()) }",
+            "fn spin() { spin() } fn ignore(x) { 42 } fn main() { ignore(ignore(spin())) }",
+            "fn spin() { spin() } fn id(x) { x } fn main() { id(spin()) }",
+            "type O<a> = None | Some(a) fn spin() { spin() } fn ignore(a, b) { 42 } fn main() { ignore(spin(), None) }",
+            "fn spin() { spin() } fn ignore(a, b, c) { 42 } fn main() { ignore(1, spin(), 1 / 0) }",
+        ] {
+            let (program, typed, c) = lower(source);
+            assert_eq!(typed.functions.len(), 2, "{source}");
+            assert_eq!(typed::evaluate(&typed).unwrap_err(), "runtime trap", "{source}");
+            assert_eq!(crate::interpreter::run_reference(&program), typed::evaluate(&typed));
+            assert_eq!(crate::backend::emit(&program).unwrap(), c);
+            assert!(!c.contains("rl_value"));
+        }
     }
 
     #[test]

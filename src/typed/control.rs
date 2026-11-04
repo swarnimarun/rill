@@ -18,9 +18,12 @@ use std::collections::{HashMap, VecDeque};
 
 #[path = "control_bounds.rs"]
 mod bounds;
+#[path = "control_interrupted.rs"]
+mod interrupted;
 #[path = "control_relation.rs"]
 mod relation;
 pub(super) use bounds::has_extension;
+pub(super) use interrupted::InterruptedEvidence;
 pub(super) use relation::Frozen;
 
 const INVALID: &str = "E-TYPED-CONTROL: invalid control proof";
@@ -228,7 +231,7 @@ enum Role {
     MatchArm(usize),
     WhileBody,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SourceNode {
     source: usize,
     parent: Option<(NodeId, Role)>,
@@ -236,19 +239,19 @@ struct SourceNode {
     ty: Type,
     kind: SourceKind,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum CallTarget {
     Function(usize),
     // Builtins, constructors and native names retain their exact resolved
     // spelling. They are all conservatively possibly returning in this pass.
     Other(String),
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum Reference {
     Local(BindingId),
     Global(String),
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SourceKind {
     Pending,
     Int(i32),
@@ -271,7 +274,7 @@ enum SourceKind {
     Match(NodeId, Vec<(PatternId, NodeId)>),
     While(NodeId, NodeId),
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum SourcePattern {
     Pending,
     Wildcard,
@@ -281,13 +284,13 @@ enum SourcePattern {
     Unit,
     Constructor(String, Vec<PatternId>),
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 enum BindingSite {
     Parameter { source: usize, ordinal: usize },
     Let(NodeId),
     Pattern(PatternId),
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct Binding {
     site: BindingSite,
     name: String,
@@ -295,7 +298,7 @@ struct Binding {
     mode: ParamMode,
     uses: usize,
 }
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
 struct SourceFunction {
     source: usize,
     name: String,
@@ -1070,6 +1073,7 @@ impl<'a, 's> SourceFacts<'a, 's> {
 /// There is deliberately no access to the source circuit or any claimed fact.
 pub(super) struct IrFacts<'a> {
     _program: &'a TypedMain,
+    expressions: HashMap<*const ExprNode, GateId>,
     functions: Vec<GateId>,
     no_normal: HashMap<*const NoNormalExpr, GateId>,
     values: Vec<bool>,
@@ -1146,11 +1150,25 @@ impl<'a> IrBuilder<'a> {
         inputs.push(callee);
         Ok(inputs)
     }
+    fn interrupted(&mut self, call: &'a super::InterruptedCall) -> Result<Vec<GateId>, String> {
+        self.budget
+            .charge(call.prefix.len().checked_add(1).ok_or(LIMIT)?)?;
+        let mut inputs = Vec::with_capacity(call.prefix.len() + 1);
+        for value in &call.prefix {
+            inputs.push(self.expression(value)?);
+        }
+        inputs.push(match &*call.barrier {
+            Computation::Value(value) => self.expression(value)?,
+            Computation::NoNormal(value) => self.no_normal(value)?,
+        });
+        Ok(inputs)
+    }
     fn no_normal_node(&mut self, expression: &'a NoNormalExpr, id: GateId) -> Result<(), String> {
         self.budget.charge(1)?;
         // Neither the NoNormal tag nor its logical identity contributes a false
         // seed. Every actual child/callee is independently reconstructed.
         let inputs = match &expression.kind {
+            NoNormalKind::InterruptedCall(call) => self.interrupted(call)?,
             NoNormalKind::Call(callee, args) => self.call(*callee, args)?,
             NoNormalKind::Let { value, body, .. } => {
                 self.budget.charge(2)?;
@@ -1200,6 +1218,7 @@ impl<'a> IrBuilder<'a> {
     fn node(&mut self, expression: &'a ExprNode, id: GateId) -> Result<(), String> {
         self.budget.charge(1)?;
         let inputs = match &expression.kind {
+            ExprKind::InterruptedCall(call) => self.interrupted(call)?,
             ExprKind::Call(callee, args) => self.call(*callee, args)?,
             ExprKind::NoStorageLet { value, body, .. } => {
                 self.budget.charge(2)?;
@@ -1369,6 +1388,7 @@ impl<'a> IrBuilder<'a> {
         let values = self.circuit.solve(&mut self.budget)?;
         Ok(IrFacts {
             _program: self.program,
+            expressions: self.expressions,
             functions: self.functions,
             no_normal: self.no_normal,
             values,
@@ -1390,6 +1410,15 @@ impl<'a> IrFacts<'a> {
     }
     pub fn function_may_return(&self, function: usize) -> Option<bool> {
         self.functions.get(function).map(|id| self.values[id.0])
+    }
+    pub fn computation_may_return(&self, expression: &Computation) -> Option<bool> {
+        match expression {
+            Computation::Value(value) => self
+                .expressions
+                .get(&(value as *const ExprNode))
+                .map(|id| self.values[id.0]),
+            Computation::NoNormal(value) => self.no_normal_may_return(value),
+        }
     }
     pub fn no_normal_may_return(&self, expression: &NoNormalExpr) -> Option<bool> {
         self.no_normal

@@ -138,6 +138,24 @@ impl Instances {
                     steps.append(&mut path.steps);
                 }
                 let ty = result.expression_result_type(checked, expr, &context, control)?;
+                if let Some(index) = control
+                    .map(|facts| result.interruption(checked, expr, facts))
+                    .transpose()?
+                    .flatten()
+                {
+                    let Expr::Call(_, args) = expr else {
+                        unreachable!()
+                    };
+                    result.charge_control((index + 1).saturating_mul(2))?;
+                    for (ordinal, arg) in args[..=index].iter().enumerate().rev() {
+                        pending.push((
+                            arg,
+                            path.steps.len(),
+                            ChildSteps::one(AstStep::Argument(ordinal)),
+                        ));
+                    }
+                    continue;
+                }
                 if let Expr::Call(name, args) = expr {
                     if let Some(&source) = result.functions.get(name) {
                         result.charge_control(args.len())?;
@@ -228,6 +246,68 @@ impl Instances {
         result.reserve_control_type(&entry_key.result, 1)?;
         result.entry = result.ids[&entry_key];
         Ok(result)
+    }
+
+    pub fn interruption(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expression: &Expr,
+        facts: &super::control::SourceFacts<'_, '_>,
+    ) -> Result<Option<usize>, String> {
+        let Expr::Call(name, args) = expression else {
+            return Ok(None);
+        };
+        self.charge_control(name.len().saturating_add(args.len()))?;
+        let Some(&source) = self.functions.get(name) else {
+            return Ok(None);
+        };
+        let Some(index) = args
+            .iter()
+            .position(|arg| facts.expression_may_return(arg) == Some(false))
+        else {
+            return Ok(None);
+        };
+        let function = &checked.program.functions[source];
+        self.charge_control(function.params.len())?;
+        if args.len() != function.params.len()
+            || function
+                .params
+                .iter()
+                .any(|p| p.mode != crate::ast::ParamMode::Value)
+        {
+            // Keep already-representable read/inout calls on their existing path.
+            // A genuinely layoutless operand still fails ordinary admission.
+            return Ok(None);
+        }
+        Ok(Some(index))
+    }
+    pub fn control_budget(&self) -> Result<std::cell::RefMut<'_, super::control::Budget>, String> {
+        self.control_work
+            .as_ref()
+            .map(|work| work.borrow_mut())
+            .ok_or_else(|| "E-TYPED-CONTROL: missing control budget".into())
+    }
+    pub fn runtime_children<'e>(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expression: &'e Expr,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+        pending: &mut Vec<&'e Expr>,
+    ) -> Result<(), String> {
+        if let Some(index) = control
+            .map(|facts| self.interruption(checked, expression, facts))
+            .transpose()?
+            .flatten()
+        {
+            let Expr::Call(_, args) = expression else {
+                unreachable!()
+            };
+            self.charge_control(index + 1)?;
+            pending.extend(args[..=index].iter().rev());
+        } else {
+            runtime_children(checked, expression, pending);
+        }
+        Ok(())
     }
 
     pub fn charge_control(&self, amount: usize) -> Result<(), String> {

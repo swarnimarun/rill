@@ -110,8 +110,15 @@ of scope. Independent and full aggregate acceptance are recorded in that contrac
 The bounded [nonreturning-result representation](docs/blockers/nonreturning-results.md)
 now preserves bare recursive results and unused immutable divergent lets without
 fabricating storage or a return value. The [integrated K3 checks](docs/verification/2026-11-04-nonreturning-results.md)
-pass 860 default and 908 importer-enabled tests. Eager layoutless arguments,
-used/mutable layoutless bindings and unknown stored payloads remain unsupported.
+pass 860 default and 908 importer-enabled tests. The subsequent bounded
+[interrupted-argument increment](docs/blockers/interrupted-arguments.md) represents
+ordinary value calls whose eager argument cannot return, preserving prefixes,
+real recursion and the complete checked source without a dummy argument slot.
+Used/mutable layoutless bindings, returning unknown payloads and broader
+interrupted-call modes remain unsupported. Its
+[integrated verification](docs/verification/2026-11-04-interrupted-arguments.md)
+passed 892 default and 940 importer-enabled tests, both strict lint and Windows
+compile modes, plus independent source/proof/event checks.
 
 The subset includes signed 32-bit integers, booleans, unit, arithmetic,
 comparisons, short-circuit `&&` and `||`, generic algebraic types and exhaustive

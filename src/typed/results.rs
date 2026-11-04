@@ -87,6 +87,7 @@ pub struct NoNormalArm {
 #[derive(Clone, Debug)]
 pub enum NoNormalKind {
     Call(usize, Vec<CallArg>),
+    InterruptedCall(Box<InterruptedCall>),
     Let {
         local: LocalId,
         mutable: bool,
@@ -109,6 +110,33 @@ pub enum NoNormalKind {
     },
 }
 
+/// No executable outer instance exists on this edge. Evidence preserves the
+/// complete checked call; only its prefix and barrier can execute.
+#[derive(Clone, Debug)]
+pub struct InterruptedCall {
+    pub(super) evidence: super::control::InterruptedEvidence,
+    pub prefix: Vec<ExprNode>,
+    pub barrier: Box<Computation>,
+}
+impl InterruptedCall {
+    pub(super) fn any_value_root(&self, predicate: &mut impl FnMut(&ExprNode) -> bool) -> bool {
+        self.prefix.iter().any(&mut *predicate)
+            || match &*self.barrier {
+                Computation::Value(value) => predicate(value),
+                Computation::NoNormal(value) => value.any_value_root(predicate),
+            }
+    }
+    pub(super) fn visit_calls(&self, output: &mut Vec<usize>) {
+        for value in &self.prefix {
+            super::collect_calls(value, output);
+        }
+        match &*self.barrier {
+            Computation::Value(value) => super::collect_calls(value, output),
+            Computation::NoNormal(value) => value.visit_calls(output),
+        }
+    }
+}
+
 impl NoNormalExpr {
     /// Visit every concrete subtree root, including retained unreachable tails.
     /// Callers run only after the bounded verifier has admitted this tree.
@@ -116,6 +144,11 @@ impl NoNormalExpr {
         let mut pending = vec![self];
         while let Some(node) = pending.pop() {
             match &node.kind {
+                NoNormalKind::InterruptedCall(call) => {
+                    if call.any_value_root(predicate) {
+                        return true;
+                    }
+                }
                 NoNormalKind::Call(_, args) => {
                     for arg in args {
                         if let CallArg::Value(value) | CallArg::ReadTemporary(value) = arg {
@@ -156,6 +189,7 @@ impl NoNormalExpr {
         let mut pending = vec![self];
         while let Some(node) = pending.pop() {
             match &node.kind {
+                NoNormalKind::InterruptedCall(call) => call.visit_calls(output),
                 NoNormalKind::Call(callee, args) => {
                     output.push(*callee);
                     for arg in args {
@@ -186,6 +220,50 @@ impl NoNormalExpr {
     }
 }
 
+pub(super) fn evaluate_interrupted(
+    call: &InterruptedCall,
+    locals: &mut super::CopyLocals,
+    program: &super::TypedMain,
+    depth: usize,
+    state: &mut super::EvalState,
+    owners: &mut std::collections::HashMap<LocalId, super::OwnerHandle>,
+) -> Result<std::convert::Infallible, String> {
+    for value in &call.prefix {
+        super::evaluate_expr(value, locals, program, depth, state, owners)?;
+    }
+    match &*call.barrier {
+        Computation::Value(value) => {
+            super::evaluate_expr(value, locals, program, depth, state, owners)?;
+            Err("E-TYPED-CONTROL: interrupted argument unexpectedly returned".into())
+        }
+        Computation::NoNormal(value) => {
+            evaluate_no_normal(value, locals, program, depth, state, owners)
+        }
+    }
+}
+pub(super) fn verify_interrupted(
+    call: &InterruptedCall,
+    scope: &mut std::collections::HashMap<LocalId, super::Local>,
+    ids: &mut std::collections::HashSet<LocalId>,
+    context: &super::VerifyContext<'_>,
+) -> Result<(), String> {
+    for value in &call.prefix {
+        let ty = super::verify_expr(value, scope, ids, context)?;
+        if ty.is_owner() || ty.is_raw() {
+            return Err("E-TYPED-CONTROL: interrupted prefix requires Copy storage".into());
+        }
+    }
+    match &*call.barrier {
+        Computation::Value(value) => {
+            super::verify_expr(value, scope, ids, context)?;
+        }
+        Computation::NoNormal(value) => {
+            verify_no_normal(value, scope, ids, context)?;
+        }
+    }
+    Ok(())
+}
+
 /// No runtime value exists on this path. Prefixes and branch selection remain
 /// ordinary evaluations; a genuine recursive call uses the same frame guard.
 #[inline(never)]
@@ -200,6 +278,9 @@ pub(super) fn evaluate_no_normal(
     let mut introduced = Vec::new();
     let outcome = (|| loop {
         match &expression.kind {
+            NoNormalKind::InterruptedCall(call) => {
+                break evaluate_interrupted(call, locals, program, depth, state, owners)
+            }
             NoNormalKind::Call(callee, args) => {
                 super::evaluate_call(*callee, args, locals, program, depth, state, owners)?;
                 break Err("E-TYPED-CONTROL: unexpected normal return".into());
@@ -267,6 +348,10 @@ pub(super) fn verify_no_normal(
             break Err("E-TYPED-CONTROL: inconsistent no-normal result identity".into());
         }
         match &expression.kind {
+            NoNormalKind::InterruptedCall(call) => {
+                verify_interrupted(call, scope, ids, context)?;
+                break Ok(expected.clone());
+            }
             NoNormalKind::Call(callee, arguments) => {
                 let function = context
                     .functions

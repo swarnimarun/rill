@@ -200,9 +200,11 @@ actual recursive depth behavior are preserved. The [final K3 matrix](verificatio
 passes 860 default and 908 importer-enabled tests, both strict lint and Windows
 compile modes, and 80 independent GCC/Clang C executions. This is not P1 completion.
 
-Next, specify and implement interrupted eager value arguments such as
-`ignore(forever())`: retain ordered prefixes and source suffix evidence, create
-no unknown argument storage, and never enter the outer callee. Then address
-discarded normally-returning unknown results separately. Keep used/mutable
+The bounded interrupted eager value-argument increment now accepts
+`ignore(forever())`, retaining ordered prefixes and source suffix evidence without
+unknown argument storage or entry to the outer callee. Its
+[full matrix](verification/2026-11-04-interrupted-arguments.md) passed 892 default
+and 940 importer-enabled tests plus independent proof/event/C checks.
+Next, address discarded normally-returning unknown results separately. Keep used/mutable
 layoutless bindings and observable unknown payloads outside those bounded
 contracts until their representation and verification rules are established.

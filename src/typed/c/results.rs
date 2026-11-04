@@ -3,9 +3,29 @@ use super::*;
 use crate::typed::{NoNormalExpr, NoNormalKind};
 
 impl Emitter<'_> {
+    pub(super) fn interrupted(&mut self, call: &crate::typed::InterruptedCall) -> EmitOutcome {
+        for value in &call.prefix {
+            if matches!(self.expr(value), EmitOutcome::NoNormal) {
+                return EmitOutcome::NoNormal;
+            }
+        }
+        match &*call.barrier {
+            crate::typed::Computation::Value(value) => {
+                if let EmitOutcome::Value(_) = self.expr(value) {
+                    self.out.push_str("rl_trap();\n");
+                }
+            }
+            crate::typed::Computation::NoNormal(value) => {
+                self.no_normal(value);
+            }
+        }
+        EmitOutcome::NoNormal
+    }
+
     pub(super) fn no_normal(&mut self, mut expression: &NoNormalExpr) -> EmitOutcome {
         loop {
             match &expression.kind {
+                NoNormalKind::InterruptedCall(call) => return self.interrupted(call),
                 NoNormalKind::Call(callee, args) => {
                     if let Some(values) = self.call_arguments(*callee, args) {
                         writeln!(

@@ -371,17 +371,6 @@ impl Frozen {
         if reached.iter().any(|visited| !visited) {
             return Err(INVALID.into());
         }
-        budget.charge(self.witness.functions.len())?;
-        for function in &self.witness.functions {
-            budget.charge(self.instances.len())?;
-            if !self
-                .instances
-                .iter()
-                .any(|instance| instance.source == function.source)
-            {
-                return Err(INVALID.into());
-            }
-        }
         Ok(())
     }
 }
@@ -564,6 +553,156 @@ impl<'a> Relation<'a, '_> {
         }
         Ok(())
     }
+    fn interrupted(
+        &mut self,
+        source: NodeId,
+        target: usize,
+        modes: &[ParamMode],
+        args: &[NodeId],
+        actual: &'a crate::typed::InterruptedCall,
+    ) -> Result<(), String> {
+        let index = actual.prefix.len();
+        self.budget.charge(args.len())?;
+        if index >= args.len()
+            || modes.len() != args.len()
+            || modes.iter().any(|m| *m != ParamMode::Value)
+            || self.source_returns.get(args[index].0) != Some(&false)
+            || args[..index]
+                .iter()
+                .any(|arg| self.source_returns.get(arg.0) != Some(&true))
+            || self.ir_facts.computation_may_return(&actual.barrier) != Some(false)
+        {
+            return Err(INVALID.into());
+        }
+        self.budget.charge(args.len())?;
+        let mut parameters = Vec::with_capacity(args.len());
+        for arg in args {
+            parameters.push(self.source_type(*arg)?);
+        }
+        let result = self.source_type(source)?;
+        let expected = super::super::interrupted::InterruptedEvidence::capture(
+            &self.frozen.witness,
+            &self.frozen.domain,
+            source,
+            parameters,
+            result,
+            self.budget,
+        )?;
+        // Precharge the supplied evidence itself before equality, even if forged
+        // to be larger/deeper than the canonical source call.
+        actual.evidence.charge(self.budget)?;
+        if actual.evidence != expected || expected.target != target {
+            return Err(INVALID.into());
+        }
+        self.budget.charge(self.frozen.witness.functions.len())?;
+        let definition = self
+            .frozen
+            .witness
+            .functions
+            .iter()
+            .find(|f| f.source == target)
+            .ok_or(INVALID)?;
+        if definition.params.len() != args.len() {
+            return Err(INVALID.into());
+        }
+        let mut all_variables = BTreeSet::new();
+        for (_, ty) in &definition.params {
+            variables(ty, &mut all_variables, self.budget, 0)?;
+        }
+        variables(&definition.result, &mut all_variables, self.budget, 0)?;
+        self.budget.charge(self.frozen.witness.nodes.len())?;
+        for node in &self.frozen.witness.nodes {
+            if node.source == target {
+                variables(&node.ty, &mut all_variables, self.budget, 0)?;
+            }
+        }
+        self.budget.charge(definition.quantified.len())?;
+        let mut quantified = BTreeSet::new();
+        for variable in &definition.quantified {
+            self.budget.charge(
+                definition
+                    .quantified
+                    .len()
+                    .checked_add(1)
+                    .ok_or(LIMIT)?
+                    .ilog2() as usize
+                    + 1,
+            )?;
+            self.budget
+                .charge(all_variables.len().checked_add(1).ok_or(LIMIT)?.ilog2() as usize + 1)?;
+            if !all_variables.contains(variable) || !quantified.insert(*variable) {
+                return Err(INVALID.into());
+            }
+        }
+        let mut substitution = BTreeMap::new();
+        for ((binding, pattern), actual) in definition.params.iter().zip(&expected.parameters) {
+            if self
+                .frozen
+                .witness
+                .bindings
+                .get(binding.0)
+                .ok_or(INVALID)?
+                .mode
+                != ParamMode::Value
+            {
+                return Err(INVALID.into());
+            }
+            constrain(
+                pattern,
+                actual,
+                &quantified,
+                &mut substitution,
+                self.budget,
+                0,
+            )?;
+        }
+        constrain(
+            &definition.result,
+            &expected.result,
+            &quantified,
+            &mut substitution,
+            self.budget,
+            0,
+        )?;
+        for (ordinal, value) in actual.prefix.iter().enumerate() {
+            self.child(
+                source,
+                args[ordinal],
+                Role::Argument(ordinal),
+                Actual::Value(value),
+            )?;
+        }
+        let barrier = match &*actual.barrier {
+            Computation::Value(value) => Actual::Value(value),
+            Computation::NoNormal(value) => Actual::NoNormal(value),
+        };
+        self.child(source, args[index], Role::Argument(index), barrier)?;
+        // Omitted runtime syntax is still present on both sides of the relation.
+        // Its source-owned subtree is marked only after equality and independent
+        // source/IR proof of the preceding barrier. No suffix layout is admitted.
+        self.budget.charge(self.frozen.witness.nodes.len())?;
+        let mut omitted = vec![false; self.frozen.witness.nodes.len()];
+        for (ordinal, arg) in args.iter().enumerate().skip(index + 1) {
+            let node = self.frozen.witness.nodes.get(arg.0).ok_or(INVALID)?;
+            if node.parent != Some((source, Role::Argument(ordinal))) {
+                return Err(INVALID.into());
+            }
+            omitted[arg.0] = true;
+        }
+        self.budget.charge(self.frozen.witness.nodes.len())?;
+        for (id, node) in self.frozen.witness.nodes.iter().enumerate() {
+            if node
+                .parent
+                .is_some_and(|(parent, _)| omitted.get(parent.0) == Some(&true))
+            {
+                omitted[id] = true;
+            }
+            if omitted[id] {
+                self.mark(NodeId(id))?;
+            }
+        }
+        Ok(())
+    }
     fn mark(&mut self, source: NodeId) -> Result<(), String> {
         self.budget.charge(1)?;
         if self
@@ -657,6 +796,10 @@ impl<'a> Relation<'a, '_> {
                     return Err(INVALID.into());
                 }
                 match (&node.kind, &actual.kind) {
+                    (
+                        SourceKind::Call(CallTarget::Function(target), modes, args),
+                        ExprKind::InterruptedCall(call),
+                    ) => self.interrupted(source, *target, modes, args, call)?,
                     (SourceKind::Int(a), ExprKind::Int(b)) if a == b => {}
                     (SourceKind::Bool(a), ExprKind::Bool(b)) if a == b => {}
                     (SourceKind::Unit, ExprKind::Unit) => {}
@@ -847,6 +990,10 @@ impl<'a> Relation<'a, '_> {
                     return Err(INVALID.into());
                 }
                 match (&node.kind, &actual.kind) {
+                    (
+                        SourceKind::Call(CallTarget::Function(target), modes, args),
+                        NoNormalKind::InterruptedCall(call),
+                    ) => self.interrupted(source, *target, modes, args, call)?,
                     (
                         SourceKind::Call(CallTarget::Function(target), modes, args),
                         NoNormalKind::Call(callee, actual),

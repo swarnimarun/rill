@@ -245,8 +245,8 @@ fn possible_concrete_base_return_keeps_the_ordinary_value_contract() {
 
 #[test]
 fn unsupported_representation_is_not_admitted_by_discard_or_nonreturning_context() {
+    // Interrupted eager value calls moved to typed_interrupted_arguments.
     for source in [
-        "fn forever() { forever() } fn ignore(x) { 42 } fn main() { ignore(forever()) }",
         "fn forever() { forever() } fn main() { let used = forever(); used }",
         "fn forever() { forever() } fn main() { let mut unused = forever(); 42 }",
         "type O<a> = None | Some(a) fn forever() { forever() } fn main() { let unused = forever(); None }",

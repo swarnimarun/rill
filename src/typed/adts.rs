@@ -76,7 +76,7 @@ impl Registry {
                 }
                 instances
                     .charge_control(super::instances::source_child_count(expr).saturating_mul(2))?;
-                super::instances::runtime_children(checked, expr, &mut pending);
+                instances.runtime_children(checked, expr, control, &mut pending)?;
             }
         }
         layout_costs(&registry.types)?;

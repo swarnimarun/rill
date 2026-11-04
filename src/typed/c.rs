@@ -317,6 +317,12 @@ fn collect_type(ty: Type, output: &mut BTreeSet<usize>) {
 fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
     collect_type(expr.ty, output);
     match &expr.kind {
+        ExprKind::InterruptedCall(call) => {
+            call.any_value_root(&mut |value| {
+                collect_expr(value, output);
+                false
+            });
+        }
         ExprKind::NoStorageLet { value, body, .. } => {
             value.any_value_root(&mut |value| {
                 collect_expr(value, output);
@@ -421,6 +427,7 @@ fn contains_owner(expr: &ExprNode) -> bool {
         return true;
     }
     match &expr.kind {
+        ExprKind::InterruptedCall(call) => call.any_value_root(&mut contains_owner),
         ExprKind::NoStorageLet { value, body, .. } => {
             value.any_value_root(&mut contains_owner) || contains_owner(body)
         }
@@ -570,6 +577,9 @@ impl Emitter<'_> {
     fn expr(&mut self, expr: &ExprNode) -> EmitOutcome {
         // A no-storage sequence keeps its concrete source type but has no
         // normal emitted result. Do not allocate/name/cost a fictitious slot.
+        if let ExprKind::InterruptedCall(call) = &expr.kind {
+            return self.interrupted(call);
+        }
         if let ExprKind::NoStorageLet { value, .. } = &expr.kind {
             return self.no_normal(value);
         }
@@ -577,6 +587,7 @@ impl Emitter<'_> {
         let ty = c_type(expr.ty);
         self.add_cost(expr.ty);
         match &expr.kind {
+            ExprKind::InterruptedCall(_) => unreachable!("handled without a result slot"),
             ExprKind::NoStorageLet { .. } => unreachable!("handled without a result slot"),
 
             ExprKind::ForeignCall(id, args) => return self.foreign_call(&result, *id, args),

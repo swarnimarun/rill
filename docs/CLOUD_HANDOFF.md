@@ -226,5 +226,19 @@ migrated where K3 adds support; unknown physical payloads remain rejected.
 Bare recursive results use no storage or fabricated values. Mandatory source
 correspondence and separate source/IR flow proofs precede consumption. See the
 [bounded contract](blockers/nonreturning-results.md) for current exclusions;
-interrupted eager arguments and discarded returning results are next separate
-representation tasks. The full language plan remains open.
+interrupted eager arguments are accepted below, while discarded returning results
+remain a separate representation task. The full language plan remains open.
+
+
+## Interrupted eager arguments
+
+The accepted bounded implementation is documented in
+[interrupted arguments](blockers/interrupted-arguments.md). It retains an explicit
+prefix/barrier computation plus full source call evidence instead of creating an
+unknown argument slot or a never-entered executable instance. Source checking,
+independent source/IR flow, main-inclusive depth and original-source correspondence
+remain mandatory. The [integrated matrix](verification/2026-11-04-interrupted-arguments.md)
+passed 892 default and 940 importer-enabled tests, both strict Clippy modes and
+both Windows GNU compile checks. Independent verification adds 12 private tests
+and 76 GCC/Clang executions; two fixtures retain documented Clang style warnings.
+Normally returning discarded results and the remaining full PLAN gates are open.

@@ -40,7 +40,9 @@ prefixes and branch/match inputs, unused immutable divergent lets, and a bare
 main result. It deliberately rejects eager layoutless operands or arguments,
 used or mutable layoutless bindings, unknown payload layouts, local shape
 elaboration without a source relation, and new owner/native combinations.
-`ignore(forever())` and `let x = forever(); x` are still outside this slice.
+`ignore(forever())` is addressed separately by the subsequent
+[interrupted-argument increment](interrupted-arguments.md); it was not part of
+this K3 acceptance. `let x = forever(); x` remains unsupported.
 A literal-false concrete base return retains the ordinary value contract.
 
 ## Independent proof boundaries

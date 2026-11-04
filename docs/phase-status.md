@@ -56,8 +56,14 @@ not a replacement for those gates.
   adds mandatory source/control correspondence and no-storage computation results,
   retaining actual arguments, calls and the depth guard. Its [final matrix](verification/2026-11-04-nonreturning-results.md)
   passed 860 default and 908 importer-enabled tests plus independent event/C and
-  malformed-proof checks. Eager layoutless arguments and genuinely stored unknown
-  payloads still require separate representation work.
+  malformed-proof checks. The subsequent bounded
+  [interrupted-argument increment](blockers/interrupted-arguments.md) has an explicit
+  computation for ordinary value calls stopped by a nonreturning argument,
+  preserving full source evidence and real evaluation order. Its
+  [integrated acceptance](verification/2026-11-04-interrupted-arguments.md)
+  passed 892 default and 940 importer-enabled tests plus independent event/C
+  and malformed-proof checks. Genuinely stored or normally returning discarded
+  unknown payloads still require representation work.
   Other unsupported Copy layouts retain the uniform fallback. This is not P1 or P5 completion; see the
   [F2 evidence and limits](verification/2026-11-03-typed-native-transport.md) and
   [final integrated checks and SDL captures](verification/2026-11-03-typed-native-raw-integration.md).

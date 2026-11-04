@@ -391,7 +391,7 @@ impl Frozen {
     }
 }
 
-fn charge_witness(witness: &Witness, budget: &mut Budget) -> Result<(), String> {
+pub(super) fn charge_witness(witness: &Witness, budget: &mut Budget) -> Result<(), String> {
     fn text(value: &str, budget: &mut Budget) -> Result<(), String> {
         budget.charge(1)?;
         budget.charge(value.len())
@@ -411,13 +411,6 @@ fn charge_witness(witness: &Witness, budget: &mut Budget) -> Result<(), String> 
         budget.charge(ty.args.len())?;
         for arg in &ty.args {
             schema(arg, depth + 1, budget)?;
-        }
-        Ok(())
-    }
-    fn reference(reference: &Reference, budget: &mut Budget) -> Result<(), String> {
-        budget.charge(1)?;
-        if let Reference::Global(name) = reference {
-            text(name, budget)?;
         }
         Ok(())
     }
@@ -483,13 +476,7 @@ fn charge_witness(witness: &Witness, budget: &mut Budget) -> Result<(), String> 
     }
     budget.charge(witness.functions.len())?;
     for function in &witness.functions {
-        text(&function.name, budget)?;
-        budget.charge(function.quantified.len())?;
-        budget.charge(function.params.len())?;
-        for (_, ty) in &function.params {
-            copy_type(ty, budget, 0)?;
-        }
-        copy_type(&function.result, budget, 0)?;
+        charge_function(function, budget)?;
     }
     budget.charge(witness.bindings.len())?;
     for binding in &witness.bindings {
@@ -497,48 +484,11 @@ fn charge_witness(witness: &Witness, budget: &mut Budget) -> Result<(), String> 
     }
     budget.charge(witness.patterns.len())?;
     for pattern in &witness.patterns {
-        match pattern {
-            SourcePattern::Pending => return Err(INVALID.into()),
-            SourcePattern::Constructor(name, fields) => {
-                text(name, budget)?;
-                budget.charge(fields.len())?;
-            }
-            _ => {}
-        }
+        charge_pattern(pattern, budget)?;
     }
     budget.charge(witness.nodes.len())?;
     for node in &witness.nodes {
-        copy_type(&node.ty, budget, 0)?;
-        match &node.kind {
-            SourceKind::Pending => return Err(INVALID.into()),
-            SourceKind::Str(value) | SourceKind::CStr(value) => text(value, budget)?,
-            SourceKind::Var(value) | SourceKind::Move(value) | SourceKind::Inout(value) => {
-                reference(value, budget)?
-            }
-            SourceKind::Field(value, parts)
-            | SourceKind::InoutField(value, parts)
-            | SourceKind::FieldAssign(value, parts, _) => {
-                reference(value, budget)?;
-                path(parts, budget)?;
-            }
-            SourceKind::Assign(value, _) => reference(value, budget)?,
-            SourceKind::Record(name, fields) => {
-                text(name, budget)?;
-                budget.charge(fields.len())?;
-                for (name, _) in fields {
-                    text(name, budget)?;
-                }
-            }
-            SourceKind::Call(target, modes, args) => {
-                if let CallTarget::Other(name) = target {
-                    text(name, budget)?;
-                }
-                budget.charge(modes.len())?;
-                budget.charge(args.len())?;
-            }
-            SourceKind::Match(_, arms) => budget.charge(arms.len())?,
-            _ => {}
-        }
+        charge_node(node, budget)?;
     }
     Ok(())
 }
@@ -641,10 +591,111 @@ impl Frozen {
                 budget,
             )?;
         }
+        // Every retained declaration is syntactically reachable from main,
+        // including never-entered outer calls and omitted argument suffixes.
+        budget.charge(self.witness.functions.len().saturating_mul(3))?;
+        let mut reached = std::collections::HashSet::new();
+        let mut pending = vec![self.instances.get(self.entry).ok_or(INVALID)?.source];
+        while let Some(source) = pending.pop() {
+            budget.charge(1)?;
+            if !reached.insert(source) {
+                continue;
+            }
+            if !functions.contains_key(&source) {
+                return Err(INVALID.into());
+            }
+            budget.charge(self.witness.nodes.len())?;
+            for node in &self.witness.nodes {
+                if node.source == source {
+                    if let SourceKind::Call(CallTarget::Function(target), _, _) = &node.kind {
+                        budget.charge(1)?;
+                        pending.push(*target);
+                    }
+                }
+            }
+        }
+        if reached.len() != self.witness.functions.len() {
+            return Err(INVALID.into());
+        }
         let values = circuit.solve(budget)?;
         budget.charge(nodes.len())?;
         Ok(nodes.into_iter().map(|node| values[node.0]).collect())
     }
+}
+
+fn text(value: &str, budget: &mut Budget) -> Result<(), String> {
+    budget.charge(value.len().saturating_add(1))
+}
+fn reference(value: &Reference, budget: &mut Budget) -> Result<(), String> {
+    budget.charge(1)?;
+    if let Reference::Global(name) = value {
+        text(name, budget)?;
+    }
+    Ok(())
+}
+fn path(parts: &[String], budget: &mut Budget) -> Result<(), String> {
+    budget.charge(parts.len())?;
+    for part in parts {
+        text(part, budget)?;
+    }
+    Ok(())
+}
+pub(super) fn charge_function(
+    function: &SourceFunction,
+    budget: &mut Budget,
+) -> Result<(), String> {
+    text(&function.name, budget)?;
+    budget.charge(function.quantified.len())?;
+    budget.charge(function.params.len())?;
+    for (_, ty) in &function.params {
+        budget.reserve_type(ty, 0)?;
+    }
+    budget.reserve_type(&function.result, 0)
+}
+pub(super) fn charge_pattern(pattern: &SourcePattern, budget: &mut Budget) -> Result<(), String> {
+    match pattern {
+        SourcePattern::Pending => return Err(INVALID.into()),
+        SourcePattern::Constructor(name, fields) => {
+            text(name, budget)?;
+            budget.charge(fields.len())?;
+        }
+        _ => {}
+    }
+    Ok(())
+}
+pub(super) fn charge_node(node: &SourceNode, budget: &mut Budget) -> Result<(), String> {
+    budget.reserve_type(&node.ty, 0)?;
+    match &node.kind {
+        SourceKind::Pending => return Err(INVALID.into()),
+        SourceKind::Str(value) | SourceKind::CStr(value) => text(value, budget)?,
+        SourceKind::Var(value) | SourceKind::Move(value) | SourceKind::Inout(value) => {
+            reference(value, budget)?
+        }
+        SourceKind::Field(value, parts)
+        | SourceKind::InoutField(value, parts)
+        | SourceKind::FieldAssign(value, parts, _) => {
+            reference(value, budget)?;
+            path(parts, budget)?;
+        }
+        SourceKind::Assign(value, _) => reference(value, budget)?,
+        SourceKind::Record(name, fields) => {
+            text(name, budget)?;
+            budget.charge(fields.len())?;
+            for (name, _) in fields {
+                text(name, budget)?;
+            }
+        }
+        SourceKind::Call(target, modes, args) => {
+            if let CallTarget::Other(name) = target {
+                text(name, budget)?;
+            }
+            budget.charge(modes.len())?;
+            budget.charge(args.len())?;
+        }
+        SourceKind::Match(_, arms) => budget.charge(arms.len())?,
+        _ => {}
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -731,3 +782,7 @@ mod tests {
             .starts_with("E-TYPED-UNSUPPORTED:"));
     }
 }
+
+#[cfg(test)]
+#[path = "independent_interrupted_relation_tests.rs"]
+mod independent_interrupted_relation_tests;
