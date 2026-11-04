@@ -136,7 +136,20 @@ fn accepts_non_utf8_source_paths() {
     let path = dir
         .0
         .join(std::ffi::OsString::from_vec(b"source-\xff.rill".to_vec()));
-    fs::write(&path, "fn main(){42}").unwrap();
+    if let Err(error) = fs::write(&path, "fn main(){42}") {
+        #[cfg(target_os = "macos")]
+        {
+            const MACOS_EPERM: i32 = 1;
+            const MACOS_EILSEQ: i32 = 92;
+            if matches!(error.raw_os_error(), Some(MACOS_EPERM | MACOS_EILSEQ)) {
+                eprintln!(
+                    "SKIP non-UTF-8 source filename: filesystem/sandbox rejects invalid byte names: {error}"
+                );
+                return;
+            }
+        }
+        panic!("cannot create source file: {error}");
+    }
     let result = Command::new(env!("CARGO_BIN_EXE_rill"))
         .arg("fmt")
         .arg(&path)

@@ -12,5 +12,5 @@ clang-sys = { version = "=1.8.1", optional = true, features = ["runtime", "clang
 libc = { version = "=0.2.191", optional = true }
 
 [features]
-default = []
+default = ["c-import"]
 c-import = ["dep:clang-sys", "dep:libc"]

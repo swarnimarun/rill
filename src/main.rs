@@ -57,7 +57,8 @@ fn run() -> Result<(), String> {
         .compiler
         .clone()
         .unwrap_or_else(|| env::var_os("CC").unwrap_or_else(|| "cc".into()));
-    let mut arguments = options.c_args.clone();
+    let mut arguments = vec![options.optimization.flag().into()];
+    arguments.extend(options.c_args.iter().cloned());
     if options.simd == Simd::Neon {
         arguments.push("-DRILL_SIMD_NEON=1".into());
     }
@@ -66,7 +67,7 @@ fn run() -> Result<(), String> {
         &compiler,
         options.zig_cc,
         arguments,
-        false,
+        options.interpret,
     )?;
     let program = &prepared.program;
     let native_source = !program.native.includes.is_empty()
@@ -88,7 +89,7 @@ fn run() -> Result<(), String> {
             }
             prepared.publish()?;
         }
-        Some("run") if !(native_source || options.native) => {
+        Some("run") if options.interpret => {
             output = Some(format!("{}\n", rill::interpreter::run(program)?));
             prepared.publish()?;
         }
@@ -412,7 +413,8 @@ struct BuildOptions {
     zig_cc: bool,
     link_args: Vec<OsString>,
     c_args: Vec<OsString>,
-    native: bool,
+    interpret: bool,
+    optimization: Optimization,
     simd: Simd,
     native_config: Option<OsString>,
     #[cfg(unix)]
@@ -425,6 +427,41 @@ enum Simd {
     Neon,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Optimization {
+    Level0,
+    Level1,
+    Level2,
+    Level3,
+    Size,
+    SizeMin,
+}
+
+impl Optimization {
+    fn parse(level: &OsStr) -> Result<Self, String> {
+        match level.to_str() {
+            Some("0") => Ok(Self::Level0),
+            Some("1") => Ok(Self::Level1),
+            Some("2") => Ok(Self::Level2),
+            Some("3") => Ok(Self::Level3),
+            Some("s") => Ok(Self::Size),
+            Some("z") => Ok(Self::SizeMin),
+            _ => Err("--opt-level requires 0, 1, 2, 3, s or z".into()),
+        }
+    }
+
+    fn flag(self) -> &'static str {
+        match self {
+            Self::Level0 => "-O0",
+            Self::Level1 => "-O1",
+            Self::Level2 => "-O2",
+            Self::Level3 => "-O3",
+            Self::Size => "-Os",
+            Self::SizeMin => "-Oz",
+        }
+    }
+}
+
 impl BuildOptions {
     fn parse(command: &str, mut args: impl Iterator<Item = OsString>) -> Result<Self, String> {
         let mut output = None;
@@ -433,6 +470,8 @@ impl BuildOptions {
         let mut link_args = Vec::new();
         let mut c_args = Vec::new();
         let mut native = false;
+        let mut interpret = false;
+        let mut optimization = None;
         let mut simd = None;
         let mut native_config = None;
         let mut timeout_ms = None;
@@ -500,6 +539,21 @@ impl BuildOptions {
                 arg if arg == OsStr::new("--native") && command == "run" => {
                     native = true;
                 }
+                arg if arg == OsStr::new("--interpret") && command == "run" => {
+                    if interpret {
+                        return Err("--interpret may be specified only once".into());
+                    }
+                    interpret = true;
+                }
+                arg if arg == OsStr::new("--opt-level") => {
+                    if optimization.is_some() {
+                        return Err("--opt-level may be specified only once".into());
+                    }
+                    optimization = Some(Optimization::parse(
+                        &args.next().ok_or("--opt-level requires a level")?,
+                    )?);
+                    native = true;
+                }
                 arg if arg == OsStr::new("--simd") => {
                     if simd.is_some() {
                         return Err("--simd may be specified only once".into());
@@ -518,14 +572,21 @@ impl BuildOptions {
         if command == "build" && output.is_none() {
             return Err("build requires -o <executable>".into());
         }
+        if interpret && native {
+            return Err("--interpret cannot be combined with native compiler options".into());
+        }
         if native_config.is_some() {
             if compiler.is_none() {
                 return Err(
                     "E-C-CONFIG: configured commands require explicit --cc or --zig-cc".into(),
                 );
             }
-            if !c_args.is_empty() || !link_args.is_empty() || simd == Some(Simd::Neon) {
-                return Err("E-C-CONFIG: saved configuration cannot be combined with --c-arg, --link-arg or nondefault --simd".into());
+            if !c_args.is_empty()
+                || !link_args.is_empty()
+                || simd == Some(Simd::Neon)
+                || optimization.is_some()
+            {
+                return Err("E-C-CONFIG: saved configuration cannot be combined with --c-arg, --link-arg, --opt-level or nondefault --simd".into());
             }
         } else if timeout_ms.is_some() {
             return Err("E-C-CONFIG: --timeout-ms requires --native-config".into());
@@ -536,7 +597,8 @@ impl BuildOptions {
             zig_cc,
             link_args,
             c_args,
-            native,
+            interpret,
+            optimization: optimization.unwrap_or(Optimization::Level3),
             simd: simd.unwrap_or(Simd::Scalar),
             native_config,
             #[cfg(unix)]
@@ -546,6 +608,6 @@ impl BuildOptions {
 }
 
 fn usage() -> String {
-    "usage: rill lsp\n       rill fmt <source.rill> [--check]\n       rill <check|emit-c> <source.rill> [--cc <compiler> | --zig-cc] [--c-arg <arg>]...\n       rill run <source.rill> [--native] [compiler options]\n       rill build <source.rill> -o <executable> [--cc <compiler> | --zig-cc] [--simd scalar|neon] [--c-arg <arg>]... [--link-arg <arg>]...\n       rill import-c --header <header> [--function <name>]... [--constant <name>]... [-o <bindings.rill>] [--pkg-config <package>]... [--link <library>]... [--cc <compiler> | --zig-cc] [--c-arg <arg>]... [--clang-resource-dir <path>] [--timeout-ms <1..600000>]\n       rill import-c <selection> --config-out <native.rillcfg> --binding-module <logical.name> --cc <compiler> [--link-arg <validated-input>]...\n       rill import-c --config <native.rillcfg> --cc <compiler> [-o <bindings.rill>]\n       rill import-c --inspect-config <native.rillcfg>\n       rill <check|emit-c|build|run> <source.rill> --native-config <native.rillcfg> --cc <compiler> [--timeout-ms <1..600000>]"
+    "usage: rill lsp\n       rill fmt <source.rill> [--check]\n       rill <check|emit-c> <source.rill> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--c-arg <arg>]...\n       rill run <source.rill> [--interpret | --native] [compiler options]\n       rill build <source.rill> -o <executable> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--simd scalar|neon] [--c-arg <arg>]... [--link-arg <arg>]...\n       rill import-c --header <header> [--function <name>]... [--constant <name>]... [-o <bindings.rill>] [--pkg-config <package>]... [--link <library>]... [--cc <compiler> | --zig-cc] [--c-arg <arg>]... [--clang-resource-dir <path>] [--timeout-ms <1..600000>]\n       rill import-c <selection> --config-out <native.rillcfg> --binding-module <logical.name> --cc <compiler> [--link-arg <validated-input>]...\n       rill import-c --config <native.rillcfg> --cc <compiler> [-o <bindings.rill>]\n       rill import-c --inspect-config <native.rillcfg>\n       rill <check|emit-c|build|run> <source.rill> --native-config <native.rillcfg> --cc <compiler> [--timeout-ms <1..600000>]"
         .into()
 }

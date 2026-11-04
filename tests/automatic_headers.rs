@@ -259,3 +259,21 @@ fn automatic_calls_in_callable_bodies_use_checked_native_lowering() {
     succeeds(&output);
     assert_eq!(output.stdout, b"42\n");
 }
+#[test]
+fn automatic_constants_observe_the_actual_default_and_overridden_optimization_flags() {
+    let fixture = Fixture::new("optimized");
+    fs::write(
+        fixture.0.join("main.rill"),
+        "@include(\"api.h\"); fn main() { API_OPT }",
+    )
+    .unwrap();
+    for (args, expected) in [
+        (vec![], b"42\n".as_slice()),
+        (vec!["--opt-level", "0"], b"0\n".as_slice()),
+        (vec!["--c-arg", "-O0"], b"0\n".as_slice()),
+    ] {
+        let output = fixture.command("run").args(args).output().unwrap();
+        succeeds(&output);
+        assert_eq!(output.stdout, expected);
+    }
+}
