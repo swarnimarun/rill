@@ -78,3 +78,12 @@ The initial upstream baseline run was stopped and restarted in a dedicated
 unmodified checkout when integration examples started changing. Tests read
 examples at runtime, so the earlier partial run cannot establish a baseline
 for the source being ported.
+
+## CPU voxel reference
+
+The CPU port passed all ten `sdl3_voxel` tests with no failures. These include
+interpreter/C O0/O2 simulation comparisons, real SDL dummy-driver execution
+and matching captures. The headless CLI returned `204`. The historical stack
+overflow observation remains in the blocker record, with its obsolete typed
+foreign-transport prerequisite updated to reflect upstream implementation.
+No larger storage or frame-time claim follows from this bounded example.

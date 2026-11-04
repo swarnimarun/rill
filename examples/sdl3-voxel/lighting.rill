@@ -1,0 +1,275 @@
+import world;
+
+// Signed L1 distance between voxel centers, encoded as 128 + distance.
+// Exterior cells are air. An entirely empty volume uses +24 as infinity.
+fn absolute(value) {
+    if value < 0 {
+        0 - value
+    } else {
+        value
+    }
+}
+fn minimum(a, b) {
+    if a < b {
+        a
+    } else {
+        b
+    }
+}
+
+export fn distance(read sdf, x, y, z) {
+    if world.inside(x, y, z) {
+        world.get(sdf, x, y, z) - 128
+    } else {
+        1
+    }
+}
+
+export fn sample(read light, x, y, z) {
+    if world.inside(x, y, z) {
+        world.get(light, x, y, z)
+    } else {
+        220
+    }
+}
+
+fn seed(read cells, x, y, z) {
+    let solid = world.get(cells, x, y, z) != 0;
+    let mut d = 24;
+    if (world.get(cells, x - 1, y, z) != 0) != solid ||
+    (world.get(cells, x + 1, y, z) != 0) != solid ||
+    (world.get(cells, x, y - 1, z) != 0) != solid ||
+    (world.get(cells, x, y + 1, z) != 0) != solid ||
+    (world.get(cells, x, y, z - 1) != 0) != solid ||
+    (world.get(cells, x, y, z + 1) != 0) != solid {
+        d <- 1;
+    };
+    if solid {
+        128 - d
+    } else {
+        128 + d
+    }
+}
+
+fn neighbor(read sdf, x, y, z, solid) {
+    if world.inside(x, y, z) {
+        let d = distance(sdf, x, y, z);
+        if (d < 0) == solid {
+            absolute(d) + 1
+        } else {
+            1
+        }
+    } else {
+        if solid {
+            1
+        } else {
+            24
+        }
+    }
+}
+
+fn relax(inout sdf, index, delta) {
+    let x = index % 8;
+    let y = index / 8 % 8;
+    let z = index / 64;
+    let old = distance(sdf, x, y, z);
+    let solid = old < 0;
+    let mut d = absolute(old);
+    d <- minimum(d, neighbor(sdf, x - delta, y, z, solid));
+    d <- minimum(d, neighbor(sdf, x, y - delta, z, solid));
+    d <- minimum(d, neighbor(sdf, x, y, z - delta, solid));
+    let encoded = if solid {
+        128 - d
+    } else {
+        128 + d
+    };
+    world.set(inout sdf, x, y, z, encoded);
+}
+
+// The two raster sweeps compute the unobstructed Manhattan transform.
+fn sweep(inout sdf, forward) {
+    let delta = if forward {
+        1
+    } else {
+        -1
+    };
+    let mut i = 0;
+    while i < 512 {
+        let index = if forward {
+            i
+        } else {
+            511 - i
+        };
+        relax(inout sdf, index, delta);
+        i <- i + 1;
+    };
+}
+
+fn open_sky(read cells, x, y, z) {
+    let mut height = y + 1;
+    let mut clear = true;
+    while height < 8 {
+        if world.get(cells, x, height, z) != 0 {
+            clear <- false;
+        };
+        height <- height + 1;
+    };
+    clear
+}
+
+// Six axis rays gather a scalar, one-bounce diffuse approximation. In air,
+// L1 distance - 1 is a safe axis step; each encountered solid is tested first.
+// This is a bounded grid approximation, not Euclidean sphere tracing or full GI.
+type RayState = {
+    x: i32;
+    y: i32;
+    z: i32;
+    traveled: i32;
+    answer: i32;
+    active: bool
+}
+
+fn advance(inout state: RayState, read sdf, dx, dy, dz) {
+    let step = minimum(8, absolute(distance(sdf, state.x, state.y, state.z)) - 1);
+    let amount = if step > 0 {
+        step
+    } else {
+        1
+    };
+    state.x <- state.x + dx * amount;
+    state.y <- state.y + dy * amount;
+    state.z <- state.z + dz * amount;
+    state.traveled <- state.traveled + amount;
+}
+
+fn trace_step(inout state: RayState, read cells, read sdf, read direct, dx, dy, dz) {
+    if not world.inside(state.x, state.y, state.z) {
+        state.answer <- if dy > 0 {
+            220
+        } else {
+            if dy < 0 {
+                20
+            } else {
+                90
+            }
+        };
+        state.active <- false;
+    } else {
+        let material = world.get(cells, state.x, state.y, state.z);
+        if material != 0 {
+            let source = if material == 4 {
+                255
+            } else {
+                sample(direct, state.x, state.y, state.z) / 2
+            };
+            state.answer <- source * 3 / (3 + state.traveled);
+            state.active <- false;
+        } else {
+            advance(inout state, sdf, dx, dy, dz);
+        }
+    };
+}
+
+fn trace_ray(read cells, read sdf, read direct, x, y, z, dx, dy, dz) {
+    let mut state = record RayState {
+        x = x + dx;
+        y = y + dy;
+        z = z + dz;
+        traveled = 1;
+        answer = 0;
+        active = true
+    };
+    let mut iterations = 0;
+    while state.active && iterations < 24 {
+        trace_step(inout state, cells, sdf, direct, dx, dy, dz);
+        iterations <- iterations + 1;
+    };
+    state.answer
+}
+
+// Unsupported directions or outside origins return zero before tracing.
+export fn ray(read cells, read sdf, read direct, x, y, z, dx, dy, dz) {
+    let along_x = (dx == 1 || dx == -1) && dy == 0 && dz == 0;
+    let along_y = dx == 0 && (dy == 1 || dy == -1) && dz == 0;
+    let along_z = dx == 0 && dy == 0 && (dz == 1 || dz == -1);
+    if (along_x || along_y || along_z) && world.inside(x, y, z) {
+        trace_ray(cells, sdf, direct, x, y, z, dx, dy, dz)
+    } else {
+        0
+    }
+}
+
+fn initialize(read cells, inout sdf, inout light, i) {
+    let x = i % 8;
+    let y = i / 8 % 8;
+    let z = i / 64;
+    world.set(inout sdf, x, y, z, seed(cells, x, y, z));
+    let direct = if world.get(cells, x, y, z) == 4 {
+        255
+    } else {
+        if open_sky(cells, x, y, z) {
+            192
+        } else {
+            24
+        }
+    };
+    world.set(inout light, x, y, z, direct);
+}
+fn gather(read cells, read sdf, read direct, x, y, z) {
+    let mut total = 0;
+    let mut direction = 0;
+    while direction < 6 {
+        let axis = direction / 2;
+        let sign = if direction % 2 == 0 {
+            1
+        } else {
+            -1
+        };
+        let dx = if axis == 0 {
+            sign
+        } else {
+            0
+        };
+        let dy = if axis == 1 {
+            sign
+        } else {
+            0
+        };
+        let dz = if axis == 2 {
+            sign
+        } else {
+            0
+        };
+        total <- total + trace_ray(cells, sdf, direct, x, y, z, dx, dy, dz);
+        direction <- direction + 1;
+    };
+    total
+}
+
+fn illuminate(read cells, read sdf, read direct, inout light, i) {
+    let x = i % 8;
+    let y = i / 8 % 8;
+    let z = i / 64;
+    let gathered = gather(cells, sdf, direct, x, y, z);
+    let brightness = if world.get(cells, x, y, z) == 4 {
+        255
+    } else {
+        minimum(255, 12 + sample(direct, x, y, z) / 3 + gathered / 6)
+    };
+    world.set(inout light, x, y, z, brightness);
+}
+export fn rebuild(read cells, inout sdf, inout light) {
+    let mut i = 0;
+    while i < 512 {
+        initialize(cells, inout sdf, inout light, i);
+        i <- i + 1;
+    };
+    sweep(inout sdf, true);
+    sweep(inout sdf, false);
+    let direct = light;
+    i <- 0;
+    while i < 512 {
+        illuminate(cells, sdf, direct, inout light, i);
+        i <- i + 1;
+    };
+}

@@ -1,0 +1,25 @@
+// SDL-free destruction/physics smoke. The result is a deterministic material sum.
+import world;
+import physics;
+import lighting;
+
+fn main() {
+    let mut cells = world.scene();
+    let mut support = world.empty();
+    let mut sdf = world.empty();
+    let mut light = world.empty();
+    physics.blast(inout cells, 3, 2, 3, 2);
+    let mut tick = 0;
+    while tick < 8 {
+        physics.step(inout cells, inout support);
+        tick <- tick + 1;
+    };
+    lighting.rebuild(cells, inout sdf, inout light);
+    let mut checksum = 0;
+    let mut i = 0;
+    while i < 512 {
+        checksum <- checksum + world.get(cells, i % 8, i / 8 % 8, i / 64);
+        i <- i + 1;
+    };
+    checksum
+}
