@@ -248,6 +248,15 @@ fn validate_flags(flags: &[OsString]) -> Result<(), String> {
     let mut args = flags.iter();
     while let Some(arg) = args.next() {
         let Some(text) = arg.to_str() else {
+            if [b"-isysroot".as_slice(), b"--sysroot=", b"-resource-dir="]
+                .iter()
+                .any(|prefix| {
+                    arg.as_encoded_bytes().starts_with(prefix)
+                        && arg.as_encoded_bytes().len() > prefix.len()
+                })
+            {
+                continue;
+            }
             return Err(
                 "E-C-IMPORT: a C option must be UTF-8 (path operands may be non-UTF-8)".into(),
             );
@@ -320,6 +329,7 @@ fn validate_flags(flags: &[OsString]) -> Result<(), String> {
                 "-I",
                 "-D",
                 "-U",
+                "-isysroot",
                 "--sysroot=",
                 "--target=",
                 "-march=",
@@ -439,5 +449,23 @@ mod tests {
         for flag in ["-O0", "-O2"] {
             assert!(validate_flags(&[flag.into()]).is_ok(), "{flag}");
         }
+    }
+    #[cfg(all(unix, feature = "c-import"))]
+    #[test]
+    fn joined_native_search_flags_preserve_raw_paths_without_relaxing_profiles() {
+        use std::os::unix::ffi::OsStringExt;
+        for argument in [
+            OsString::from("-isysroot/chosen-sdk"),
+            OsString::from_vec(b"-isysroot/chosen-sdk \xff".to_vec()),
+            OsString::from_vec(b"--sysroot=/chosen-sdk \xff".to_vec()),
+            OsString::from_vec(b"-resource-dir=/chosen-resource \xfe".to_vec()),
+        ] {
+            validate_flags(std::slice::from_ref(&argument)).unwrap();
+            assert!(crate::c_import::configuration::validate_c_args(&[argument]).is_err());
+        }
+        assert!(validate_flags(&[OsString::from_vec(
+            b"-resource-dir/chosen-resource \xff".to_vec()
+        )])
+        .is_err());
     }
 }

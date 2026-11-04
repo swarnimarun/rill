@@ -296,3 +296,46 @@ fn sdk_discovery_has_the_same_deadline_and_descendant_cleanup() {
     fixture.assert_gone("probe.pid");
     fixture.assert_gone("descendant.pid");
 }
+
+#[cfg(target_os = "macos")]
+#[test]
+fn joined_explicit_sdk_prevents_host_discovery_and_reaches_both_compilers() {
+    let fixture = Fixture::new("joined-sdk");
+    let sdk = Command::new("xcrun")
+        .arg("--show-sdk-path")
+        .output()
+        .unwrap();
+    succeeds(&sdk);
+    let sdk = String::from_utf8(sdk.stdout).unwrap();
+    let joined = format!("-isysroot{}", sdk.trim());
+    fixture.script("xcrun", "printf unexpected > \"$SDK_PROBE_MARKER\"\nexit 1");
+    let compiler = fixture.script("compiler", "if [ \"$1\" != -print-resource-dir ]; then printf '%s\\n' \"$@\" > \"$SDK_ARGUMENT_LOG\"; fi\nexec cc \"$@\"");
+    let marker = fixture.root.join("sdk-probe");
+    let log = fixture.root.join("arguments");
+    fs::write(&log, "").unwrap();
+    let mut paths = vec![fixture.root.clone()];
+    paths.extend(std::env::split_paths(&std::env::var_os("PATH").unwrap()));
+    let output = fixture
+        .command()
+        .arg("--cc")
+        .arg(compiler)
+        .arg("--c-arg")
+        .arg(&joined)
+        .env_remove("SDKROOT")
+        .env("PATH", std::env::join_paths(paths).unwrap())
+        .env("SDK_PROBE_MARKER", &marker)
+        .env("SDK_ARGUMENT_LOG", &log)
+        .output()
+        .unwrap();
+    succeeds(&output);
+    assert!(
+        !marker.exists(),
+        "explicit SDK must suppress xcrun discovery"
+    );
+    let arguments = fs::read_to_string(log).unwrap();
+    assert_eq!(arguments.lines().filter(|arg| *arg == joined).count(), 1);
+    assert!(
+        !arguments.lines().any(|arg| arg == "-isysroot"),
+        "host SDK must not be appended: {arguments}"
+    );
+}

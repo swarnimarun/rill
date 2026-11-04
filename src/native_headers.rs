@@ -49,11 +49,7 @@ pub(super) fn load(
     if needs_import {
         complete_sdk(&mut cflags)?;
     }
-    let explicit_resource = cflags.iter().any(|argument| {
-        argument.to_str().is_some_and(|argument| {
-            argument == "-resource-dir" || argument.starts_with("-resource-dir=")
-        })
-    });
+    let explicit_resource = explicit_resource_directory(&cflags);
     let resource_dir = if needs_import && !explicit_resource {
         resource_directory(compiler, zig_cc)?
     } else {
@@ -118,6 +114,13 @@ fn generate(
     }
 }
 
+fn explicit_resource_directory(arguments: &[OsString]) -> bool {
+    arguments.iter().any(|argument| {
+        let argument = argument.as_encoded_bytes();
+        argument == b"-resource-dir" || argument.starts_with(b"-resource-dir=")
+    })
+}
+
 fn resource_directory(
     compiler: &OsStr,
     zig_cc: bool,
@@ -158,11 +161,11 @@ fn discovery_output(command: &mut std::process::Command) -> Result<Option<Vec<u8
 #[cfg(all(target_os = "macos", feature = "c-import", unix))]
 fn complete_sdk(flags: &mut Vec<OsString>) -> Result<(), String> {
     if flags.iter().any(|flag| {
-        flag.to_str().is_some_and(|flag| {
-            matches!(flag, "-isysroot" | "--sysroot" | "-target" | "--target")
-                || flag.starts_with("--sysroot=")
-                || flag.starts_with("--target=")
-        })
+        let flag = flag.as_encoded_bytes();
+        matches!(flag, b"--sysroot" | b"-target" | b"--target")
+            || flag.starts_with(b"-isysroot")
+            || flag.starts_with(b"--sysroot=")
+            || flag.starts_with(b"--target=")
     }) {
         return Ok(());
     }
@@ -190,4 +193,32 @@ fn complete_sdk(flags: &mut Vec<OsString>) -> Result<(), String> {
 #[cfg(not(all(target_os = "macos", feature = "c-import", unix)))]
 fn complete_sdk(_: &mut Vec<OsString>) -> Result<(), String> {
     Ok(())
+}
+
+#[cfg(all(test, target_os = "macos", feature = "c-import", unix))]
+mod tests {
+    use super::*;
+    use std::os::unix::ffi::OsStringExt;
+
+    #[test]
+    fn joined_explicit_sdk_paths_are_not_completed() {
+        for argument in [
+            OsString::from("-isysroot/chosen-sdk"),
+            OsString::from_vec(b"-isysroot/chosen-sdk \xff".to_vec()),
+        ] {
+            let mut flags = vec![argument];
+            let original = flags.clone();
+            complete_sdk(&mut flags).unwrap();
+            assert_eq!(flags, original, "explicit SDK must be passed unchanged");
+        }
+    }
+    #[test]
+    fn joined_resource_directory_detection_preserves_raw_path_bytes() {
+        assert!(explicit_resource_directory(&[OsString::from_vec(
+            b"-resource-dir=/chosen-resource \xff".to_vec(),
+        )]));
+        assert!(!explicit_resource_directory(&[
+            "-resource-dir/chosen-resource".into()
+        ]));
+    }
 }

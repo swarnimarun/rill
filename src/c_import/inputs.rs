@@ -44,11 +44,9 @@ pub fn search_dependencies(
                     .next()
                     .ok_or_else(|| error("missing sysroot operand"))?,
             ));
-        } else if let Some(value) = option.to_str().and_then(|s| {
-            s.strip_prefix("--sysroot=")
-                .or_else(|| s.strip_prefix("-isysroot="))
-                .or_else(|| s.strip_prefix("-isysroot"))
-        }) {
+        } else if let Some(value) =
+            strip_os_prefix(option, "--sysroot=").or_else(|| strip_os_prefix(option, "-isysroot"))
+        {
             if value.is_empty() {
                 return Err(error("empty sysroot operand"));
             }
@@ -85,10 +83,7 @@ pub fn search_dependencies(
                 .next()
                 .ok_or_else(|| error("missing resource-directory operand"))?;
             add(PathBuf::from(path).join("include"));
-        } else if let Some(path) = option
-            .to_str()
-            .and_then(|s| s.strip_prefix("-resource-dir="))
-        {
+        } else if let Some(path) = strip_os_prefix(option, "-resource-dir=") {
             if path.is_empty() {
                 return Err(error("empty resource-directory operand"));
             }
@@ -532,5 +527,29 @@ mod tests {
         let result = directory_fingerprint(&root, &mut (MAX_DIRECTORY_ENTRIES - 2));
         fs::remove_dir_all(root).unwrap();
         assert!(result.unwrap_err().message.contains("traversal limit"));
+    }
+    #[cfg(unix)]
+    #[test]
+    fn joined_search_roots_preserve_non_utf8_path_bytes() {
+        use std::os::unix::ffi::OsStringExt;
+        let sysroot = OsString::from_vec(b"/chosen-sdk \xff".to_vec());
+        let resource = OsString::from_vec(b"/chosen-resource \xfe".to_vec());
+        let mut sdk_flag = OsString::from("-isysroot");
+        sdk_flag.push(&sysroot);
+        let mut resource_flag = OsString::from("-resource-dir=");
+        resource_flag.push(&resource);
+        let paths =
+            search_dependencies(&[sdk_flag, "-I=include".into(), resource_flag], &[]).unwrap();
+        assert!(paths.contains(&PathBuf::from(sysroot).join("include")));
+        assert!(paths.contains(&PathBuf::from(resource).join("include")));
+        // Clang's joined spelling retains an initial '=' in the operand.
+        let literal =
+            search_dependencies(&["-isysroot=/chosen-sdk".into(), "-I=include".into()], &[])
+                .unwrap();
+        assert!(literal.contains(
+            &std::env::current_dir()
+                .unwrap()
+                .join("=/chosen-sdk/include")
+        ));
     }
 }
