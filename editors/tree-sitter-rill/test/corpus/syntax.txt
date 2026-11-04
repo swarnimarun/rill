@@ -1,0 +1,868 @@
+==================
+Functions, blocks and loans
+==================
+fn bump(inout p: Point, read amount,) { p.x <- p.x + amount }
+fn main() {
+    let mut p = record Point { x = 0; y = 1 };
+    while p.x < 42 { bump(inout p, 1); };
+    if p.x == 42 { p.x } else { 0 }
+}
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))))
+      (parameter
+        (identifier)))
+    (block
+      (assignment_expression
+        (field_expression
+          (identifier)
+          (identifier))
+        (binary_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (identifier)))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (local_binding
+        (identifier)
+        (record_expression
+          (qualified_identifier
+            (identifier))
+          (record_field
+            (identifier)
+            (integer))
+          (record_field
+            (identifier)
+            (integer))))
+      (expression_statement
+        (while_expression
+          (binary_expression
+            (field_expression
+              (identifier)
+              (identifier))
+            (integer))
+          (block
+            (expression_statement
+              (call_expression
+                (qualified_identifier
+                  (identifier))
+                (arguments
+                  (inout_argument
+                    (identifier))
+                  (integer)))))))
+      (if_expression
+        (binary_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (integer))
+        (block
+          (field_expression
+            (identifier)
+            (identifier)))
+        (block
+          (integer))))))
+
+==================
+Native declarations and modules
+==================
+@include("SDL3/SDL.h");
+@link("SDL3");
+@pkg_config("sdl3");
+import helpers.math as math;
+export extern const SDL_INIT_VIDEO: u32;
+export extern fn SDL_CreateWindow(title: cstr, w: i32, h: i32, flags: u64) -> ptr<SDL_Window>;
+extern fn inspect(value: const_ptr<Thing>) -> bool;
+export fn main() { not math.ready() }
+---
+
+(source_file
+  (native_directive
+    (string
+      (string_content)))
+  (native_directive
+    (string
+      (string_content)))
+  (native_directive
+    (string
+      (string_content)))
+  (import_declaration
+    (qualified_identifier
+      (identifier)
+      (identifier))
+    (identifier))
+  (extern_constant_declaration
+    (identifier)
+    (foreign_type))
+  (extern_function_declaration
+    (identifier)
+    (extern_parameter
+      (identifier)
+      (foreign_type))
+    (extern_parameter
+      (identifier)
+      (foreign_type))
+    (extern_parameter
+      (identifier)
+      (foreign_type))
+    (extern_parameter
+      (identifier)
+      (foreign_type))
+    (foreign_type
+      (type_identifier
+        (identifier))))
+  (extern_function_declaration
+    (identifier)
+    (extern_parameter
+      (identifier)
+      (foreign_type
+        (type_identifier
+          (identifier))))
+    (foreign_type))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (unary_expression
+        (call_expression
+          (qualified_identifier
+            (identifier)
+            (identifier))
+          (arguments))))))
+
+==================
+Types, records and patterns
+==================
+type Option<a> = | None | Some(a);
+type Point = { x: i32; y: i32; }
+type Nested<a> = Nest(Option<Option<a>>)
+fn get(value) { match value { Some(Some(x)) => x | Some(None) => -1 | None => 0 } }
+fn main() { match true { (true) => get(Some(Some(42))) | false => 0 } }
+---
+
+(source_file
+  (type_declaration
+    (type_identifier
+      (identifier))
+    (type_parameters
+      (type_identifier
+        (identifier)))
+    (variant_list
+      (variant
+        (identifier))
+      (variant
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))))))
+  (type_declaration
+    (type_identifier
+      (identifier))
+    (record_type
+      (field_declaration
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))))
+      (field_declaration
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))))))
+  (type_declaration
+    (type_identifier
+      (identifier))
+    (type_parameters
+      (type_identifier
+        (identifier)))
+    (variant_list
+      (variant
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))
+          (type_expression
+            (type_identifier
+              (identifier))
+            (type_expression
+              (type_identifier
+                (identifier))))))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)))
+    (block
+      (match_expression
+        (identifier)
+        (match_arm
+          (constructor_pattern
+            (qualified_identifier
+              (identifier))
+            (constructor_pattern
+              (qualified_identifier
+                (identifier))
+              (identifier)))
+          (identifier))
+        (match_arm
+          (constructor_pattern
+            (qualified_identifier
+              (identifier))
+            (identifier))
+          (unary_expression
+            (integer)))
+        (match_arm
+          (identifier)
+          (integer)))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (match_expression
+        (boolean)
+        (match_arm
+          (parenthesized_pattern
+            (boolean))
+          (call_expression
+            (qualified_identifier
+              (identifier))
+            (arguments
+              (call_expression
+                (qualified_identifier
+                  (identifier))
+                (arguments
+                  (call_expression
+                    (qualified_identifier
+                      (identifier))
+                    (arguments
+                      (integer))))))))
+        (match_arm
+          (boolean)
+          (integer))))))
+
+==================
+Legacy expression syntax
+==================
+let inspect (read x) = x
+let update (inout n: i32) amount = n <- n + amount
+let main = let mut n = 0 in let done = while n < 2 do update(inout n, 1) in if n == 2 then 42 else 0
+---
+
+(source_file
+  (legacy_function_declaration
+    (identifier)
+    (legacy_parameter
+      (identifier))
+    (identifier))
+  (legacy_function_declaration
+    (identifier)
+    (legacy_parameter
+      (identifier)
+      (type_expression
+        (type_identifier
+          (identifier))))
+    (legacy_parameter
+      (identifier))
+    (assignment_expression
+      (identifier)
+      (binary_expression
+        (identifier)
+        (identifier))))
+  (legacy_function_declaration
+    (identifier)
+    (let_expression
+      (identifier)
+      (integer)
+      (let_expression
+        (identifier)
+        (while_expression
+          (binary_expression
+            (identifier)
+            (integer))
+          (call_expression
+            (qualified_identifier
+              (identifier))
+            (arguments
+              (inout_argument
+                (identifier))
+              (integer))))
+        (if_expression
+          (binary_expression
+            (identifier)
+            (integer))
+          (integer)
+          (integer))))))
+
+==================
+Negation, strings and ownership
+==================
+// Characters and escapes stay in their literal nodes.
+fn main() {
+    let owner = system_box_i32_abort(42);
+    let moved = move owner;
+    let text = "hé\0\n\"\\";
+    let ctext = c"SDL\twindow";
+    if not false && !!true || !false { box_read(moved) } else { 0 }
+}
+---
+
+(source_file
+  (comment)
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (local_binding
+        (identifier)
+        (call_expression
+          (qualified_identifier
+            (identifier))
+          (arguments
+            (integer))))
+      (local_binding
+        (identifier)
+        (move_expression
+          (identifier)))
+      (local_binding
+        (identifier)
+        (string
+          (string_content)
+          (escape_sequence)
+          (escape_sequence)
+          (escape_sequence)
+          (escape_sequence)))
+      (local_binding
+        (identifier)
+        (c_string
+          (c_string_content)
+          (c_escape_sequence)
+          (c_string_content)))
+      (if_expression
+        (binary_expression
+          (binary_expression
+            (unary_expression
+              (boolean))
+            (unary_expression
+              (unary_expression
+                (boolean))))
+          (unary_expression
+            (boolean)))
+        (block
+          (call_expression
+            (qualified_identifier
+              (identifier))
+            (arguments
+              (identifier))))
+        (block
+          (integer))))))
+
+==================
+Precedence and assignment
+==================
+fn main() {
+    let mut x = 1;
+    x <- 2 + 3 * 4;
+    not (x == -1) && x >= 0 || x != 1
+}
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (local_binding
+        (identifier)
+        (integer))
+      (expression_statement
+        (assignment_expression
+          (identifier)
+          (binary_expression
+            (integer)
+            (binary_expression
+              (integer)
+              (integer)))))
+      (binary_expression
+        (binary_expression
+          (unary_expression
+            (parenthesized_expression
+              (binary_expression
+                (identifier)
+                (unary_expression
+                  (integer)))))
+          (binary_expression
+            (identifier)
+            (integer)))
+        (binary_expression
+          (identifier)
+          (integer))))))
+
+==================
+Braced conditionals without else
+==================
+fn bump(inout value) {
+    if value < 42 { value <- value + 1; };
+    if value == 42 { if not false { () }; };
+    if false { () } else { () }
+}
+fn main() { let mut value = 41; bump(inout value); value }
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)))
+    (block
+      (expression_statement
+        (if_expression
+          (binary_expression
+            (identifier)
+            (integer))
+          (block
+            (expression_statement
+              (assignment_expression
+                (identifier)
+                (binary_expression
+                  (identifier)
+                  (integer)))))))
+      (expression_statement
+        (if_expression
+          (binary_expression
+            (identifier)
+            (integer))
+          (block
+            (expression_statement
+              (if_expression
+                (unary_expression
+                  (boolean))
+                (block
+                  (unit)))))))
+      (if_expression
+        (boolean)
+        (block
+          (unit))
+        (block
+          (unit)))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (local_binding
+        (identifier)
+        (integer))
+      (expression_statement
+        (call_expression
+          (qualified_identifier
+            (identifier))
+          (arguments
+            (inout_argument
+              (identifier)))))
+      (identifier))))
+
+==================
+Lambdas and expression callees
+==================
+fn main() {
+    let apply = fn(read x: Option<Option<i32>>, inout y, z,) { z };
+    fn(x) { x }(1);
+    (fn(x) { x })(1)(2);
+    (if true { f } else { g })(1);
+    { f }(1);
+    foo.bar.baz()
+}
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (local_binding
+        (identifier)
+        (lambda_expression
+          (parameters
+            (parameter
+              (identifier)
+              (type_expression
+                (type_identifier
+                  (identifier))
+                (type_expression
+                  (type_identifier
+                    (identifier))
+                  (type_expression
+                    (type_identifier
+                      (identifier))))))
+            (parameter
+              (identifier))
+            (parameter
+              (identifier)))
+          (block
+            (identifier))))
+      (expression_statement
+        (apply_expression
+          (lambda_expression
+            (parameters
+              (parameter
+                (identifier)))
+            (block
+              (identifier)))
+          (arguments
+            (integer))))
+      (expression_statement
+        (apply_expression
+          (apply_expression
+            (parenthesized_expression
+              (lambda_expression
+                (parameters
+                  (parameter
+                    (identifier)))
+                (block
+                  (identifier))))
+            (arguments
+              (integer)))
+          (arguments
+            (integer))))
+      (expression_statement
+        (apply_expression
+          (parenthesized_expression
+            (if_expression
+              (boolean)
+              (block
+                (identifier))
+              (block
+                (identifier))))
+          (arguments
+            (integer))))
+      (expression_statement
+        (apply_expression
+          (block
+            (identifier))
+          (arguments
+            (integer))))
+      (apply_expression
+        (field_expression
+          (identifier)
+          (identifier)
+          (identifier))
+        (arguments)))))
+
+==================
+Whitespace application and adjacent argument calls
+==================
+fn main() {
+    f x y;
+    f x(y);
+    f x (y);
+    f x(y)(z);
+    f (x);
+    (f) x;
+    m.f x;
+    f fn(x){x}(2);
+    f -1;
+    f (-1);
+    1 2
+}
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (expression_statement
+        (application_expression
+          (identifier)
+          (identifier)
+          (identifier)))
+      (expression_statement
+        (application_expression
+          (identifier)
+          (call_expression
+            (qualified_identifier
+              (identifier))
+            (arguments
+              (identifier)))))
+      (expression_statement
+        (application_expression
+          (identifier)
+          (identifier)
+          (parenthesized_expression
+            (identifier))))
+      (expression_statement
+        (application_expression
+          (identifier)
+          (apply_expression
+            (call_expression
+              (qualified_identifier
+                (identifier))
+              (arguments
+                (identifier)))
+            (arguments
+              (identifier)))))
+      (expression_statement
+        (call_expression
+          (qualified_identifier
+            (identifier))
+          (arguments
+            (identifier))))
+      (expression_statement
+        (application_expression
+          (parenthesized_expression
+            (identifier))
+          (identifier)))
+      (expression_statement
+        (application_expression
+          (field_expression
+            (identifier)
+            (identifier))
+          (identifier)))
+      (expression_statement
+        (application_expression
+          (identifier)
+          (apply_expression
+            (lambda_expression
+              (parameters
+                (parameter
+                  (identifier)))
+              (block
+                (identifier)))
+            (arguments
+              (integer)))))
+      (expression_statement
+        (binary_expression
+          (identifier)
+          (integer)))
+      (expression_statement
+        (call_expression
+          (qualified_identifier
+            (identifier))
+          (arguments
+            (unary_expression
+              (integer)))))
+      (application_expression
+        (integer)
+        (integer)))))
+
+==================
+Function operator precedence and associativity
+==================
+fn main() {
+    x |> f |> g;
+    f <| g <| x;
+    x || y |> f;
+    a && f >> g == h;
+    f << g << h;
+    f <| x |> g
+}
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (expression_statement
+        (function_operator_expression
+          (function_operator_expression
+            (identifier)
+            (identifier))
+          (identifier)))
+      (expression_statement
+        (function_operator_expression
+          (identifier)
+          (function_operator_expression
+            (identifier)
+            (identifier))))
+      (expression_statement
+        (function_operator_expression
+          (binary_expression
+            (identifier)
+            (identifier))
+          (identifier)))
+      (expression_statement
+        (binary_expression
+          (identifier)
+          (function_operator_expression
+            (identifier)
+            (binary_expression
+              (identifier)
+              (identifier)))))
+      (expression_statement
+        (function_operator_expression
+          (function_operator_expression
+            (identifier)
+            (identifier))
+          (identifier)))
+      (function_operator_expression
+        (identifier)
+        (function_operator_expression
+          (identifier)
+          (identifier))))))
+
+==================
+Composition and nested generic closers
+==================
+fn inspect(x: Option<Option<i32>>) { x }
+fn main() {
+    let transform = fn(x: Option<Option<i32>>) { x };
+    f<<g // composition remains adjacent
+    >>h
+}
+---
+
+(source_file
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))
+          (type_expression
+            (type_identifier
+              (identifier))
+            (type_expression
+              (type_identifier
+                (identifier)))))))
+    (block
+      (identifier)))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (block
+      (local_binding
+        (identifier)
+        (lambda_expression
+          (parameters
+            (parameter
+              (identifier)
+              (type_expression
+                (type_identifier
+                  (identifier))
+                (type_expression
+                  (type_identifier
+                    (identifier))
+                  (type_expression
+                    (type_identifier
+                      (identifier)))))))
+          (block
+            (identifier))))
+      (function_operator_expression
+        (function_operator_expression
+          (identifier)
+          (identifier))
+        (comment)
+        (identifier)))))
+
+==================
+Closed named-function result annotations
+==================
+import shapes as s;
+type Wrap<a> = Wrap(a)
+export fn answer() -> i32 { 42 }
+fn wrap(value) -> Wrap<i32> { Wrap(value) }
+fn qualified(value: s.Point) -> s.Point { value }
+fn raw(value: const_ptr<Opaque>) -> const_ptr<Opaque> { value }
+fn finish() -> unit { () }
+---
+
+(source_file
+  (import_declaration
+    (qualified_identifier
+      (identifier))
+    (identifier))
+  (type_declaration
+    (type_identifier
+      (identifier))
+    (type_parameters
+      (type_identifier
+        (identifier)))
+    (variant_list
+      (variant
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))))))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (type_expression
+      (type_identifier
+        (identifier)))
+    (block
+      (integer)))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)))
+    (type_expression
+      (type_identifier
+        (identifier))
+      (type_expression
+        (type_identifier
+          (identifier))))
+    (block
+      (call_expression
+        (qualified_identifier
+          (identifier))
+        (arguments
+          (identifier)))))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))
+          (type_identifier
+            (identifier)))))
+    (type_expression
+      (type_identifier
+        (identifier))
+      (type_identifier
+        (identifier)))
+    (block
+      (identifier)))
+  (function_declaration
+    (identifier)
+    (parameters
+      (parameter
+        (identifier)
+        (type_expression
+          (type_identifier
+            (identifier))
+          (type_expression
+            (type_identifier
+              (identifier))))))
+    (type_expression
+      (type_identifier
+        (identifier))
+      (type_expression
+        (type_identifier
+          (identifier))))
+    (block
+      (identifier)))
+  (function_declaration
+    (identifier)
+    (parameters)
+    (type_expression
+      (type_identifier
+        (identifier)))
+    (block
+      (unit))))

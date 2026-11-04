@@ -1,0 +1,46 @@
+(function_declaration) @local.scope
+(legacy_function_declaration) @local.scope
+(lambda_expression) @local.scope
+(block) @local.scope
+(let_expression) @local.scope
+(match_arm) @local.scope
+(parameter name: (identifier) @local.definition)
+(legacy_parameter name: (identifier) @local.definition)
+(local_binding name: (identifier) @local.definition)
+(let_expression name: (identifier) @local.definition)
+((match_arm pattern: (identifier) @local.definition)
+  (#match? @local.definition "^[a-z][A-Za-z0-9_]*$"))
+((constructor_pattern (identifier) @local.definition)
+  (#match? @local.definition "^[a-z][A-Za-z0-9_]*$"))
+((parenthesized_pattern (identifier) @local.definition)
+  (#match? @local.definition "^[a-z][A-Za-z0-9_]*$"))
+; Capture expression names only. Field labels, type names and module members
+; must not inherit a same-spelled local variable's highlight.
+(block (identifier) @local.reference)
+(legacy_function_declaration body: (identifier) @local.reference)
+(local_binding value: (identifier) @local.reference)
+(let_expression value: (identifier) @local.reference)
+(let_expression body: (identifier) @local.reference)
+(expression_statement (identifier) @local.reference)
+(if_expression condition: (identifier) @local.reference)
+(if_expression consequence: (identifier) @local.reference)
+(if_expression alternative: (identifier) @local.reference)
+(while_expression condition: (identifier) @local.reference)
+(while_expression body: (identifier) @local.reference)
+(match_expression value: (identifier) @local.reference)
+(match_arm body: (identifier) @local.reference)
+(assignment_expression left: (identifier) @local.reference)
+(assignment_expression right: (identifier) @local.reference)
+(binary_expression (identifier) @local.reference)
+(function_operator_expression (identifier) @local.reference)
+(unary_expression operand: (identifier) @local.reference)
+(parenthesized_expression (identifier) @local.reference)
+(call_expression function: (qualified_identifier . (identifier) @local.reference .))
+(call_expression function: (qualified_identifier . (identifier) @local.reference "."))
+(field_expression root: (identifier) @local.reference)
+(application_expression (identifier) @local.reference)
+(apply_expression function: (identifier) @local.reference)
+(arguments (identifier) @local.reference)
+(inout_argument (identifier) @local.reference)
+(move_expression (identifier) @local.reference)
+(record_field value: (identifier) @local.reference)

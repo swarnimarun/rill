@@ -1,0 +1,12 @@
+{
+  "name": "tree-sitter-rill",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Tree-sitter syntax grammar and highlights for experimental Rill",
+  "scripts": {
+    "generate": "tree-sitter generate --abi 15",
+    "test": "python3 scripts/verify.py",
+    "check-generated": "python3 scripts/verify.py --check-generated"
+  },
+  "files": ["grammar.js", "tree-sitter.json", "queries", "src"]
+}
