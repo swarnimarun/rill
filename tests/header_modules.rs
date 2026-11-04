@@ -376,7 +376,7 @@ impl Drop for Fixture {
 
 #[test]
 fn request_discovery_respects_lexical_bindings_constructors_and_field_labels() {
-    let fixture = Fixture::new("@include(\"api.h\"); type Item = { field: i32 } type Choice = Some(i32) | None fn identity(value) { value } fn main() { let local = 3; let holder = record Item { field = local }; let closure = local; let result = match Some(1) { Some(bound) => bound | None => 0 }; identity(holder.field) + closure + result + native_value + native_add(20,22) }");
+    let fixture = Fixture::new("@include(\"api.h\"); type Item = { field: i32 } type Choice = Some(i32) | None fn identity(value) { value } fn main() { let local = 3; let holder = record Item { field = local }; let closure = fn(arg) { arg + local }; let result = match Some(1) { Some(bound) => bound | None => 0 }; identity(holder.field) + closure(result) + native_value + native_add(20,22) }");
     let requests = headers::requests(&fixture.graph()).unwrap();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].names, ["native_add", "native_value"]);
@@ -399,7 +399,7 @@ fn imported_consumer_requests_are_owned_by_the_header_module() {
 
 #[test]
 fn nested_bindings_do_not_leak_into_later_header_reference_discovery() {
-    let fixture = Fixture::new("@include(\"api.h\"); fn main() { let run = { let native_add = 1; native_add }; let value = { let native_value = 2; native_value }; native_add(value, native_value) }");
+    let fixture = Fixture::new("@include(\"api.h\"); fn main() { let run = fn(native_add) { native_add(1) }; let value = { let native_value = 2; native_value }; native_add(value, native_value) }");
     let names = &headers::requests(&fixture.graph()).unwrap()[0].names;
     assert_eq!(names, &["native_add", "native_value"]);
 }

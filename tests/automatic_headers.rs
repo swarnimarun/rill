@@ -204,3 +204,12 @@ fn an_explicit_clang_resource_directory_is_not_overridden_by_discovery() {
     succeeds(&output);
     assert_eq!(output.stdout, b"42\n");
 }
+
+#[test]
+fn automatic_calls_in_callable_bodies_use_checked_native_lowering() {
+    let fixture = Fixture::new("callable-native");
+    fs::write(fixture.0.join("main.rill"), "@include(\"api.h\"); fn main() { let add = fn(value) { api_add(value, 1) }; let twice = add >> add; twice(40) }").unwrap();
+    let output = fixture.run();
+    succeeds(&output);
+    assert_eq!(output.stdout, b"42\n");
+}

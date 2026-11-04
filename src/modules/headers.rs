@@ -223,6 +223,11 @@ impl Uses<'_, '_> {
                         Work::Expression(value),
                     ]);
                 }
+                Expr::Lambda(parameters, body) => {
+                    work.extend(parameters.iter().map(|p| Work::Pop(&p.name)));
+                    work.push(Work::Expression(body));
+                    work.extend(parameters.iter().rev().map(|p| Work::Push(&p.name)));
+                }
                 Expr::Match(value, arms) => {
                     for arm in arms.iter().rev() {
                         let mut patterns = vec![&arm.pattern];
@@ -243,10 +248,16 @@ impl Uses<'_, '_> {
                     }
                     work.push(Work::Expression(value));
                 }
+                Expr::Apply(callee, args) => {
+                    work.extend(args.iter().rev().map(Work::Expression));
+                    work.push(Work::Expression(callee));
+                }
                 Expr::Record(_, fields) => {
                     work.extend(fields.iter().rev().map(|(_, e)| Work::Expression(e)))
                 }
-                Expr::Binary(_, left, right) | Expr::While(left, right) => {
+                Expr::Binary(_, left, right)
+                | Expr::FunctionOp(_, left, right)
+                | Expr::While(left, right) => {
                     work.extend([Work::Expression(right), Work::Expression(left)])
                 }
                 Expr::If(condition, yes, no) => work.extend([
