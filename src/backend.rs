@@ -16,8 +16,11 @@ const RUNTIME: &str = r#"#include <stdint.h>
 #include <arm_neon.h>
 #endif
 
-typedef struct { int tag; int32_t value; size_t size; const unsigned char *text; size_t len; uint32_t data; uint64_t wide; float real; const void *pointer; } rl_node;
-typedef struct { int tag; int32_t value; size_t size; const unsigned char *text; size_t len; uint64_t wide; float real; const void *pointer; rl_node nodes[RL_CAP]; } rl_value;
+/* The tag determines the active payload. A byte/vector word uses data, a
+   string uses text/len, and native scalars/pointers use their matching member.
+   Keeping these mutually exclusive fields in a union reduces value copies. */
+typedef struct { int tag; int32_t value; size_t size; union { uint32_t data; struct { const unsigned char *text; size_t len; }; uint64_t wide; float real; const void *pointer; }; } rl_node;
+typedef struct { int tag; int32_t value; size_t size; union { uint32_t data; struct { const unsigned char *text; size_t len; }; uint64_t wide; float real; const void *pointer; }; rl_node nodes[RL_CAP]; } rl_value;
 static rl_value rl_make(int tag, int32_t value) { rl_value v = {0}; v.tag = tag; v.value = value; return v; }
 static void rl_trap(void) { fputs("rill: runtime trap\n", stderr); exit(1); }
 static rl_value rl_ffi_u(int tag, uint64_t n) { rl_value v = rl_make(tag, 0); v.wide = n; return v; }
@@ -107,7 +110,12 @@ static rl_value rl_u8x16_all(rl_value v) { for (int32_t i = 0; i < 16; ++i) if (
 static void rl_append(rl_value *parent, rl_value child) {
     if (child.size >= RL_CAP || parent->size > RL_CAP - child.size - 1) rl_trap();
     size_t i = parent->size;
-    parent->nodes[i] = (rl_node){ child.tag, child.value, child.size, child.text, child.len, 0, child.wide, child.real, child.pointer };
+    rl_node root = {0}; root.tag = child.tag; root.value = child.value; root.size = child.size;
+    if (child.tag == 4) { root.text = child.text; root.len = child.len; }
+    else if (child.tag >= 8 && child.tag <= 10) root.wide = child.wide;
+    else if (child.tag == 11) root.real = child.real;
+    else if (child.tag == 12) root.pointer = child.pointer;
+    parent->nodes[i] = root;
     for (size_t j = 0; j < child.size; ++j) parent->nodes[i + 1 + j] = child.nodes[j];
     parent->size += child.size + 1;
 }
@@ -119,7 +127,11 @@ static rl_value rl_child(rl_value parent, size_t child) {
     }
     if (i >= parent.size || parent.nodes[i].size >= parent.size - i) rl_trap();
     rl_node root = parent.nodes[i];
-    rl_value v = rl_make(root.tag, root.value); v.size = root.size; v.text = root.text; v.len = root.len; v.wide = root.wide; v.real = root.real; v.pointer = root.pointer;
+    rl_value v = rl_make(root.tag, root.value); v.size = root.size;
+    if (root.tag == 4) { v.text = root.text; v.len = root.len; }
+    else if (root.tag >= 8 && root.tag <= 10) v.wide = root.wide;
+    else if (root.tag == 11) v.real = root.real;
+    else if (root.tag == 12) v.pointer = root.pointer;
     for (size_t j = 0; j < root.size; ++j) v.nodes[j] = parent.nodes[i + 1 + j];
     return v;
 }
