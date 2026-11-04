@@ -396,7 +396,9 @@ remain open.
 
 ## Local compiler and editor integration
 
-The current work is being ported onto `v1-ernie` in small verified slices.
+The local compiler/editor work is ported onto `v1-ernie` in small verified
+slices. Full default/minimal suites, required real GPU checks and final editor
+workflows passed; see the exact results and capability skips below.
 The upstream typed-native, configuration, logical-layout, signature and
 projection checks remain the foundation. The port adds Copy callables,
 boolean negation, unit-valued omitted `else`, automatic referenced-header

@@ -38,9 +38,9 @@ language or complete a delivery phase in PLAN.md.
 - [x] Port SDL lifecycle handling and portable capture, retaining the matrix.
 - [x] Port the CPU voxel reference, then the cohesive GPU demo.
 - [x] Reconcile current documentation without deleting upstream evidence.
-- [ ] Run the integrated verification gates and review all retained changes.
-- [ ] Audit the decision trail with a different model family.
-- [ ] Push the verified slices and update the working checkout safely.
+- [x] Run the integrated verification gates and review all retained changes.
+- [x] Audit the decision trail with a different model family.
+- [x] Push the verified slices and update the working checkout safely.
 
 ## Workflow
 
@@ -68,4 +68,15 @@ The isolated upstream run reproduced host launch-deadline and raw-filename
 capability failures. It was stopped with evidence retained while the complete
 integrated default/minimal suites run on frozen functional source `f105d7d`.
 A test-only handshake separates bounded macOS startup from existing execution
-deadlines. Full acceptance and final editor workflow checks remain pending.
+deadlines. Both full feature modes and final editor workflows passed. Their counts,
+capability skips and the test-only filename correction are recorded in the
+integration report.
+
+## Independent final review
+
+A different model family, `gpt-6-astra`, reviewed the final decision trail, Git
+state and retained verification artifacts. It verified both full-mode totals,
+required GPU execution, lint/format results, editor evidence and protected
+canonical/archive history. No unresolved findings remained. The original
+conversation transcript was unavailable to that reviewer; supplied task
+messages, Git and logs were used.

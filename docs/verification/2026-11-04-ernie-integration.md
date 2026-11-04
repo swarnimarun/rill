@@ -1,11 +1,12 @@
 # Integration onto v1-ernie
 
-This is a running verification record for the port from archive snapshot
+The implementation port and its full acceptance checks are complete. This
+record covers archive snapshot
 `69277817ff0408c44dacb723bb1edc20da86159d` onto upstream
 `c3f41ef6027033553bd19202bbf457e5d9a3c9d1`.
 The [plan](../superpowers/plans/2026-11-04-ernie-integration.md) and
-[decision trail](2026-11-04-ernie-decisions.tsv) distinguish completed slices
-from remaining work. Earlier reports retain their original checkpoint scope.
+[decision trail](2026-11-04-ernie-decisions.tsv) record the retained and adapted
+slices. Earlier reports retain their original checkpoint scope.
 
 ## Compiler-action validation
 
@@ -58,12 +59,11 @@ that configuration. Those exact flags now reach header extraction, C emission
 and compilation, and are retained in the manifest. The successful capture
 does not establish hardware-renderer or physical-input support.
 
-## Open verification
+## Acceptance scope
 
-The functional port is committed and both integrated full suites are running
-on its frozen source. The final Helix workflow passed after the harness correction described below.
-The stopped upstream baseline is described below. No delivery phase is marked
-complete by these slices.
+Both complete feature modes passed with real GPU requirements enabled. Final
+counts and commands are below. These results cover this implementation port;
+no language delivery phase or stable release is declared complete.
 
 ## Boolean syntax and SDL lifecycle
 
@@ -137,12 +137,13 @@ execution path. The explicit manual binding fixture remains for minimal builds.
 
 ## Frozen integrated gate
 
-Functional source `f105d7d` is checked in a separate immutable checkout.
+Functional source `f105d7d` was frozen in a separate checkout; final default
+fixture source is `b758366`. Compiler/library source is identical.
 Formatting and strict all-target Clippy passed in default and minimal modes.
 The full suites use distinct Cargo target directories and two test threads to
 limit concurrent native compiler launches. On this macOS host, SDKROOT is set
 to the active SDK. Required GPU and 256-cubed checks are enabled in both runs.
-The full results remain pending.
+Both complete results are recorded below.
 
 The independent reviewer found a joined `-isysroot/path` override bug. The fix
 recognizes encoded SDK/resource prefixes, preserves raw path bytes and input
@@ -245,4 +246,48 @@ The two filesystem filename cases report capability skips; they are included
 in Cargo's passing-test count. The later guard changes are inside the disabled
 importer-only test modules, and compiler/library source is unchanged. Both
 strict Clippy modes and formatting passed again on final fixture source
-`b758366`. The corrected complete default run is still pending.
+`b758366`. The corrected complete default run also finished successfully, as below.
+
+## Complete integrated acceptance
+
+Both commands returned exit status zero. Runs used the active macOS SDK,
+distinct Cargo target directories, `RILL_REQUIRE_GPU=1` and
+`RILL_TEST_GPU_256=1`. All required SDL/GPU checks executed successfully.
+
+| Gate | Result |
+| --- | --- |
+| `cargo test --locked --no-fail-fast -- --test-threads=2` on `b758366` | 1,378 reported passing results; zero failures, ignored or filtered tests |
+| `cargo test --locked --no-default-features --no-fail-fast -- --test-threads=2` on `f105d7d` | 1,301 reported passing results; zero failures, ignored or filtered tests |
+| `cargo fmt --all -- --check` on `b758366` | Passed |
+| `cargo clippy --locked --all-targets -- -D warnings` on `b758366` | Passed |
+| `cargo clippy --locked --no-default-features --all-targets -- -D warnings` on `b758366` | Passed |
+
+Both full modes report zero Rust warnings and include their zero-test doctest
+target. Passing-result counts include runtime capability returns: four distinct
+macOS raw-filename checks in default mode and two in minimal mode. These
+filesystem behaviors remain unverified here. No required GPU, SDL or final
+editor check was skipped. The two later importer guard changes are disabled
+in minimal mode; all active compiler/library code is identical across the
+recorded source checkpoints.
+
+Final full logs and machine-readable summaries are retained locally as
+`/tmp/rill-ernie-full-default-final.log`,
+`/tmp/rill-ernie-full-default-result.json`,
+`/tmp/rill-ernie-full-minimal-host.log` and
+`/tmp/rill-ernie-full-minimal-result.json`. The final editor command/artifact
+manifest is `/tmp/rill-ernie-editor-verification-final.json`. Failed preliminary
+logs remain separate; their results are not counted as successful acceptance.
+
+The accepted implementation still has the documented experimental boundaries,
+including Copy-only callables, unsupported mixed callable/logical-layout
+conversion cases, bounded optional typed-origin coverage and unchecked foreign
+resource lifetimes. Historical performance figures were not remeasured.
+Existing Helix sessions must restart to load the refreshed compiler/parser.
+
+## Independent final review
+
+`gpt-6-astra` independently checked the 134 result summaries in each full log,
+zero-failure exits, required GPU results, source equivalence across checkpoints,
+final Clippy/format checks, editor artifacts and temporary-head cleanup. No
+unresolved findings remained. The reviewer used supplied task messages, Git
+and retained artifacts; the original conversation transcript was unavailable.
