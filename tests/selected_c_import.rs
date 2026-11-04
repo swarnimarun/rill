@@ -612,8 +612,18 @@ int32_t selected_target(int32_t value);
 #[cfg(unix)]
 fn executable_script(fixture: &Fixture, name: &str, body: &str) -> PathBuf {
     use std::os::unix::fs::PermissionsExt;
-    let path = fixture.write(name, &format!("#!/bin/sh\n{body}\n"));
+    let path = fixture.write(
+        name,
+        &format!("#!/bin/sh\nif test \"$1\" = __rill-fixture-ready; then exit 0; fi\n{body}\n"),
+    );
     fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+    // Prime macOS executable checks before measuring a worker deadline.
+    #[cfg(target_os = "macos")]
+    assert!(Command::new(&path)
+        .arg("__rill-fixture-ready")
+        .status()
+        .unwrap()
+        .success());
     path
 }
 
@@ -750,7 +760,18 @@ fn isolated_import_preserves_non_utf8_include_paths_and_relative_cwd() {
     use std::os::unix::ffi::OsStringExt;
     let fixture = Fixture::new();
     let directory = fixture.0.join(OsString::from_vec(b"headers \xff".to_vec()));
-    fs::create_dir(&directory).unwrap();
+    if let Err(error) = fs::create_dir(&directory) {
+        if cfg!(target_os = "macos")
+            && matches!(
+                error.kind(),
+                std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput
+            )
+        {
+            eprintln!("SKIP selected C import non-UTF8 filesystem paths: create_dir rejected the raw-byte filename: {error}");
+            return;
+        }
+        panic!("cannot create non-UTF8 include directory: {error}");
+    }
     fs::copy(fixture.0.join("api.h"), directory.join("api.h")).unwrap();
     let compiler = executable_script(&fixture, "local compiler", "exec cc \"$@\"");
     let mut command = Command::new(env!("CARGO_BIN_EXE_rill"));

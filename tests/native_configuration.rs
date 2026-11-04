@@ -297,8 +297,22 @@ mod native {
         .unwrap();
     }
     fn script(path: &Path, source: &str) {
-        fs::write(path, format!("#!/bin/sh\n{source}\n")).unwrap();
+        fs::write(
+            path,
+            format!(
+                "#!/bin/sh\nif test \"$1\" = __rill-fixture-ready; then exit 0; fi\n{source}\n"
+            ),
+        )
+        .unwrap();
         fs::set_permissions(path, fs::Permissions::from_mode(0o700)).unwrap();
+        // Avoid measuring a newly written script's macOS executable checks as
+        // compiler execution. Production command deadlines remain unchanged.
+        #[cfg(target_os = "macos")]
+        assert!(Command::new(path)
+            .arg("__rill-fixture-ready")
+            .status()
+            .unwrap()
+            .success());
     }
 
     #[test]
@@ -598,7 +612,18 @@ mod native {
     fn non_utf8_include_and_compiler_paths_roundtrip_without_loss() {
         let f = Fixture::new();
         let include = f.0.join(OsString::from_vec(b"headers \xff".to_vec()));
-        fs::create_dir(&include).unwrap();
+        if let Err(error) = fs::create_dir(&include) {
+            if cfg!(target_os = "macos")
+                && matches!(
+                    error.kind(),
+                    std::io::ErrorKind::PermissionDenied | std::io::ErrorKind::InvalidInput
+                )
+            {
+                eprintln!("SKIP native configuration non-UTF8 filesystem paths: create_dir rejected the raw-byte filename: {error}");
+                return;
+            }
+            panic!("cannot create non-UTF8 include directory: {error}");
+        }
         fs::write(
             include.join("api.h"),
             "#include <stdint.h>\n#define VALUE INT32_C(42)\n",
