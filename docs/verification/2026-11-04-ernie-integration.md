@@ -59,3 +59,22 @@ The upstream baseline full suite is running separately. Its result is not yet
 an integrated acceptance claim. Compiler callables, automatic headers, editor
 support and demonstrations are still being ported. No delivery phase is marked
 complete by the slices above.
+
+## Boolean syntax and SDL lifecycle
+
+The negation/conditional slice is `c68dd13`. The integration rerun passed all
+44 tests across `boolean_not`, `boolean_not_source`, `conditional_if`,
+`ast_source_map`, `source_format` and `syntax_tree`. The slice owner's wider
+focused run passed 59 tests. Source result annotations remain accepted.
+
+The SDL lifecycle port retains upstream typed-emission checks and O0/O2 runs,
+and adds Zig coverage, draw-error propagation and exact cleanup traces.
+Fresh `sdl3_capture`, `sdl3_direct` and `sdl3_lifecycle` checks passed all five
+tests with real installed SDL3 and Zig, plus deterministic failure fixtures.
+The manual event constant now has its actual enum type, matching imported
+bindings; the game converts it once at the call.
+
+The initial upstream baseline run was stopped and restarted in a dedicated
+unmodified checkout when integration examples started changing. Tests read
+examples at runtime, so the earlier partial run cannot establish a baseline
+for the source being ported.

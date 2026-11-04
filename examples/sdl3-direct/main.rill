@@ -1,67 +1,80 @@
 // Click when the moving gold line is inside the green gate.
 import sdl;
 
-fn play(renderer: ptr<SDL_Renderer>) {
+fn draw_frame(renderer: ptr < SDL_Renderer >, x, score) {
+    let mut ready =
+    sdl.SDL_SetRenderDrawColor(renderer, u8(20), u8(24), u8(32), u8(255)) &&
+    sdl.SDL_RenderClear(renderer) &&
+    sdl.SDL_SetRenderDrawColor(renderer, u8(70), u8(210), u8(140), u8(255)) &&
+    sdl.SDL_RenderLine(renderer, f32(280), f32(120), f32(280), f32(300)) &&
+    sdl.SDL_RenderLine(renderer, f32(360), f32(120), f32(360), f32(300)) &&
+    sdl.SDL_SetRenderDrawColor(renderer, u8(250), u8(190), u8(60), u8(255)) &&
+    sdl.SDL_RenderLine(renderer, f32(x), f32(150), f32(x), f32(270));
+    // Each consecutive hit adds a gold segment along the bottom.
+    let mut mark = 0;
+    while ready && mark < score && mark < 28 {
+        let left = 40 + mark * 20;
+        ready <- sdl.SDL_RenderLine(renderer, f32(left), f32(350), f32(left + 14), f32(350));
+        mark <- mark + 1;
+    };
+    ready && sdl.SDL_RenderPresent(renderer)
+}
+
+fn play(renderer: ptr < SDL_Renderer >) {
     let mut frame = 0;
     let mut score = 0;
     let mut held = false;
     let mut running = true;
-    while running && frame < 900 {
+    let mut rendered = true;
+    while running && rendered && frame < 900 {
         sdl.SDL_PumpEvents();
-        running <- sdl.SDL_HasEvent(sdl.SDL_EVENT_QUIT) == false;
-        let pressed = sdl.SDL_GetMouseState(c_null(), c_null()) != u32(0);
-        let x = 40 + (frame * 7) % 560;
-        if pressed && held == false {
-            if x >= 280 && x <= 360 {
-                score <- score + 1;
+        running <- not sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT));
+        if running {
+            let pressed = sdl.SDL_GetMouseState(c_null(), c_null()) != u32(0);
+            let x = 40 + (frame * 7) % 560;
+            if pressed && not held {
+                if x >= 280 && x <= 360 {
+                    score <- score + 1;
+                } else {
+                    score <- 0;
+                };
             } else {
-                score <- 0;
+                ()
             };
-        } else { () };
-        held <- pressed;
-        sdl.SDL_SetRenderDrawColor(renderer, u8(20), u8(24), u8(32), u8(255));
-        sdl.SDL_RenderClear(renderer);
-        sdl.SDL_SetRenderDrawColor(renderer, u8(70), u8(210), u8(140), u8(255));
-        sdl.SDL_RenderLine(renderer, f32(280), f32(120), f32(280), f32(300));
-        sdl.SDL_RenderLine(renderer, f32(360), f32(120), f32(360), f32(300));
-        sdl.SDL_SetRenderDrawColor(renderer, u8(250), u8(190), u8(60), u8(255));
-        sdl.SDL_RenderLine(renderer, f32(x), f32(150), f32(x), f32(270));
-        // Each consecutive hit adds a gold segment along the bottom.
-        let mut mark = 0;
-        while mark < score && mark < 28 {
-            let left = 40 + mark * 20;
-            sdl.SDL_RenderLine(renderer, f32(left), f32(350), f32(left + 14), f32(350));
-            mark <- mark + 1;
+            held <- pressed;
+            rendered <- draw_frame(renderer, x, score);
+            if rendered {
+                sdl.SDL_Delay(u32(16));
+            } else {
+                ()
+            };
+        } else {
+            ()
         };
-        sdl.SDL_RenderPresent(renderer);
-        sdl.SDL_Delay(u32(16));
         frame <- frame + 1;
     };
-    score
+    if rendered {
+        score
+    } else {
+        -4
+    }
 }
 
 fn main() {
+    let mut result = -3;
     if sdl.SDL_Init(sdl.SDL_INIT_VIDEO) {
+        result <- -1;
         let window = sdl.SDL_CreateWindow(c"Rill: click inside the green gate", 640, 400, u64(0));
-        if is_null(window) {
-            sdl.SDL_Quit();
-            -1
-        } else {
+        if ! is_null(window) {
+            result <- -2;
             let renderer = sdl.SDL_CreateRenderer(window, c"software");
-            if is_null(renderer) {
-                sdl.SDL_DestroyWindow(window);
-                sdl.SDL_Quit();
-                -2
-            } else {
-                let score = play(renderer);
+            if ! is_null(renderer) {
+                result <- play(renderer);
                 sdl.SDL_DestroyRenderer(renderer);
-                sdl.SDL_DestroyWindow(window);
-                sdl.SDL_Quit();
-                score
-            }
-        }
-    } else {
-        sdl.SDL_Quit();
-        -3
-    }
+            };
+            sdl.SDL_DestroyWindow(window);
+        };
+    };
+    sdl.SDL_Quit();
+    result
 }

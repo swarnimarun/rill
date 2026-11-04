@@ -4,8 +4,11 @@ Click any mouse button when the moving gold line is between the green lines.
 Each consecutive hit adds a gold score segment. A mistimed click resets the
 score. Release the button before clicking again. Close the window to finish,
 or play until the 900-frame round ends, roughly 15 seconds. The program prints
-the final score. Negative results indicate SDL initialization, window, or
-renderer failure.
+the final score. Negative results are `-1` for window creation, `-2` for renderer
+creation, `-3` for SDL initialization, and `-4` for drawing or presentation.
+A failed draw stops the round. Every normal exit destroys the renderer before
+the window and calls `SDL_Quit` once; only created resources are destroyed.
+These are printed Rill results, not process exit codes.
 
 Install SDL3 development headers and libraries, pkg-config, Rust, and a C11
 compiler. From the repository root:
@@ -29,7 +32,7 @@ color channels, and float coordinates. The generated C includes SDL's real
 header, so the C compiler checks these calls against the installed API.
 
 The game uses SDL's software renderer. Event pumping updates the mouse state;
-`SDL_HasEvent(SDL_EVENT_QUIT)` detects window closure without exposing the
+`SDL_HasEvent(u32(SDL_EVENT_QUIT))` detects window closure without exposing the
 `SDL_Event` union layout. The game uses the mouse button flags without reading
 mouse coordinates, so both coordinate output pointers are null.
 
@@ -37,6 +40,11 @@ mouse coordinates, so both coordinate output pointers are null.
 variant against the installed SDL3 library with its dummy video driver, through
 both `build` and native `run`. It prints an explicit skip reason if SDL3
 development files are unavailable.
+
+Boolean negation accepts `not ready` and `!ready`. A braced `if` can omit `else`
+when its body returns unit. The lifecycle regression checks clicks, closure,
+initialization failures, every draw failure and exact cleanup order at O0/O2.
+Real-library tests retain typed-C inspection and exercise Zig when available.
 
 ## Generate the selected bindings
 
@@ -58,10 +66,9 @@ cargo run --locked --features c-import -- import-c \
 ```
 
 Set `LIBCLANG_PATH` or pass `--clang-resource-dir` if your Clang installation
-needs it. Generation is not a lifetime/resource-safety proof. The hand-written
-module declares `SDL_EVENT_QUIT` as `u32`; the importer preserves its actual C
-enum-constant type, normally `i32`. When using the generated module, change the
-call to `sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT))` and import
-`sdl_generated as sdl`. Other selected declarations use the same supported ABI.
+needs it. Generation is not a lifetime/resource-safety proof. Both the manual
+fixture and importer preserve `SDL_EVENT_QUIT`'s C enum-constant type, normally
+`i32`. The game converts it to `u32`. Import `sdl_generated as sdl` to use the
+generated file. Other selected declarations use the same supported ABI.
 This generation-and-use path has an optional integration regression; it reports
 an explicit skip when SDL3 development files are unavailable.

@@ -4,7 +4,7 @@
 @pkg_config("sdl3");
 
 export extern const SDL_INIT_VIDEO: u32;
-export extern const SDL_EVENT_QUIT: u32;
+export extern const SDL_EVENT_QUIT: i32;
 export extern fn SDL_Init(flags: u32) -> bool;
 export extern fn SDL_CreateWindow(title: cstr, w: i32, h: i32, flags: u64) -> ptr<SDL_Window>;
 export extern fn SDL_CreateRenderer(window: ptr<SDL_Window>, name: cstr) -> ptr<SDL_Renderer>;
