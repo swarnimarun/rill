@@ -1,11 +1,14 @@
 //! Independently designed closed-signature tests. Preserve every C artifact.
+#[path = "support/native_launch.rs"]
+mod native_launch;
+
 use rill::{ast::TypeExpr, backend, check, interpreter, parser, typed};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 #[path = "support/result_annotation_compatibility.rs"]
@@ -49,19 +52,8 @@ fn output(dir: &Path, command: &mut Command, label: &str, seconds: u64) -> Outpu
         .stdin(Stdio::null())
         .stdout(fs::File::create(&out).unwrap())
         .stderr(fs::File::create(&err).unwrap());
-    let mut child = command.spawn().unwrap_or_else(|e| panic!("{label}: {e}"));
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() > deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("{label}: subprocess timeout is not a language trap");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let status = native_launch::status(command, dir, Duration::from_secs(seconds))
+        .unwrap_or_else(|error| panic!("{label}: {error}"));
     Output {
         status,
         stdout: fs::read(out).unwrap(),

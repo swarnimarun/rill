@@ -1,11 +1,14 @@
 //! Independent K3b source, C11, event, and retained-boundary regressions.
+#[path = "support/native_launch.rs"]
+mod native_launch;
+
 use rill::{backend, check, interpreter, parser, typed};
 use std::{
     fs,
     path::PathBuf,
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
 static NEXT: AtomicUsize = AtomicUsize::new(0);
 struct Fixture(PathBuf);
@@ -29,19 +32,8 @@ impl Fixture {
             .stdin(Stdio::null())
             .stdout(fs::File::create(&out).unwrap())
             .stderr(fs::File::create(&err).unwrap());
-        let mut child = command.spawn().unwrap();
-        let deadline = Instant::now() + Duration::from_secs(30);
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if Instant::now() > deadline {
-                child.kill().unwrap();
-                child.wait().unwrap();
-                panic!("timeout is not a Rill trap");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        let status = native_launch::status(command, &self.0, Duration::from_secs(30))
+            .unwrap_or_else(|error| panic!("native fixture: {error}"));
         Output {
             status,
             stdout: fs::read(out).unwrap(),

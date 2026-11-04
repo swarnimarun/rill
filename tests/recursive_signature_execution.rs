@@ -1,11 +1,14 @@
 //! Retained C11 differential fixtures for closed recursive parameter constraints.
+#[path = "support/native_launch.rs"]
+mod native_launch;
+
 use rill::{backend, check, interpreter, parser, typed};
 use std::{
     fs,
     path::PathBuf,
     process::{Command, Output, Stdio},
     sync::atomic::{AtomicUsize, Ordering},
-    time::{Duration, Instant},
+    time::Duration,
 };
 #[path = "support/recursive_signature_cases.rs"]
 mod cases;
@@ -30,19 +33,8 @@ impl Fixture {
             .stdin(Stdio::null())
             .stdout(fs::File::create(&stdout).unwrap())
             .stderr(fs::File::create(&stderr).unwrap());
-        let mut child = command.spawn().unwrap_or_else(|e| panic!("{label}: {e}"));
-        let deadline = Instant::now() + Duration::from_secs(seconds);
-        let status = loop {
-            if let Some(status) = child.try_wait().unwrap() {
-                break status;
-            }
-            if Instant::now() > deadline {
-                let _ = child.kill();
-                let _ = child.wait();
-                panic!("{label}: subprocess timeout is not a language trap");
-            }
-            std::thread::sleep(Duration::from_millis(10));
-        };
+        let status = native_launch::status(command, &self.0, Duration::from_secs(seconds))
+            .unwrap_or_else(|error| panic!("{label}: {error}"));
         Output {
             status,
             stdout: fs::read(stdout).unwrap(),

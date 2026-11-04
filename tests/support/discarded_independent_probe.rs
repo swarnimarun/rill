@@ -2,12 +2,15 @@
 //! Compile as an external Rust harness against a freshly built candidate rlib.
 //! All outputs are retained. Set K4_PROBE_OUTPUT to a fresh child of the approved
 //! RAM scratch directory. This program never deletes files or changes the repo.
+#[path = "native_launch.rs"]
+mod native_launch;
+
 use rill::{backend, check, interpreter, parser, typed};
 use std::{
     fs,
     path::{Path, PathBuf},
     process::{Command, Output, Stdio},
-    time::{Duration, Instant},
+    time::Duration,
 };
 
 fn save(path: &Path, bytes: impl AsRef<[u8]>) {
@@ -38,19 +41,8 @@ fn command(mut command: Command, root: &Path, stem: &str, seconds: u64) -> Outpu
                 .open(&stderr)
                 .unwrap(),
         );
-    let mut child = command.spawn().unwrap();
-    let deadline = Instant::now() + Duration::from_secs(seconds);
-    let status = loop {
-        if let Some(status) = child.try_wait().unwrap() {
-            break status;
-        }
-        if Instant::now() >= deadline {
-            let _ = child.kill();
-            let _ = child.wait();
-            panic!("{stem}: timeout is not a language trap");
-        }
-        std::thread::sleep(Duration::from_millis(10));
-    };
+    let status = native_launch::status(&mut command, root, Duration::from_secs(seconds))
+        .unwrap_or_else(|error| panic!("{stem}: {error}"));
     Output {
         status,
         stdout: fs::read(stdout).unwrap(),
