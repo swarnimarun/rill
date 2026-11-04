@@ -281,6 +281,32 @@ The [frozen author record](verification/2026-11-04-discarded-records-author.md)
 identifies source `93046a1`: 640 focused tests, 17 additional Clang tests, 188
 new-suite C executions and 216 older-harness regression executions. Formatting
 and default strict Clippy pass. The [independent record](verification/2026-11-04-discarded-records-independent.md)
-adds 24 private tests, 24 typed cases and 156 C executions. Closed function-result
-annotations are the next bounded source-usability task; that syntax remains
-unimplemented at this checkpoint.
+adds 24 private tests, 24 typed cases and 156 C executions. The subsequent closed
+function-result annotation increment is accepted below.
+
+
+## Closed function-result annotations
+
+Optional `-> TypeExpr` on braced `fn` and `export fn` has
+[integrated acceptance](verification/2026-11-04-result-annotations.md) on source
+`93b1188`. The fresh matrix passes 1,034 default and 1,082 importer-enabled tests,
+formatting, both strict lint modes and both Windows GNU all-target compile checks.
+There are no failures, ignored tests or SKIP notices. Windows binaries were not
+executed. Fresh independent and author annotation harnesses separately execute
+68 and 280 GCC/Clang C11 O0/O2 cases.
+
+Results are closed equality constraints installed across each recursive group
+before its bodies; existing parameter timing and unannotated inference remain.
+Complete source/origin roles, module privacy, exact logical result identity and
+borrowed graph-wide input/resolved-name budgets are checked. The
+[independent record](verification/2026-11-04-result-annotations-independent.md)
+distinguishes two environment losses from the new evidence. The author-stage
+reports remain historical records, not current pending gates.
+
+The accepted setup uses Rust/Cargo 1.99.1, GCC 14.2, Clang/libclang 19.1.7 and
+SDL3 3.2.10 on x86_64 Linux. The configured libclang tests explicitly propagate
+`RILL_TEST_CLANG_RESOURCE_DIR` through `--clang-resource-dir`; raw default header
+search is not assumed. No new Zig, AArch64, GPU or physical-input evidence is
+claimed. Kinds/skolems, genuinely unknown stored layouts, broader owner/native
+support and broader optional provenance remain open. This does not complete P1
+or C02.

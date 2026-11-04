@@ -81,7 +81,16 @@ A block's final expression supplies its value. Empty blocks and blocks ending
 in a semicolon return unit `()`. Every non-tail expression needs a semicolon,
 including `while`, `if` and nested blocks. Newlines do not separate statements.
 Functions take comma-separated parameters with optional type annotations.
-Function return annotations, local type annotations and `if` without `else`
+Braced functions can optionally constrain their result with a closed type:
+`fn absent() -> Option<i32> { None }`. The same spelling works on `export fn`.
+The annotation is an equality constraint, not a cast or a default type. It uses
+exactly the existing parameter-type vocabulary; named type variables, holes,
+function types, effects and local annotations remain unsupported. Unannotated
+functions and legacy `let` functions keep their existing inference and grammar.
+This bounded addition has [independent and integrated acceptance](docs/verification/2026-11-04-result-annotations.md).
+It does not complete P1, C02 or general annotated interfaces. See the
+[runnable example](examples/result-annotations).
+Local type annotations and `if` without `else`
 are not supported yet. Legacy `let name arg = expression`, `let ... in`,
 `if ... then ... else ...` and `while ... do ...` remain accepted for compatibility.
 

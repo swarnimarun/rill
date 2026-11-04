@@ -39,6 +39,7 @@ pub enum DirectRule {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum GenerationReason {
     InferredResultType,
+    AnnotatedResultType,
     ReadArgumentTemporary,
     CaptureEnvironmentBinding,
     CaptureProduct,
@@ -57,6 +58,7 @@ pub enum RelationRole {
     ReadsCapture,
     Definition,
     Body,
+    Annotation,
 }
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum RelationTarget {
@@ -720,10 +722,13 @@ fn validate_generated(
             }
         }
         match reason {
-            GenerationReason::InferredResultType => {
-                if !matches!(actual[index], Some(TypedNodeRef::Result(_))) || relations.len() != 2 {
+            GenerationReason::InferredResultType | GenerationReason::AnnotatedResultType => {
+                let annotated = *reason == GenerationReason::AnnotatedResultType;
+                if !matches!(actual[index], Some(TypedNodeRef::Result(_)))
+                    || relations.len() != if annotated { 3 } else { 2 }
+                {
                     return Err(fail(
-                        "inferred result slot requires exact generated definition/body relations",
+                        "result slot requires exact generated signature relations",
                     ));
                 }
                 let root = trace
@@ -736,6 +741,26 @@ fn validate_generated(
                     .source_index
                     .child(root, crate::source_map::AstStep::FunctionBody)
                     .ok_or_else(|| fail("missing generated signature body"))?;
+                // The ordinary function-origin validation already checks the
+                // full exact instance result type. Here the annotation must be
+                // this definition's actual result role, not a same-shaped type
+                // elsewhere in its signature or in another function.
+                let annotation = trace
+                    .source_index
+                    .child(root, crate::source_map::AstStep::FunctionResult);
+                if annotated != annotation.is_some() {
+                    return Err(fail("result annotation reason differs from source"));
+                }
+                if let Some(annotation) = annotation {
+                    if relations[2]
+                        != (RawRelation {
+                            role: RelationRole::Annotation,
+                            target: RawTarget::Source(annotation),
+                        })
+                    {
+                        return Err(fail("annotated result has wrong annotation relationship"));
+                    }
+                }
                 if relations[0]
                     != (RawRelation {
                         role: RelationRole::Definition,
@@ -747,7 +772,7 @@ fn validate_generated(
                             target: RawTarget::Source(body),
                         })
                 {
-                    return Err(fail("inferred result has wrong source relationships"));
+                    return Err(fail("result has wrong source relationships"));
                 }
             }
             GenerationReason::ReadArgumentTemporary => {
@@ -863,7 +888,11 @@ fn validate_dispositions(
                 }
             }
             RawDisposition::SignatureOnly => {
-                if source.kind() != AstNodeKind::TypeExpression {
+                if source.kind() != AstNodeKind::TypeExpression
+                    || !trace
+                        .source_index
+                        .is_signature_annotation(receipt.source, &mut trace.budget)?
+                {
                     return Err(fail("signature-only source is not an annotation"));
                 }
             }

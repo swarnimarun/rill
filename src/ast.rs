@@ -95,6 +95,8 @@ pub enum Pattern {
 pub struct Function {
     pub name: String,
     pub params: Vec<Param>,
+    /// Optional closed result constraint on a braced function.
+    pub result_annotation: Option<TypeExpr>,
     pub body: Expr,
 }
 

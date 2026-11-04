@@ -27,6 +27,7 @@ fn nested_constructor_patterns_bind_payloads() {
             ],
         }],
         functions: vec![Function {
+            result_annotation: None,
             name: "main".into(),
             params: vec![],
             body: Expr::Match(

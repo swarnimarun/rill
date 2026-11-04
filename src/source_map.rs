@@ -17,6 +17,7 @@ pub struct AstPath {
 pub enum AstStep {
     Parameter(usize),
     FunctionBody,
+    FunctionResult,
     Annotation,
     Variant(usize),
     FieldType(usize),
@@ -124,6 +125,9 @@ impl<'a> AstNode<'a> {
         Some(match (self, step) {
             (Self::Function(f), Parameter(i)) => Self::Parameter(f.params.get(i)?),
             (Self::Function(f), FunctionBody) => Self::Expression(&f.body),
+            (Self::Function(f), FunctionResult) => {
+                Self::TypeExpression(f.result_annotation.as_ref()?)
+            }
             (Self::Parameter(p), Annotation) => Self::TypeExpression(p.annotation.as_ref()?),
             (Self::TypeDeclaration(t), Variant(i)) => Self::Variant(t.variants.get(i)?),
             (Self::Variant(v), FieldType(i)) => Self::TypeExpression(v.fields.get(i)?),
@@ -171,6 +175,7 @@ impl<'a> AstNode<'a> {
         match self {
             Self::Function(f) => (0..f.params.len())
                 .map(Parameter)
+                .chain(f.result_annotation.as_ref().map(|_| FunctionResult))
                 .chain([FunctionBody])
                 .collect(),
             Self::ExternFunction(f) => (0..f.params.len())
@@ -439,6 +444,13 @@ impl Mapper<'_, '_> {
                             self.one(&p, self.nodes(n, SyntaxKind::TypeExpression))?,
                         )?;
                     }
+                }
+                if let Some(annotation) = &f.result_annotation {
+                    self.ty(
+                        path.child(AstStep::FunctionResult),
+                        annotation,
+                        self.one(&path, self.nodes(node, SyntaxKind::TypeExpression))?,
+                    )?;
                 }
                 self.expr(
                     path.child(AstStep::FunctionBody),

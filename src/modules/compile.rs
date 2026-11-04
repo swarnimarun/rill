@@ -164,9 +164,13 @@ fn lower_traced(
 ) -> Result<Program, ModuleError> {
     let mut parsed = BTreeMap::<String, ParsedModule>::new();
     let mut catalogue = BTreeMap::new();
+    let mut annotations = crate::check::annotations::Budget::default();
     for (module, source) in &graph.modules {
         let unit = parser::parse_module(&source.source)
             .map_err(|e| err("E-MODULE-PARSE", format!("{}:{e}", source.path.display())))?;
+        annotations
+            .program(&unit.program)
+            .map_err(|e| err("E-MODULE-CHECK", e))?;
         if module != "@entry" && unit.program.functions.iter().any(|f| f.name == "main") {
             return Err(err(
                 "E-MODULE-ENTRY",
@@ -228,6 +232,11 @@ fn lower_traced(
         parsed.insert(module.clone(), unit);
     }
     let resolver = Resolver::new(graph, &catalogue)?;
+    preflight_resolved_results(
+        &parsed,
+        &resolver,
+        &mut crate::check::annotations::Budget::default(),
+    )?;
     let mut foreign_names = HashMap::<SymbolId, String>::new();
     let mut output = Program {
         allocation_types: None,
@@ -412,6 +421,11 @@ fn lower_traced(
                     })?;
                 }
             }
+            if let Some(annotation) = &mut f.result_annotation {
+                rewrite.at(AstStep::FunctionResult, |rewrite| {
+                    rewrite.ty(annotation, &HashSet::new())
+                })?;
+            }
             for p in &f.params {
                 rewrite.push(&p.name);
             }
@@ -495,6 +509,41 @@ fn lower_traced(
     }
     Ok(output)
 }
+// Compute exact final annotation name lengths without allocating rewritten
+// names or cloning trees. The same allowance spans every parsed module.
+fn preflight_resolved_results(
+    parsed: &BTreeMap<String, ParsedModule>,
+    resolver: &Resolver,
+    budget: &mut crate::check::annotations::Budget,
+) -> Result<(), ModuleError> {
+    for (module, unit) in parsed {
+        budget.program_named(
+            &unit.program,
+            |name| {
+                if primitive(name) {
+                    return Ok(name.len());
+                }
+                let (alias, name) = qualify(name);
+                let symbol = resolver.resolve(module, alias, name, Namespace::Type)?;
+                let digits = symbol.id.index().checked_ilog10().unwrap_or(0) as usize + 1;
+                symbol
+                    .name
+                    .len()
+                    .checked_add(digits + 3)
+                    .ok_or_else(annotation_limit)
+            },
+            annotation_limit,
+        )?;
+    }
+    Ok(())
+}
+fn annotation_limit() -> ModuleError {
+    err(
+        "E-MODULE-CHECK",
+        "E-TYPE-COMPLEXITY: result annotation input budget exceeded",
+    )
+}
+
 fn contains_private_expr(t: &TypeExpr, private: &HashSet<String>) -> bool {
     private.contains(&t.name) || t.args.iter().any(|t| contains_private_expr(t, private))
 }
@@ -723,5 +772,80 @@ impl Rewrite<'_> {
             | Expr::InoutField(_, _) => {}
         }
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod result_annotation_budget_tests {
+    use super::*;
+    #[test]
+    fn graph_wide_resolved_annotation_weight_precedes_cloning() {
+        let mut graph = ModuleGraph {
+            root: ".".into(),
+            modules: BTreeMap::new(),
+        };
+        let mut parsed = BTreeMap::<String, ParsedModule>::new();
+        let mut catalogue = BTreeMap::new();
+        for module in ["@entry", "other"] {
+            let source = "type T = Tag\nfn value() -> T {Tag}";
+            graph.modules.insert(
+                module.into(),
+                super::super::Module {
+                    name: module.into(),
+                    path: format!("{module}.rill").into(),
+                    source: source.into(),
+                    imports: vec![],
+                },
+            );
+            parsed.insert(module.into(), parser::parse_module(source).unwrap());
+            catalogue.insert(
+                module.into(),
+                vec![
+                    Declaration {
+                        name: "T".into(),
+                        kind: Kind::Type,
+                        exported: false,
+                    },
+                    Declaration {
+                        name: "Tag".into(),
+                        kind: Kind::Constructor,
+                        exported: false,
+                    },
+                    Declaration {
+                        name: "value".into(),
+                        kind: Kind::Function,
+                        exported: false,
+                    },
+                ],
+            );
+        }
+        let resolver = Resolver::new(&graph, &catalogue).unwrap();
+        let cost: usize = parsed
+            .keys()
+            .map(|module| {
+                64 + internal(
+                    resolver
+                        .resolve(module, None, "T", Namespace::Type)
+                        .unwrap(),
+                )
+                .len()
+            })
+            .sum();
+        let mut exact = crate::check::annotations::Budget::with_limits(cost, 2);
+        preflight_resolved_results(&parsed, &resolver, &mut exact).unwrap();
+        let mut short = crate::check::annotations::Budget::with_limits(cost - 1, 2);
+        assert!(preflight_resolved_results(&parsed, &resolver, &mut short)
+            .unwrap_err()
+            .message
+            .starts_with("E-TYPE-COMPLEXITY"));
+        let mut original = crate::check::annotations::Budget::with_limits(2 * 65, 2);
+        for unit in parsed.values() {
+            original.program(&unit.program).unwrap();
+        }
+        let mut rewritten = crate::check::annotations::Budget::with_limits(2 * 65, 2);
+        assert!(
+            preflight_resolved_results(&parsed, &resolver, &mut rewritten).is_err(),
+            "renaming growth must be budgeted before cloning"
+        );
     }
 }

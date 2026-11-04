@@ -310,7 +310,9 @@ fn anchor(origin: &RawOrigin) -> Option<usize> {
                 | GenerationReason::ShapeRecordField
                 | GenerationReason::CaptureProjection
                 | GenerationReason::ProjectedCaptureTemporary => RelationRole::CausedByUse,
-                GenerationReason::InferredResultType => return None,
+                GenerationReason::InferredResultType | GenerationReason::AnnotatedResultType => {
+                    return None
+                }
             };
             relations
                 .iter()

@@ -16,6 +16,7 @@ fn program(body: E) -> Program {
         externs: vec![],
         types: vec![],
         functions: vec![Function {
+            result_annotation: None,
             name: "main".into(),
             params: vec![],
             body,
@@ -111,6 +112,7 @@ fn arguments_are_emitted_in_source_order() {
         types: vec![],
         functions: vec![
             Function {
+                result_annotation: None,
                 name: "id".into(),
                 params: vec![Param {
                     name: "x".into(),
@@ -120,6 +122,7 @@ fn arguments_are_emitted_in_source_order() {
                 body: E::Var("x".into()),
             },
             Function {
+                result_annotation: None,
                 name: "add".into(),
                 params: vec![
                     Param {
@@ -136,6 +139,7 @@ fn arguments_are_emitted_in_source_order() {
                 body: binary(Op::Add, E::Var("a".into()), E::Var("b".into())),
             },
             Function {
+                result_annotation: None,
                 name: "main".into(),
                 params: vec![],
                 body: E::Call(
@@ -423,6 +427,7 @@ fn module_mangled_constructor_displays_source_name() {
             }],
         }],
         functions: vec![Function {
+            result_annotation: None,
             name: "main".into(),
             params: vec![],
             body: E::Call("M$12$Boxed".into(), vec![E::Int(42)]),

@@ -155,3 +155,16 @@ The [author record](verification/2026-11-04-discarded-records-author.md) reports
 640 focused tests and 188 new-suite GCC/Clang C executions. The separate
 [independent record](verification/2026-11-04-discarded-records-independent.md)
 adds 24 private tests and 156 C executions.
+
+
+Closed result annotations on braced `fn` and `export fn` now have bounded
+[integrated acceptance](verification/2026-11-04-result-annotations.md) on source
+`93b1188`: 1,034 default and 1,082 importer-enabled tests, formatting, both strict
+lint modes and both Windows GNU compile-only checks pass, with no test failures,
+ignored tests or SKIP notices. Independent checks add 68 GCC/Clang C11 O0/O2
+executions; the freshly repeated author matrix contributes 280 separately counted
+executions. SCC-wide result constraints preserve existing parameter timing,
+module privacy, full logical identity and exact source/origin roles. Graph-wide
+source/resolved annotation budgets precede cloning. This adds no unknown storage,
+kinds, skolems, owner/native combinations or broader optional provenance. P1 and
+C02 remain open; Windows execution and other untested targets are not claimed.

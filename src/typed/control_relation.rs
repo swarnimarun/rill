@@ -728,6 +728,68 @@ mod tests {
         frozen.charge(&mut budget)?;
         frozen.signatures(&mut budget)
     }
+
+    #[test]
+    fn annotated_phantom_results_retain_exact_mandatory_control_signatures() {
+        let source = "type O<a> =None|Some(a) type Marker<a> =Mark fn absent(){None} fn mark()->Marker<i32>{Mark} fn main()->i32{let ignored=absent();let observed=mark();match observed{Mark=>42}}";
+        let parsed = crate::parser::parse(source).unwrap();
+        let checked = crate::check::analyze(&parsed).unwrap();
+        let mark = parsed
+            .functions
+            .iter()
+            .position(|f| f.name == "mark")
+            .unwrap();
+        let facts = SourceFacts::build(&checked).unwrap();
+        let changed = crate::parser::parse(&source.replace("Marker<i32>", "Marker<bool>")).unwrap();
+        let changed = crate::check::analyze(&changed).unwrap();
+        assert!(facts.verify_source(&changed).is_err());
+        for mutation in 0..6 {
+            let mut ir = crate::typed::lower_main(&checked).unwrap();
+            let proof = std::sync::Arc::get_mut(ir.logical.control.as_mut().unwrap()).unwrap();
+            let instance = proof
+                .instances
+                .iter_mut()
+                .find(|i| i.source == mark)
+                .unwrap();
+            match mutation {
+                0 | 2 => {
+                    let Type::Nominal(_, args) = &mut instance.result else {
+                        panic!("nominal");
+                    };
+                    args[0] = Type::Bool;
+                }
+                1 => {}
+                3 => instance.demand = instances::Demand::Discard,
+                4 => {
+                    instance.source = parsed
+                        .functions
+                        .iter()
+                        .position(|f| f.name == "main")
+                        .unwrap()
+                }
+                5 => {
+                    instance.substitution.insert(usize::MAX, Type::Int);
+                }
+                _ => unreachable!(),
+            }
+            if mutation == 1 || mutation == 2 {
+                let function = proof
+                    .witness
+                    .functions
+                    .iter_mut()
+                    .find(|f| f.source == mark)
+                    .unwrap();
+                let Type::Nominal(_, args) = &mut function.result else {
+                    panic!("nominal");
+                };
+                args[0] = Type::Bool;
+            }
+            assert!(crate::typed::verify(&ir).is_err(), "mutation {mutation}");
+            assert!(crate::typed::evaluate(&ir).is_err(), "mutation {mutation}");
+            assert!(crate::typed::emit_c(&ir).is_err(), "mutation {mutation}");
+        }
+    }
+
     #[test]
     fn signature_relation_reconstructs_closed_quantified_and_weak_classes() {
         for source in [
@@ -812,3 +874,50 @@ mod independent_discarded_suffix_relation_tests;
 #[cfg(test)]
 #[path = "independent_discarded_record_relation_tests.rs"]
 mod independent_discarded_record_relation_tests;
+
+#[cfg(test)]
+mod independent_result_annotations {
+    use super::*;
+
+    #[test]
+    fn independent_result_coherent_phantom_relabel_cannot_replace_checked_identity() {
+        let ast = crate::parser::parse("type O<a> =None|Some(a) type M<a> =Mark fn absent(){None} fn marked()->M<i32>{Mark} fn main()->i32{let ignored=absent();let value=marked();match value{Mark=>42}}").unwrap();
+        let checked = crate::check::analyze(&ast).unwrap();
+        let marked = ast
+            .functions
+            .iter()
+            .position(|f| f.name == "marked")
+            .unwrap();
+        let mut ir = crate::typed::lower_main(&checked).unwrap();
+        let proof = std::sync::Arc::get_mut(ir.logical.control.as_mut().unwrap()).unwrap();
+        let original = Type::Nominal("M".into(), vec![Type::Int]);
+        let replacement = Type::Nominal("M".into(), vec![Type::Bool]);
+        // Relabel all matching retained expression types as well as signatures,
+        // not merely an inconsistent witness/instance pair. Physical tags agree.
+        let mut changed = 0;
+        for node in &mut proof.witness.nodes {
+            if node.ty == original {
+                node.ty = replacement.clone();
+                changed += 1;
+            }
+        }
+        assert!(changed >= 2);
+        proof
+            .witness
+            .functions
+            .iter_mut()
+            .find(|f| f.source == marked)
+            .unwrap()
+            .result = replacement.clone();
+        proof
+            .instances
+            .iter_mut()
+            .find(|f| f.source == marked)
+            .unwrap()
+            .result = replacement;
+        assert!(proof.verify_source(&checked).is_err());
+        assert!(crate::typed::verify(&ir).is_err());
+        assert!(crate::typed::evaluate(&ir).is_err());
+        assert!(crate::typed::emit_c(&ir).is_err());
+    }
+}

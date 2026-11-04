@@ -1,0 +1,16 @@
+0: {"identity": ([0], [Var(0)], Var(0)), "main": ([], [], Int)}
+1: {"absent": ([0], [], Nominal("O", [Var(0)])), "main": ([], [], Nominal("O", [Bool]))}
+2: {"duplicate": ([0], [Var(0)], Nominal("P", [Var(0), Var(0)])), "main": ([], [], Nominal("P", [Int, Int])), "pair": ([0, 1], [Var(0), Var(1)], Nominal("P", [Var(0), Var(1)]))}
+3: {"f": ([0], [Var(0)], Var(0)), "g": ([0], [Var(0)], Var(0)), "main": ([], [], Int)}
+4: {"f": ([0], [Var(0)], Var(0)), "g": ([0], [Var(0)], Var(0)), "main": ([], [], Int)}
+5: E-RECORD
+6: {"f": ([], [Nominal("P", [])], Int), "g": ([], [Nominal("P", [])], Nominal("P", [])), "main": ([], [], Int)}
+7: E-TYPE
+8: E-TYPE
+9: E-FFI
+10: E-OWNED
+11: {"main": ([], [], Int), "plain": ([], [CPointer { pointee: "Opaque", is_const: false }], CPointer { pointee: "Opaque", is_const: false })}
+12: {"identity": ([0], [Var(0)], Var(0)), "main": ([], [], Int)}
+13: {"booleans": ([], [Bool], Bool), "main": ([], [], Int), "unused": ([0, 1], [Var(0), Var(1)], Var(0))}
+14: {"a": ([0], [Var(0)], Var(0)), "b": ([0], [Var(0)], Var(0)), "c": ([0], [Var(0)], Var(0)), "main": ([], [], Int)}
+15: E-TYPE

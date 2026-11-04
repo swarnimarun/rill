@@ -40,6 +40,7 @@ fn count(program: &Program) -> usize {
         .iter()
         .map(|f| {
             1 + expr_count(&f.body)
+                + f.result_annotation.as_ref().map_or(0, type_count)
                 + f.params
                     .iter()
                     .map(|p| 1 + p.annotation.as_ref().map_or(0, type_count))
@@ -528,4 +529,29 @@ fn generated_accepted_expression_combinations_have_total_maps() {
         }
     }
     assert!(accepted > 500, "only {accepted} generated cases parsed");
+}
+
+#[test]
+fn closed_result_trees_have_complete_independent_counts_and_exact_utf8_spans() {
+    let source =
+        "// λ before result\nfn value(x: O<i32>) -> O<// é nested\ni32> {x}\nfn main() -> i32 {42}";
+    let (_, map) = mapped(source);
+    let result = path(D::Function(0), &[S::FunctionResult]);
+    let origin = map.origin(&result).unwrap();
+    assert_eq!(&source[origin.span.byte_range()], "O<// é nested\ni32>");
+    let child = result.child(S::TypeArgument(0));
+    assert_eq!(
+        &source[map.origin(&child).unwrap().span.byte_range()],
+        "i32"
+    );
+    for source in [
+        "fn main() -> {42}",
+        "fn main() -> O<i32 {42}",
+        "fn main() -> O<> {42}",
+    ] {
+        let syntax = SyntaxTree::parse(source);
+        assert_eq!(syntax.reconstruct(), source);
+        assert!(syntax.parsed_module().is_none());
+        assert!(syntax.ast_source_map().is_err());
+    }
 }

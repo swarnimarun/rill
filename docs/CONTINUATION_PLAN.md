@@ -213,8 +213,13 @@ effects without storing unknown results. The direct layoutless-record follow-on
 has [integrated acceptance](verification/2026-11-04-discarded-records.md): 996
 default and 1,044 importer-enabled tests, strict lint and Windows compile checks,
 plus independent schema/order/effect/C evidence. It creates no aggregate storage.
-Next, implement closed result annotations on braced functions using existing
-concrete types, with unchanged unannotated inference, module privacy and complete
-source/origin coverage. That syntax is not implemented yet. Keep used or mutable
-layoutless bindings, observable unknown payloads and local-shape mixing outside
-these contracts until their representation rules are established.
+Closed result annotations on braced functions now have
+[integrated acceptance](verification/2026-11-04-result-annotations.md): 1,034
+default and 1,082 importer-enabled tests, both strict lint modes and both Windows
+GNU compile-only modes pass. Independent review and GCC/Clang O0/O2 execution
+cover SCC constraints, resource bounds, native/owner obligations, module privacy
+and complete source/origin roles. The bounded annotation task is complete; P1,
+C02, kinds/skolems and general annotated interfaces are not. Keep used or mutable
+layoutless bindings, observable unknown payloads, local-shape mixing and broader
+owner/native/provenance forms outside these contracts until their representation
+and checking rules are established.

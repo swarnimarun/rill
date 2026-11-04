@@ -1,5 +1,6 @@
 use super::trace::RawOrigin;
 use super::*;
+use crate::source_map::AstStep;
 use crate::typed::LocalId;
 use std::sync::atomic::{AtomicUsize, Ordering};
 static NEXT: AtomicUsize = AtomicUsize::new(0);
@@ -15,7 +16,9 @@ fn source(text: &str) -> SourceProgram {
     result
 }
 fn corrupted(text: &str, change: impl FnOnce(&mut Trace<'_>)) {
-    let sources = source(text);
+    corrupted_sources(source(text), change);
+}
+fn corrupted_sources(sources: SourceProgram, change: impl FnOnce(&mut Trace<'_>)) {
     let checked = check::analyze(sources.program()).unwrap();
     let budget = BodyBudget::default();
     let mut requests =
@@ -520,5 +523,132 @@ fn complete_native_gate_precedes_latched_metadata_and_function_finalization() {
             error.starts_with("E-TYPED-UNSUPPORTED") && error.contains("does not map native"),
             "{text}: {error}"
         );
+    }
+}
+
+#[test]
+fn annotated_result_relations_require_the_exact_result_subtree() {
+    let text =
+        "type O<a> = None|Some(a)\nfn f(x:O<i32>) -> O<i32> {x}\nfn main() -> O<i32> {f(None)}";
+    for mutation in 0..7 {
+        let path = std::env::temp_dir().join(format!(
+            "rill-result-origin-private-{}-{}.rill",
+            std::process::id(),
+            NEXT.fetch_add(1, Ordering::Relaxed)
+        ));
+        std::fs::write(&path, text).unwrap();
+        let sources = crate::modules::compile::load_program_with_sources(&path).unwrap();
+        corrupted_sources(sources, |trace| {
+            let root = trace
+                .source_index
+                .root(AstDeclaration::Function(0))
+                .unwrap();
+            let result = trace
+                .source_index
+                .child(root, AstStep::FunctionResult)
+                .unwrap();
+            let parameter = trace
+                .source_index
+                .child(root, AstStep::Parameter(0))
+                .unwrap();
+            let annotation = trace
+                .source_index
+                .child(parameter, AstStep::Annotation)
+                .unwrap();
+            let child = trace
+                .source_index
+                .child(result, AstStep::TypeArgument(0))
+                .unwrap();
+            let fragment = trace.fragments.iter_mut().find(|fragment| matches!(&fragment.origin, RawOrigin::Generated { reason: GenerationReason::AnnotatedResultType, relations } if relations[0].target == RawTarget::Source(root))).unwrap();
+            let RawOrigin::Generated { reason, relations } = &mut fragment.origin else {
+                unreachable!()
+            };
+            match mutation {
+                0 => relations[2].target = RawTarget::Source(annotation),
+                1 => relations[2].target = RawTarget::Source(child),
+                2 => relations[2].role = RelationRole::Body,
+                3 => {
+                    *reason = GenerationReason::InferredResultType;
+                    relations.pop();
+                }
+                4 => {
+                    relations.push(relations[2].clone());
+                }
+                5 => {
+                    trace.dispositions.retain(|receipt| receipt.source != child);
+                }
+                6 => {
+                    let other = trace
+                        .source_index
+                        .root(AstDeclaration::Function(1))
+                        .unwrap();
+                    let other_result = trace
+                        .source_index
+                        .child(other, AstStep::FunctionResult)
+                        .unwrap();
+                    relations[2].target = RawTarget::Source(other_result);
+                }
+                _ => unreachable!(),
+            }
+        });
+    }
+}
+
+#[test]
+fn independent_result_written_annotation_is_not_a_direct_runtime_span() {
+    for annotated in [false, true] {
+        let text = if annotated {
+            "fn main()->i32{42}"
+        } else {
+            "fn main(){42}"
+        };
+        let stamp = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let path =
+            std::env::temp_dir().join(format!("rill-independent-result-origin-{stamp}.rill"));
+        std::fs::write(&path, text).unwrap();
+        let sources = crate::modules::compile::load_program_with_sources(&path).unwrap();
+        corrupted_sources(sources, |trace| {
+            let root = trace
+                .source_index
+                .root(AstDeclaration::Function(0))
+                .unwrap();
+            let body = trace
+                .source_index
+                .child(root, AstStep::FunctionBody)
+                .unwrap();
+            let annotation = trace.source_index.child(root, AstStep::FunctionResult);
+            let fragment = trace
+                .fragments
+                .iter_mut()
+                .find(|f| {
+                    matches!(
+                        f.origin,
+                        RawOrigin::Generated {
+                            reason: GenerationReason::InferredResultType
+                                | GenerationReason::AnnotatedResultType,
+                            ..
+                        }
+                    )
+                })
+                .unwrap();
+            if annotated {
+                fragment.origin = RawOrigin::Source {
+                    source: annotation.unwrap(),
+                    rule: DirectRule::Expression,
+                };
+            } else {
+                let RawOrigin::Generated { reason, relations } = &mut fragment.origin else {
+                    unreachable!()
+                };
+                *reason = GenerationReason::AnnotatedResultType;
+                relations.push(RawRelation {
+                    role: RelationRole::Annotation,
+                    target: RawTarget::Source(body),
+                });
+            }
+        });
     }
 }

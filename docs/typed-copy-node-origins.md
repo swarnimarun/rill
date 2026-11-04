@@ -160,3 +160,21 @@ opaque logical arguments produce an explicit `E-TYPED-UNSUPPORTED` mapping
 boundary, including opaque metadata confined to bodies or capture shapes.
 No concrete witness or partial successful index is substituted. Closed mapping
 behavior and ordinary semantic-error precedence remain unchanged.
+
+
+## Closed result annotations
+
+Written braced-function result types and all nested arguments use the distinct
+`FunctionResult` AST role and `SignatureOnly` dispositions. Their checked result
+slot uses `AnnotatedResultType`, with ordered definition, body and annotation
+relations. The annotation must be this function's actual result child, not a
+same-shaped parameter type. Full closed result identity still passes the existing
+function-instance validation. Unannotated result provenance is unchanged.
+The bounded [integrated acceptance](verification/2026-11-04-result-annotations.md)
+includes independent corruption checks and the full default/importer matrix.
+Another function's same-shaped result annotation is rejected as the generated
+result's source relation. Written annotations cannot claim direct runtime spans,
+and unannotated functions cannot acquire an invented annotated-result reason.
+The existing closed Copy-body scope, native/owner exclusions and contextual/opaque
+mapping boundaries remain unchanged. The first-stage and expanded author reports
+remain historical implementation records.

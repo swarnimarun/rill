@@ -323,6 +323,12 @@ impl Parser {
             self.take();
             let name = self.name()?;
             let params = self.fn_params()?;
+            let result_annotation = if *self.peek() == Kind::ThinArrow {
+                self.take();
+                Some(self.type_expr()?)
+            } else {
+                None
+            };
             let body = self.block()?;
             self.check_expr_depth(&body)?;
             if *self.peek() == Kind::Semi {
@@ -334,10 +340,12 @@ impl Parser {
                     kind: ExportKind::Function,
                 });
             }
-            module
-                .program
-                .functions
-                .push(Function { name, params, body });
+            module.program.functions.push(Function {
+                name,
+                params,
+                result_annotation,
+                body,
+            });
             return Ok(Some(AstDeclaration::Function(
                 module.program.functions.len() - 1,
             )));
@@ -400,10 +408,12 @@ impl Parser {
                 kind: ExportKind::Function,
             });
         }
-        module
-            .program
-            .functions
-            .push(Function { name, params, body });
+        module.program.functions.push(Function {
+            name,
+            params,
+            result_annotation: None,
+            body,
+        });
         Ok(Some(AstDeclaration::Function(
             module.program.functions.len() - 1,
         )))

@@ -149,6 +149,24 @@ impl<'a> SourceIndex<'a> {
     pub(super) fn child(&self, slot: usize, step: AstStep) -> Option<usize> {
         self.children.get(&(slot, step)).copied()
     }
+    pub(super) fn is_signature_annotation(
+        &self,
+        slot: usize,
+        budget: &mut BodyBudget,
+    ) -> Result<bool, String> {
+        let Some(record) = self.sources.nodes().get(slot) else {
+            return Ok(false);
+        };
+        budget.work(record.path.steps.len())?;
+        let tail = match record.path.steps.as_slice() {
+            [AstStep::Parameter(_), AstStep::Annotation, tail @ ..]
+            | [AstStep::FunctionResult, tail @ ..] => tail,
+            _ => return Ok(false),
+        };
+        Ok(tail
+            .iter()
+            .all(|step| matches!(step, AstStep::TypeArgument(_))))
+    }
     pub(super) fn function(&self, slot: usize) -> Option<usize> {
         match self.sources.nodes().get(slot)?.path.declaration {
             AstDeclaration::Function(i) => Some(i),
@@ -445,7 +463,7 @@ impl<'a> Trace<'a> {
             );
             self.edge(&mut children, TypedChildRole::Parameter(index), fragment);
             if let Some(slot) = self.source(AstNode::Parameter(param)) {
-                self.signature_annotations(slot);
+                self.signature_annotations(slot, AstStep::Annotation);
             }
         }
         let mut relations = Vec::new();
@@ -459,12 +477,23 @@ impl<'a> Trace<'a> {
         if let Some(slot) = self.source(AstNode::Expression(&function.body)) {
             self.relation(&mut relations, RelationRole::Body, RawTarget::Source(slot));
         }
-        let result_fragment = self.generated(
-            GenerationReason::InferredResultType,
-            relations,
-            TypedNodeRef::Result(result),
-            Vec::new(),
-        );
+        let reason = if function.result_annotation.is_some() {
+            if let Some(root) = self.source(AstNode::Function(function)) {
+                self.signature_annotations(root, AstStep::FunctionResult);
+                if let Some(annotation) = self.source_index.child(root, AstStep::FunctionResult) {
+                    self.relation(
+                        &mut relations,
+                        RelationRole::Annotation,
+                        RawTarget::Source(annotation),
+                    );
+                }
+            }
+            GenerationReason::AnnotatedResultType
+        } else {
+            GenerationReason::InferredResultType
+        };
+        let result_fragment =
+            self.generated(reason, relations, TypedNodeRef::Result(result), Vec::new());
         self.edge(&mut children, TypedChildRole::Result, result_fragment);
         self.edge(&mut children, TypedChildRole::FunctionBody, body_fragment);
         let root = self.direct(
@@ -485,10 +514,10 @@ impl<'a> Trace<'a> {
             Ok(())
         });
     }
-    fn signature_annotations(&mut self, param: usize) {
+    fn signature_annotations(&mut self, root: usize, role: AstStep) {
         self.observe(|trace| {
             let mut pending = Vec::new();
-            if let Some(annotation) = trace.source_index.child(param, AstStep::Annotation) {
+            if let Some(annotation) = trace.source_index.child(root, role) {
                 trace.budget.records(1)?;
                 pending.push(annotation);
             }

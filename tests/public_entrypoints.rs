@@ -48,6 +48,7 @@ fn fabricated_constructor_names_are_rejected_before_c_emission() {
             }],
             externs: vec![],
             functions: vec![Function {
+                result_annotation: None,
                 name: "main".into(),
                 params: vec![],
                 body: Expr::Unit,
@@ -87,6 +88,7 @@ fn malformed_record_metadata_is_rejected() {
             }],
             externs: vec![],
             functions: vec![Function {
+                result_annotation: None,
                 name: "main".into(),
                 params: vec![],
                 body: Expr::Unit,

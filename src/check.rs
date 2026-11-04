@@ -5,6 +5,7 @@ use crate::ast::{
 use std::collections::{HashMap, HashSet};
 
 mod alloc;
+pub(crate) mod annotations;
 mod exhaustiveness;
 mod graph;
 mod layout;
@@ -1524,6 +1525,7 @@ pub fn check(program: &Program) -> Result<(), String> {
 
 /// Analyze a program and retain inferred types for a lowering pass.
 pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
+    annotations::preflight_results(program)?;
     alloc::validate(program)?;
     let mut checker = Checker {
         allocation_types: program.allocation_types.clone(),
@@ -1803,6 +1805,16 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
                 },
             );
         }
+        // Every recursive result constraint must be installed before any body.
+        // Recursive calls still use monomorphic placeholders, never schemes.
+        for &i in &group {
+            let f = &program.functions[i];
+            if let Some(annotation) = &f.result_annotation {
+                let declared = checker.declared_type(annotation, &HashMap::new())?;
+                let result = checker.copy_type(&checker.functions[&f.name].result)?;
+                checker.unify(result, declared)?;
+            }
+        }
         for &i in &group {
             let f = &program.functions[i];
             let signature = checker.copy_function(&checker.functions[&f.name])?;
@@ -1933,6 +1945,7 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             .params
             .iter()
             .any(|param| param.annotation.as_ref().is_some_and(names_owner))
+            || function.result_annotation.as_ref().is_some_and(names_owner)
     });
     fn unresolved(ty: &Type) -> bool {
         match ty {
