@@ -7,6 +7,7 @@ use std::sync::atomic::{AtomicU64, Ordering};
 pub(crate) mod abi;
 #[cfg(unix)]
 pub mod configuration;
+pub mod inputs;
 pub mod selected;
 
 struct CheckDirectory(std::path::PathBuf);

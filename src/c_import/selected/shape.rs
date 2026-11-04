@@ -1,5 +1,7 @@
 //! Pure bounded shape guard for generated selected-C modules.
-use super::Selection;
+use super::{Automatic, Selection};
+use crate::c_import::Config;
+use std::collections::HashSet;
 
 fn protocol_error() -> String {
     "E-C-IMPORT: invalid generated binding module shape".into()
@@ -8,7 +10,7 @@ fn protocol_error() -> String {
 // Reject anything beyond the shallow generated subset before invoking the
 // general parser/checker in the parent. In particular, arbitrary worker text
 // cannot introduce recursive Rill functions/types or expression trees here.
-pub fn validate(module: &str, selection: &Selection) -> Result<(), String> {
+fn parse(module: &str, native: &Config) -> Result<crate::parser::ParsedModule, String> {
     if module.is_empty() || module.len() > 1024 * 1024 {
         return Err(protocol_error());
     }
@@ -73,20 +75,50 @@ pub fn validate(module: &str, selection: &Selection) -> Result<(), String> {
         || program.allocation_types.is_some()
         || program.externs.len() + program.constants.len() > 256
         || program.externs.iter().any(|f| f.params.len() > 128)
-        || program.native != selection.native
-        || !program
-            .externs
-            .iter()
-            .map(|f| &f.name)
-            .eq(selection.functions.iter())
-        || !program
+        || program.native != *native
+        || parsed.exports.len() != program.externs.len() + program.constants.len()
+    {
+        return Err(protocol_error());
+    }
+    Ok(parsed)
+}
+
+/// Require the exact selected names in their original order.
+pub fn validate(module: &str, selection: &Selection) -> Result<(), String> {
+    let parsed = parse(module, &selection.native)?;
+    if !parsed
+        .program
+        .externs
+        .iter()
+        .map(|f| &f.name)
+        .eq(selection.functions.iter())
+        || !parsed
+            .program
             .constants
             .iter()
             .map(|c| &c.name)
             .eq(selection.constants.iter())
-        || parsed.exports.len() != program.externs.len() + program.constants.len()
     {
         return Err(protocol_error());
+    }
+    Ok(())
+}
+
+/// Automatic lookup can omit absent names but cannot add unrelated declarations.
+pub fn validate_automatic(module: &str, request: &Automatic) -> Result<(), String> {
+    let parsed = parse(module, &request.native)?;
+    let expected: HashSet<_> = request.names.iter().collect();
+    let mut actual = HashSet::new();
+    for name in parsed
+        .program
+        .externs
+        .iter()
+        .map(|f| &f.name)
+        .chain(parsed.program.constants.iter().map(|c| &c.name))
+    {
+        if !expected.contains(name) || !actual.insert(name) {
+            return Err(protocol_error());
+        }
     }
     Ok(())
 }

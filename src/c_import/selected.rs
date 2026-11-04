@@ -3,7 +3,7 @@ use super::{Config, Resolved};
 use std::collections::HashSet;
 use std::ffi::{OsStr, OsString};
 use std::io::Write;
-use std::path::Path;
+use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
 #[cfg(feature = "c-import")]
@@ -19,6 +19,48 @@ pub struct Selection {
     pub c_args: Vec<OsString>,
     /// Optional Clang builtin-header directory. Not a target/sysroot override.
     pub resource_dir: Option<std::path::PathBuf>,
+}
+
+/// Compiler-selected uses of declarations made available by source `@include`.
+/// Missing names are left to the ordinary Rill resolver.
+#[derive(Clone, Debug, Default)]
+pub struct Automatic {
+    pub native: Config,
+    pub names: Vec<String>,
+    pub c_args: Vec<OsString>,
+    pub resource_dir: Option<PathBuf>,
+}
+
+#[derive(Clone, Debug)]
+pub struct Generated {
+    pub module: String,
+    /// Actual included headers, including transitive and frontend resource
+    /// headers. Paths are absolute and preserve raw Unix path bytes.
+    pub dependencies: Vec<PathBuf>,
+    /// Header and search-path state captured before exact target validation.
+    pub inputs: crate::c_import::inputs::InputState,
+}
+
+impl Automatic {
+    fn validate(&self) -> Result<(), String> {
+        self.native.validate()?;
+        if self.native.includes.is_empty() {
+            return Err("E-C-IMPORT: automatic import requires at least one @include".into());
+        }
+        if self.names.len() > 256 {
+            return Err("E-C-IMPORT: automatic import exceeds 256 referenced C names".into());
+        }
+        let mut names = HashSet::new();
+        for name in &self.names {
+            if !identifier(name) || name.len() > 256 || name.starts_with("__rill_import_") {
+                return Err(format!("E-C-IMPORT: invalid automatic identifier {name:?}"));
+            }
+            if !names.insert(name) {
+                return Err(format!("E-C-IMPORT: duplicate automatic name {name}"));
+            }
+        }
+        Ok(())
+    }
 }
 
 impl Selection {
@@ -136,6 +178,65 @@ fn prepare_impl(
     }
 }
 
+/// Read referenced C declarations and validate their exact target ABI before
+/// returning any bindings. Like `generate`, this library API is in-process;
+/// the CLI runs it through the supervised import worker.
+pub fn generate_automatic(
+    request: &Automatic,
+    compiler: &OsStr,
+    zig_cc: bool,
+) -> Result<Generated, String> {
+    request.validate()?;
+    #[cfg(not(feature = "c-import"))]
+    {
+        let _ = (compiler, zig_cc);
+        Err("E-C-IMPORT: automatic @include import requires a build with --features c-import and libclang 12 or newer".into())
+    }
+    #[cfg(feature = "c-import")]
+    {
+        let resolved = request.native.resolve()?;
+        let mut flags = resolved.cflags;
+        flags.extend(request.c_args.iter().cloned());
+        validate_flags(&flags)?;
+        let (imported, dependencies) = clang::extract_automatic(request, &flags)?;
+        let inputs = crate::c_import::inputs::capture_inputs(
+            &flags,
+            &dependencies,
+            request.resource_dir.as_deref(),
+        )
+        .map_err(|error| error.to_string())?;
+        validate_imported(&imported, compiler, zig_cc, &flags)?;
+        if !inputs.current() {
+            return Err("E-C-IMPORT: headers or include search paths changed during automatic import; retry the build".into());
+        }
+        Ok(Generated {
+            module: imported.module,
+            dependencies,
+            inputs,
+        })
+    }
+}
+
+#[cfg(feature = "c-import")]
+fn validate_imported(
+    imported: &clang::Imported,
+    compiler: &OsStr,
+    zig_cc: bool,
+    flags: &[OsString],
+) -> Result<(), String> {
+    let program = crate::modules::compile::check_binding_source(&imported.module)
+        .map_err(|e| format!("E-C-IMPORT: generated binding module: {e}"))?;
+    let mut c = crate::backend::emit(&program)?;
+    let constants = imported
+        .facts
+        .constants
+        .iter()
+        .map(|fact| fact.name.clone())
+        .collect::<Vec<_>>();
+    c.push_str(&imported.facts.render_assertions(&constants)?);
+    super::validate_c(&c, compiler, zig_cc, flags)
+}
+
 /// Accept only target/preprocessing options whose effect is shared by both
 /// frontends. In particular -E, -S, -o, response files and extra source inputs
 /// must never turn the final semantic check into preprocessing or another job.
@@ -165,6 +266,7 @@ fn validate_flags(flags: &[OsString]) -> Result<(), String> {
             "-target",
             "--target",
             "-arch",
+            "-resource-dir",
         ]
         .contains(&text)
         {
@@ -186,7 +288,32 @@ fn validate_flags(flags: &[OsString]) -> Result<(), String> {
             "-pthread",
             "-std=c11",
             "-O0",
+            "-O1",
             "-O2",
+            "-O3",
+            "-Os",
+            "-Oz",
+            "-Og",
+            "-Ofast",
+            "-g",
+            "-g0",
+            "-g1",
+            "-g2",
+            "-g3",
+            "-w",
+            "-Wall",
+            "-Wextra",
+            "-Wpedantic",
+            "-Werror",
+            "-Wno-error",
+            "-Wconversion",
+            "-Wsign-conversion",
+            "-Wshadow",
+            "-Wno-unused-parameter",
+            "-Wno-unused-function",
+            "-Wno-unused-variable",
+            "-Wno-unused-value",
+            "-Wno-missing-field-initializers",
         ]
         .contains(&text)
             || [
@@ -299,9 +426,6 @@ mod tests {
             "extra.c",
             "-Xclang",
             "-Wp,-P",
-            "-O1",
-            "-O3",
-            "-Os",
         ] {
             assert!(validate_flags(&[flag.into()]).is_err(), "{flag}");
         }

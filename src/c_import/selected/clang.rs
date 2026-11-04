@@ -5,12 +5,13 @@
 use super::facts::{
     BuiltinKind, ConstantFact, ConstantType, ConstantValue, FrontendFacts, ScalarProbe,
 };
-use super::{identifier, Selection};
+use super::{identifier, Automatic, Selection};
 use crate::ast::ExternType;
 use clang_sys::*;
-use std::collections::{HashMap, HashSet};
+use std::collections::{BTreeSet, HashMap, HashSet};
 use std::ffi::{CStr, CString, OsString};
 use std::fmt::Write;
+use std::path::PathBuf;
 use std::ptr;
 
 const MAX_DIAGNOSTICS: usize = 32 * 1024;
@@ -134,6 +135,14 @@ unsafe fn reject(cursor: CXCursor, symbol: &str, reason: impl std::fmt::Display)
 
 impl Unit {
     fn parse(index: &Index, source: &str, flags: &[OsString]) -> Result<Self, String> {
+        let unit = Self::parse_probe(index, source, flags)?;
+        unit.check_diagnostics()?;
+        Ok(unit)
+    }
+
+    // Macro activity can be queried even when its value is not a valid C
+    // initializer. Callers must check diagnostics before using any AST types.
+    fn parse_probe(index: &Index, source: &str, flags: &[OsString]) -> Result<Self, String> {
         let filename = CString::new("__rill_import_input.c").unwrap();
         let text = CString::new(source).map_err(|_| "E-C-IMPORT: NUL in generated C input")?;
         let args = [
@@ -173,9 +182,7 @@ impl Unit {
             }
             return Err(format!("E-C-IMPORT: libclang could not parse C input (error {code}); check target, sysroot and resource headers"));
         }
-        let unit = Self(raw);
-        unit.check_diagnostics()?;
-        Ok(unit)
+        Ok(Self(raw))
     }
 
     fn check_diagnostics(&self) -> Result<(), String> {
@@ -272,6 +279,158 @@ impl Unit {
             Err("E-C-IMPORT: declaration traversal failed or exceeded 200000 cursors".into())
         } else {
             Ok(state.found)
+        }
+    }
+
+    fn dependencies(&self) -> Result<Vec<PathBuf>, String> {
+        struct Visit {
+            paths: BTreeSet<PathBuf>,
+            bytes: usize,
+            error: Option<String>,
+        }
+        extern "C" fn visit(
+            file: CXFile,
+            _: *mut CXSourceLocation,
+            length: u32,
+            data: CXClientData,
+        ) {
+            let state = unsafe { &mut *data.cast::<Visit>() };
+            if state.error.is_some() || file.is_null() || length == 0 {
+                return;
+            }
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                let name = clang_getFileName(file);
+                let raw = clang_getCString(name);
+                let bytes = if raw.is_null() {
+                    Vec::new()
+                } else {
+                    CStr::from_ptr(raw).to_bytes().to_vec()
+                };
+                clang_disposeString(name);
+                if bytes.is_empty() || bytes.len() > 16 * 1024 {
+                    return Err("E-C-IMPORT: invalid or excessive header dependency path".into());
+                }
+                #[cfg(unix)]
+                let path = {
+                    use std::os::unix::ffi::OsStringExt;
+                    PathBuf::from(OsString::from_vec(bytes))
+                };
+                #[cfg(not(unix))]
+                let path = PathBuf::from(String::from_utf8(bytes).map_err(|_| {
+                    "E-C-IMPORT: header dependency path is not representable on this host"
+                })?);
+                let path = if path.is_absolute() {
+                    path
+                } else {
+                    std::env::current_dir()
+                        .map_err(|e| format!("E-C-IMPORT: cannot resolve header dependency: {e}"))?
+                        .join(path)
+                };
+                if path.as_os_str().as_encoded_bytes().len() > 16 * 1024 {
+                    return Err("E-C-IMPORT: excessive absolute header dependency path".into());
+                }
+                if state.paths.insert(path.clone()) {
+                    state.bytes += path.as_os_str().as_encoded_bytes().len();
+                    if state.paths.len() > 1024 || state.bytes > 512 * 1024 {
+                        return Err(
+                            "E-C-IMPORT: header dependencies exceed 1024 paths or 512 KiB".into(),
+                        );
+                    }
+                }
+                Ok::<(), String>(())
+            }));
+            match result {
+                Ok(Ok(())) => {}
+                Ok(Err(error)) => state.error = Some(error),
+                Err(_) => {
+                    state.error = Some("E-C-IMPORT: header dependency traversal failed".into())
+                }
+            }
+        }
+        let mut state = Visit {
+            paths: BTreeSet::new(),
+            bytes: 0,
+            error: None,
+        };
+        unsafe {
+            clang_getInclusions(self.0, visit, (&mut state as *mut Visit).cast());
+        }
+        match state.error {
+            Some(error) => Err(error),
+            None => Ok(state.paths.into_iter().collect()),
+        }
+    }
+
+    fn expanded_macro(&self, name: &str, offset: usize) -> Result<Option<CXCursor>, String> {
+        struct Visit<'a> {
+            name: &'a str,
+            file: CXFile,
+            offset: usize,
+            definition: Option<CXCursor>,
+            visited: usize,
+            failed: bool,
+        }
+        extern "C" fn visit(
+            cursor: CXCursor,
+            _: CXCursor,
+            data: CXClientData,
+        ) -> CXChildVisitResult {
+            let state = unsafe { &mut *data.cast::<Visit<'_>>() };
+            let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+                state.visited += 1;
+                if state.visited > MAX_CURSORS {
+                    state.failed = true;
+                    return CXChildVisit_Break;
+                }
+                if clang_getCursorKind(cursor) == CXCursor_MacroExpansion
+                    && string(clang_getCursorSpelling(cursor)) == state.name
+                {
+                    let mut file = ptr::null_mut();
+                    let mut offset = 0;
+                    clang_getExpansionLocation(
+                        clang_getCursorLocation(cursor),
+                        &mut file,
+                        ptr::null_mut(),
+                        ptr::null_mut(),
+                        &mut offset,
+                    );
+                    if !file.is_null()
+                        && clang_File_isEqual(file, state.file) != 0
+                        && offset as usize >= state.offset
+                    {
+                        state.definition = Some(clang_getCursorReferenced(cursor));
+                    }
+                }
+                CXChildVisit_Continue
+            }));
+            match result {
+                Ok(result) => result,
+                Err(_) => {
+                    state.failed = true;
+                    CXChildVisit_Break
+                }
+            }
+        }
+        let filename = CString::new("__rill_import_input.c").unwrap();
+        let mut state = Visit {
+            name,
+            offset,
+            file: unsafe { clang_getFile(self.0, filename.as_ptr()) },
+            definition: None,
+            visited: 0,
+            failed: false,
+        };
+        unsafe {
+            clang_visitChildren(
+                clang_getTranslationUnitCursor(self.0),
+                visit,
+                (&mut state as *mut Visit<'_>).cast(),
+            );
+        }
+        if state.failed {
+            Err("E-C-IMPORT: macro expansion traversal failed".into())
+        } else {
+            Ok(state.definition)
         }
     }
 }
@@ -417,6 +576,176 @@ fn spelling(ty: &ExternType) -> String {
     }
 }
 
+unsafe fn function_declaration(
+    cursor: CXCursor,
+    name: &str,
+    types: &Types,
+) -> Result<String, String> {
+    if clang_getCursorKind(cursor) != CXCursor_FunctionDecl {
+        return Err(reject(
+            cursor,
+            name,
+            "selection is not an ordinary function; macros are not foreign function symbols",
+        ));
+    }
+    let ty = clang_getCanonicalType(clang_getCursorType(cursor));
+    if ty.kind != CXType_FunctionProto {
+        return Err(reject(
+            cursor,
+            name,
+            "unprototyped functions are unsupported",
+        ));
+    }
+    if clang_isFunctionTypeVariadic(ty) != 0 {
+        return Err(reject(cursor, name, "variadic functions are unsupported"));
+    }
+    if clang_getFunctionTypeCallingConv(ty) != CXCallingConv_C {
+        return Err(reject(
+            cursor,
+            name,
+            "non-default calling convention is unsupported",
+        ));
+    }
+    if clang_getCursorLinkage(cursor) != CXLinkage_External {
+        return Err(reject(cursor, name, "function must have external linkage"));
+    }
+    let result = types
+        .convert(clang_getCursorResultType(cursor), true)
+        .map_err(|e| reject(cursor, name, e))?;
+    let argc = clang_Cursor_getNumArguments(cursor);
+    if !(0..=128).contains(&argc) {
+        return Err(reject(cursor, name, "invalid or excessive argument count"));
+    }
+    let mut params = Vec::new();
+    for n in 0..argc {
+        let parameter = clang_Cursor_getArgument(cursor, n as _);
+        let ty = types
+            .convert(clang_getCursorType(parameter), false)
+            .map_err(|e| reject(parameter, name, e))?;
+        params.push(format!("arg{n}: {}", spelling(&ty)));
+    }
+    Ok(format!(
+        "export extern fn {name}({}) -> {};\n",
+        params.join(", "),
+        spelling(&result)
+    ))
+}
+
+enum MacroBinding {
+    Function(String),
+    Constant,
+    Missing,
+}
+
+// An object macro can rename an ordinary C function. Ask the frontend to
+// resolve its expanded initializer; no signature or alias is inferred from
+// macro tokens. All cursors and type conversions remain inside this probe TU.
+fn function_alias(
+    index: &Index,
+    source: &str,
+    flags: &[OsString],
+    name: &str,
+    origin: CXCursor,
+    has_declaration: bool,
+) -> Result<MacroBinding, String> {
+    let probe = "__rill_import_function_alias";
+    let defined = "__rill_import_macro_defined";
+    let text = format!("{source}\n#ifdef {name}\ntypedef int {defined};\n#endif\n__typeof__(&({name})) {probe} = &({name});\n");
+    let unit = Unit::parse_probe(index, &text, flags)?;
+    let names = PROBES
+        .iter()
+        .map(|(name, _, _)| (*name).to_owned())
+        .chain([probe.to_owned(), defined.to_owned()])
+        .collect();
+    let found = unit.selected(names)?;
+    if !found.contains_key(defined) && !has_declaration {
+        return Ok(MacroBinding::Missing);
+    }
+    if found.contains_key(defined)
+        && unit
+            .expanded_macro(name, source.len())?
+            .is_none_or(|cursor| unsafe { clang_Cursor_isMacroFunctionLike(cursor) != 0 })
+    {
+        return Err(unsafe { reject(origin, name, "function-like macros are unsupported") });
+    }
+    if unit.check_diagnostics().is_err() {
+        // Integer literal macros, empty guards and other non-functions retain
+        // the ordinary constant extraction and its precise diagnostics.
+        return Ok(MacroBinding::Constant);
+    }
+    let cursor = *found
+        .get(probe)
+        .and_then(|cursors| cursors.first())
+        .ok_or_else(|| format!("E-C-IMPORT: {name}: missing macro type probe"))?;
+    unsafe {
+        let ty = clang_getCanonicalType(clang_getCursorType(cursor));
+        if ty.kind != CXType_Pointer
+            || !matches!(
+                clang_getPointeeType(ty).kind,
+                CXType_FunctionProto | CXType_FunctionNoProto
+            )
+        {
+            return Ok(MacroBinding::Constant);
+        }
+    }
+    struct Visit {
+        function: Option<CXCursor>,
+        visited: usize,
+        failed: bool,
+    }
+    extern "C" fn visit(cursor: CXCursor, _: CXCursor, data: CXClientData) -> CXChildVisitResult {
+        let state = unsafe { &mut *data.cast::<Visit>() };
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| unsafe {
+            state.visited += 1;
+            if state.visited > MAX_CURSORS {
+                state.failed = true;
+                return CXChildVisit_Break;
+            }
+            if clang_getCursorKind(cursor) == CXCursor_DeclRefExpr {
+                let referenced = clang_getCursorReferenced(cursor);
+                if clang_getCursorKind(referenced) == CXCursor_FunctionDecl {
+                    let function = clang_getCanonicalCursor(referenced);
+                    if state
+                        .function
+                        .is_some_and(|previous| clang_equalCursors(previous, function) == 0)
+                    {
+                        state.failed = true;
+                        return CXChildVisit_Break;
+                    }
+                    state.function = Some(function);
+                }
+            }
+            CXChildVisit_Recurse
+        }));
+        match result {
+            Ok(result) => result,
+            Err(_) => {
+                state.failed = true;
+                CXChildVisit_Break
+            }
+        }
+    }
+    let mut state = Visit {
+        function: None,
+        visited: 0,
+        failed: false,
+    };
+    unsafe {
+        clang_visitChildren(cursor, visit, (&mut state as *mut Visit).cast());
+    }
+    if state.failed {
+        return Err(format!(
+            "E-C-IMPORT: {name}: macro must refer to one ordinary function"
+        ));
+    }
+    let Some(function) = state.function else {
+        return Err(format!("E-C-IMPORT: {name}: macro function pointers without an ordinary function declaration are unsupported"));
+    };
+    unsafe {
+        function_declaration(function, name, &Types::new(&found)?).map(MacroBinding::Function)
+    }
+}
+
 fn builtin_kind(kind: CXTypeKind) -> Result<BuiltinKind, String> {
     match kind {
         CXType_Int => Ok(BuiltinKind::Int),
@@ -434,6 +763,28 @@ fn builtin_kind(kind: CXTypeKind) -> Result<BuiltinKind, String> {
 }
 
 pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Imported, String> {
+    extract_requested(selection, flags, None).map(|(imported, _)| imported)
+}
+
+pub(super) fn extract_automatic(
+    request: &Automatic,
+    flags: &[OsString],
+) -> Result<(Imported, Vec<PathBuf>), String> {
+    let selection = Selection {
+        native: request.native.clone(),
+        c_args: request.c_args.clone(),
+        resource_dir: request.resource_dir.clone(),
+        ..Selection::default()
+    };
+    extract_requested(&selection, flags, Some(&request.names))
+}
+
+fn extract_requested(
+    selection: &Selection,
+    flags: &[OsString],
+    automatic: Option<&[String]>,
+) -> Result<(Imported, Vec<PathBuf>), String> {
+    let mut selection = selection.clone();
     let _library = Library::load()?;
     let raw_index = unsafe { clang_createIndex(1, 0) };
     if raw_index.is_null() {
@@ -453,14 +804,62 @@ pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Impor
     }
     source.push_str("_Static_assert(CHAR_BIT == 8, \"Rill requires 8-bit bytes\");\n");
     let unit = Unit::parse(&index, &source, flags)?;
-    let names = selection
-        .functions
-        .iter()
-        .chain(&selection.constants)
-        .cloned()
+    let names = automatic
+        .map(|names| names.to_vec())
+        .unwrap_or_else(|| {
+            selection
+                .functions
+                .iter()
+                .chain(&selection.constants)
+                .cloned()
+                .collect()
+        })
+        .into_iter()
         .chain(PROBES.iter().map(|(name, _, _)| (*name).to_owned()))
         .collect();
     let found = unit.selected(names)?;
+    let mut aliases = HashMap::new();
+    if let Some(names) = automatic {
+        for name in names {
+            let Some(declarations) = found.get(name) else {
+                continue;
+            };
+            let cursor = declarations
+                .iter()
+                .copied()
+                .find(|cursor| unsafe { clang_getCursorKind(*cursor) } == CXCursor_MacroDefinition)
+                .unwrap_or(declarations[0]);
+            match unsafe { clang_getCursorKind(cursor) } {
+                CXCursor_FunctionDecl => selection.functions.push(name.clone()),
+                CXCursor_MacroDefinition => {
+                    let has_declaration = declarations.iter().any(|cursor| unsafe {
+                        clang_getCursorKind(*cursor) != CXCursor_MacroDefinition
+                    });
+                    match function_alias(&index, &source, flags, name, cursor, has_declaration)? {
+                        MacroBinding::Function(declaration) => {
+                            selection.functions.push(name.clone());
+                            aliases.insert(name.clone(), declaration);
+                        }
+                        MacroBinding::Constant => selection.constants.push(name.clone()),
+                        MacroBinding::Missing => {}
+                    }
+                }
+                CXCursor_EnumConstantDecl => {
+                    selection.constants.push(name.clone());
+                }
+                _ => {
+                    return Err(unsafe {
+                        reject(cursor, name, "only foreign functions, object macros and enum constants can be imported as values")
+                    });
+                }
+            }
+        }
+    }
+    let dependencies = if automatic.is_some() {
+        unit.dependencies()?
+    } else {
+        Vec::new()
+    };
     // Every cursor and type below belongs to the live `unit`. The second TU
     // used for macro probes is separate, and uses its own scalar probe types.
     unsafe {
@@ -510,56 +909,16 @@ pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Impor
             constants: Vec::with_capacity(selection.constants.len()),
         };
         for name in &selection.functions {
+            if let Some(declaration) = aliases.get(name) {
+                module.push_str(declaration);
+                continue;
+            }
             let declarations = found
                 .get(name)
                 .ok_or_else(|| format!("E-C-IMPORT: {name}: selected function was not found"))?;
             let mut emitted = None;
             for &cursor in declarations {
-                if clang_getCursorKind(cursor) != CXCursor_FunctionDecl {
-                    return Err(reject(cursor, name, "selection is not an ordinary function; macros are not foreign function symbols"));
-                }
-                let ty = clang_getCanonicalType(clang_getCursorType(cursor));
-                if ty.kind != CXType_FunctionProto {
-                    return Err(reject(
-                        cursor,
-                        name,
-                        "unprototyped functions are unsupported",
-                    ));
-                }
-                if clang_isFunctionTypeVariadic(ty) != 0 {
-                    return Err(reject(cursor, name, "variadic functions are unsupported"));
-                }
-                if clang_getFunctionTypeCallingConv(ty) != CXCallingConv_C {
-                    return Err(reject(
-                        cursor,
-                        name,
-                        "non-default calling convention is unsupported",
-                    ));
-                }
-                if clang_getCursorLinkage(cursor) != CXLinkage_External {
-                    return Err(reject(cursor, name, "function must have external linkage"));
-                }
-                let result = types
-                    .convert(clang_getCursorResultType(cursor), true)
-                    .map_err(|e| reject(cursor, name, e))?;
-                let argc = clang_Cursor_getNumArguments(cursor);
-                if !(0..=128).contains(&argc) {
-                    return Err(reject(cursor, name, "invalid or excessive argument count"));
-                }
-                let mut params = Vec::new();
-                for n in 0..argc {
-                    let parameter = clang_Cursor_getArgument(cursor, n as _);
-                    let parameter_ty = types
-                        .convert(clang_getCursorType(parameter), false)
-                        .map_err(|e| reject(parameter, name, e))?;
-                    // Generated names avoid unnamed, duplicate or Rill-keyword C parameters.
-                    params.push(format!("arg{n}: {}", spelling(&parameter_ty)));
-                }
-                let declaration = format!(
-                    "export extern fn {name}({}) -> {};\n",
-                    params.join(", "),
-                    spelling(&result)
-                );
+                let declaration = function_declaration(cursor, name, &types)?;
                 if emitted
                     .as_ref()
                     .is_some_and(|previous| previous != &declaration)
@@ -576,7 +935,9 @@ pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Impor
             let declarations = found
                 .get(name)
                 .ok_or_else(|| format!("E-C-IMPORT: {name}: selected constant was not found"))?;
-            for &cursor in declarations {
+            // Automatic macro probes already resolved the active definition;
+            // historical definitions before #undef must not change its kind.
+            for &cursor in declarations.iter().filter(|_| automatic.is_none()) {
                 match clang_getCursorKind(cursor) {
                     CXCursor_MacroDefinition if clang_Cursor_isMacroFunctionLike(cursor) == 0 => {},
                     CXCursor_EnumConstantDecl => {},
@@ -636,6 +997,6 @@ pub(super) fn extract(selection: &Selection, flags: &[OsString]) -> Result<Impor
             });
         }
         facts.validate(&selection.constants)?;
-        Ok(Imported { module, facts })
+        Ok((Imported { module, facts }, dependencies))
     }
 }
