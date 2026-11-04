@@ -179,6 +179,9 @@ fn visit(checked: &CheckedProgram<'_>, expr: &Expr, scope: &mut Scope) -> Result
         }
     }
     match expr {
+        Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..) => {
+            Err("E-FUNCTION-OWNED: callable conversion is required before affine validation".into())
+        }
         Expr::Let(name, value, body) | Expr::LetMut(name, value, body) => {
             let mutable = matches!(expr, Expr::LetMut(..));
             let is_owner_value = checked

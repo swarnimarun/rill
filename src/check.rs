@@ -1,13 +1,15 @@
 //! Type inference and exhaustiveness checking for the sequential subset.
 use crate::ast::{
-    BinaryOp, Expr, ExternConst, ExternFunction, ExternType, ParamMode, Pattern, Program, TypeExpr,
+    Expr, ExternConst, ExternFunction, ExternType, ParamMode, Pattern, Program, TypeExpr,
 };
 use std::collections::{HashMap, HashSet};
 use std::rc::Rc;
 
 mod alloc;
 pub(crate) mod annotations;
+mod callables;
 mod exhaustiveness;
+mod expressions;
 mod graph;
 mod layout;
 mod owned_types;
@@ -15,6 +17,7 @@ mod ownership;
 mod projections;
 mod solver;
 mod type_cursor;
+pub(crate) use callables::children as callable_children;
 pub use owned_types::CheckedVariant;
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -28,13 +31,28 @@ pub enum Type {
     CU32,
     CU64,
     CF32,
-    CPointer { pointee: String, is_const: bool },
+    CPointer {
+        pointee: String,
+        is_const: bool,
+    },
     StaticStr,
     Bytes(usize),
     U8x16,
     SystemBoxI32,
     SystemBytes,
     Nominal(String, Vec<Type>),
+    Callable {
+        environment: Box<Type>,
+        params: Vec<Type>,
+        modes: Vec<ParamMode>,
+        result: Box<Type>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct ClosureInfo {
+    pub site: usize,
+    pub captures: Vec<String>,
 }
 struct Scheme {
     quantified: Vec<usize>,
@@ -68,6 +86,9 @@ pub struct CheckedProgram<'a> {
     pub program: &'a Program,
     pub functions: HashMap<String, FunctionType>,
     expression_types: HashMap<*const Expr, Type>,
+    application_types: HashMap<*const Expr, Type>,
+    expression_sites: HashMap<*const Expr, usize>,
+    closures: HashMap<*const Expr, ClosureInfo>,
     field_info: HashMap<*const Expr, Vec<FieldInfo>>,
     record_info: HashMap<*const Expr, RecordInfo>,
     // Source binding identities, not names; no cloned type trees are retained.
@@ -104,6 +125,20 @@ impl CheckedProgram<'_> {
     }
     pub fn expression_type(&self, expression: &Expr) -> Option<&Type> {
         self.expression_types.get(&(expression as *const Expr))
+    }
+
+    pub fn application_type(&self, expression: &Expr) -> Option<&Type> {
+        self.application_types.get(&(expression as *const Expr))
+    }
+
+    pub fn expression_site(&self, expression: &Expr) -> Option<usize> {
+        self.expression_sites
+            .get(&(expression as *const Expr))
+            .copied()
+    }
+
+    pub fn closure_info(&self, expression: &Expr) -> Option<&ClosureInfo> {
+        self.closures.get(&(expression as *const Expr))
     }
 
     pub fn field_info(&self, expression: &Expr) -> Option<&[FieldInfo]> {
@@ -146,6 +181,7 @@ struct Checker {
     solver: solver::Solver,
     level: usize,
     functions: HashMap<String, FunctionType>,
+    source_functions: HashSet<String>,
     parameter_modes: HashMap<String, Vec<ParamMode>>,
     next_local: usize,
     active_loans: Vec<Loan>,
@@ -157,6 +193,9 @@ struct Checker {
     pointer_types: Vec<Type>,
     constants: HashMap<String, Type>,
     expression_types: HashMap<*const Expr, Type>,
+    application_types: HashMap<*const Expr, Type>,
+    expression_sites: HashMap<*const Expr, usize>,
+    closures: HashMap<*const Expr, ClosureInfo>,
     field_info: HashMap<*const Expr, Vec<FieldInfo>>,
     record_info: HashMap<*const Expr, RecordInfo>,
     // Source binding identities, not names; no cloned type trees are retained.
@@ -286,6 +325,7 @@ impl Checker {
         while let Some(value) = pending.pop() {
             match value {
                 Expr::Int(_) | Expr::Bool(_) | Expr::Unit | Expr::Str(_) => {}
+                Expr::Lambda(_, _) => {}
                 Expr::Var(name) => {
                     if let Some(binding) = locals.get(name) {
                         if binding.mutable
@@ -298,6 +338,7 @@ impl Checker {
                             return false;
                         }
                     } else if !self.constants.contains_key(name)
+                        && !self.functions.contains_key(name)
                         && !self.constructors.get(name).is_some_and(|constructor| {
                             constructor.record_fields.is_none() && constructor.fields.is_empty()
                         })
@@ -339,8 +380,13 @@ impl Checker {
             match ty {
                 Type::SystemBoxI32 | Type::SystemBytes => return Ok(true),
                 Type::Nominal(name, arguments) => {
-                    declarations.push(name.as_str());
+                    if !name.starts_with('$') {
+                        declarations.push(name.as_str());
+                    }
                     types.extend(arguments);
+                }
+                Type::Callable { environment, .. } => {
+                    types.push(environment);
                 }
                 _ => {}
             }
@@ -393,6 +439,19 @@ impl Checker {
         }
     }
     fn declared_type(&self, t: &TypeExpr, vars: &HashMap<String, Type>) -> Result<Type, String> {
+        if t.args.is_empty() {
+            if t.name == "$cstr" {
+                return Ok(Type::CStr);
+            }
+            if let Some(length) = t
+                .name
+                .strip_prefix("$bytes:")
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| *n <= 256)
+            {
+                return Ok(Type::Bytes(length));
+            }
+        }
         if let Some(ty) = vars.get(&t.name) {
             if !t.args.is_empty() {
                 return Err(format!(
@@ -699,7 +758,14 @@ impl Checker {
     }
 
     fn infer(&mut self, expr: &Expr, locals: &mut HashMap<String, Scheme>) -> Result<Type, String> {
-        let ty = self.infer_inner(expr, locals)?;
+        // Long operator and local-binding chains must not retain the general
+        // expression match's larger frame at every recursive step.
+        let ty = match expr {
+            Expr::Binary(op, a, b) => self.infer_binary(op, a, b, locals),
+            Expr::Let(n, value, body) => self.infer_let(expr, n, value, body, locals),
+            Expr::LetMut(n, value, body) => self.infer_let_mut(n, value, body, locals),
+            _ => self.infer_inner(expr, locals),
+        }?;
         self.expression_types
             .insert(expr as *const Expr, self.copy_type(&ty)?);
         Ok(ty)
@@ -711,6 +777,14 @@ impl Checker {
         locals: &mut HashMap<String, Scheme>,
     ) -> Result<Type, String> {
         match expr {
+            Expr::Lambda(params, body) => self.infer_lambda(expr, params, body, locals),
+            Expr::Apply(callee, args) => {
+                let callee = self.infer(callee, locals)?;
+                self.infer_application(expr, callee, args, locals)
+            }
+            Expr::FunctionOp(op, left, right) => {
+                self.infer_function_op(expr, *op, left, right, locals)
+            }
             Expr::Int(_) => Ok(Type::Int),
             Expr::Bool(_) => Ok(Type::Bool),
             Expr::Unit => Ok(Type::Unit),
@@ -754,6 +828,9 @@ impl Checker {
                 }
                 if let Some(ty) = self.constants.get(n) {
                     return self.copy_type(ty);
+                }
+                if self.functions.contains_key(n) {
+                    return self.named_callable(n);
                 }
                 if self.constructors.contains_key(n) {
                     if self.constructors[n].record_fields.is_some() {
@@ -846,36 +923,7 @@ impl Checker {
                 self.unify(ty, field_type)?;
                 Ok(Type::Unit)
             }
-            Expr::Binary(op, a, b) => {
-                let a = self.infer(a, locals)?;
-                let b = self.infer(b, locals)?;
-                match op {
-                    BinaryOp::Add
-                    | BinaryOp::Sub
-                    | BinaryOp::Mul
-                    | BinaryOp::Div
-                    | BinaryOp::Rem => {
-                        self.unify(a, Type::Int)?;
-                        self.unify(b, Type::Int)?;
-                        Ok(Type::Int)
-                    }
-                    BinaryOp::Lt | BinaryOp::Le | BinaryOp::Gt | BinaryOp::Ge => {
-                        self.unify(a, Type::Int)?;
-                        self.unify(b, Type::Int)?;
-                        Ok(Type::Bool)
-                    }
-                    BinaryOp::And | BinaryOp::Or => {
-                        self.unify(a, Type::Bool)?;
-                        self.unify(b, Type::Bool)?;
-                        Ok(Type::Bool)
-                    }
-                    BinaryOp::Eq | BinaryOp::Ne => {
-                        self.unify(self.copy_type(&a)?, b)?;
-                        self.equality_types.push(a);
-                        Ok(Type::Bool)
-                    }
-                }
-            }
+            Expr::Binary(op, a, b) => self.infer_binary(op, a, b, locals),
             Expr::If(c, a, b) => {
                 let c = self.infer(c, locals)?;
                 self.unify(c, Type::Bool)?;
@@ -891,81 +939,8 @@ impl Checker {
                 self.unify(body, Type::Unit)?;
                 Ok(Type::Unit)
             }
-            Expr::Let(n, value, body) => {
-                self.level += 1;
-                let inferred = self.infer(value, locals);
-                self.level -= 1;
-                let ty = inferred?;
-                // Discharge before collecting free IDs: solving may replace a
-                // candidate variable with a nominal tree containing other IDs.
-                self.resolve_projections(false)?;
-                let mut free = HashSet::new();
-                self.free_type(&ty, &mut free);
-                let mut env = HashSet::new();
-                for s in locals.values() {
-                    self.free_scheme(s, &mut env)
-                }
-                self.free_functions(&mut env);
-                // Keep the level/environment cross-check independent of the
-                // value restriction. Rejected candidates become weak variables
-                // at this boundary, so immutable aliases cannot generalize them.
-                let mut quantified = self.generalize(free.clone(), &env)?;
-                if !self.nonexpansive(value, locals) || self.has_owner_dependency(&ty)? {
-                    for id in free {
-                        self.solver.lower_variable(id, self.level);
-                    }
-                    quantified.clear();
-                }
-                let local_id = self.local_id();
-                if !quantified.is_empty() {
-                    self.polymorphic_locals
-                        .insert(expr as *const Expr, local_id);
-                }
-                let old = locals.insert(
-                    n.clone(),
-                    Scheme {
-                        quantified,
-                        ty,
-                        mutable: false,
-                        borrowed: false,
-                        local_id,
-                    },
-                );
-                let result = self.infer(body, locals);
-                match old {
-                    Some(v) => {
-                        locals.insert(n.clone(), v);
-                    }
-                    None => {
-                        locals.remove(n);
-                    }
-                }
-                result
-            }
-            Expr::LetMut(n, value, body) => {
-                let ty = self.infer(value, locals)?;
-                let local_id = self.local_id();
-                let old = locals.insert(
-                    n.clone(),
-                    Scheme {
-                        quantified: Vec::new(),
-                        ty,
-                        mutable: true,
-                        borrowed: false,
-                        local_id,
-                    },
-                );
-                let result = self.infer(body, locals);
-                match old {
-                    Some(v) => {
-                        locals.insert(n.clone(), v);
-                    }
-                    None => {
-                        locals.remove(n);
-                    }
-                }
-                result
-            }
+            Expr::Let(n, value, body) => self.infer_let(expr, n, value, body, locals),
+            Expr::LetMut(n, value, body) => self.infer_let_mut(n, value, body, locals),
             Expr::Assign(n, value) => {
                 let binding = locals
                     .get(n)
@@ -983,6 +958,31 @@ impl Checker {
                 Ok(Type::Unit)
             }
             Expr::Call(n, args) => {
+                if let Some(binding) = locals
+                    .get(n)
+                    .filter(|_| !self.constructors.contains_key(n))
+                    .map(|binding| self.copy_scheme(binding))
+                    .transpose()?
+                {
+                    self.local_uses
+                        .insert(expr as *const Expr, binding.local_id);
+                    if self.conflicts(binding.local_id, &[], false)? {
+                        return Err(format!(
+                            "E-LOAN: cannot read exclusively borrowed callable '{n}'"
+                        ));
+                    }
+                    let callee = self.instantiate(&binding)?;
+                    return self.infer_application(expr, callee, args, locals);
+                }
+                if self.source_functions.contains(n)
+                    && self
+                        .functions
+                        .get(n)
+                        .is_some_and(|signature| signature.params.len() != args.len())
+                {
+                    let callee = self.named_callable(n)?;
+                    return self.infer_application(expr, callee, args, locals);
+                }
                 if matches!(n.as_str(), "u8" | "u32" | "u64" | "f32") {
                     if args.len() != 1 {
                         return Err(format!("E-ARITY: {n} expects one argument"));
@@ -1186,40 +1186,6 @@ impl Checker {
         }
     }
 }
-fn calls(expr: &Expr, out: &mut Vec<String>) {
-    match expr {
-        Expr::Binary(_, a, b) | Expr::Let(_, a, b) | Expr::LetMut(_, a, b) | Expr::While(a, b) => {
-            calls(a, out);
-            calls(b, out)
-        }
-        Expr::If(a, b, c) => {
-            calls(a, out);
-            calls(b, out);
-            calls(c, out)
-        }
-        Expr::Call(n, args) => {
-            out.push(n.clone());
-            for a in args {
-                calls(a, out)
-            }
-        }
-        Expr::Match(e, arms) => {
-            calls(e, out);
-            for a in arms {
-                calls(&a.body, out)
-            }
-        }
-        Expr::Record(_, fields) => {
-            for (_, value) in fields {
-                calls(value, out);
-            }
-        }
-        Expr::FieldAssign(_, _, value) => calls(value, out),
-        Expr::Assign(_, value) => calls(value, out),
-        _ => {}
-    }
-}
-
 fn type_deps(t: &TypeExpr, names: &HashSet<String>, params: &[String], out: &mut HashSet<String>) {
     if matches!(t.name.as_str(), "ptr" | "const_ptr") {
         return;
@@ -1481,6 +1447,16 @@ pub fn check(program: &Program) -> Result<(), String> {
 
 /// Analyze a program and retain inferred types for a lowering pass.
 pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
+    analyze_inner(program, true)
+}
+
+/// Check library snapshots without requiring an executable entry point.
+/// An existing main still has to obey the ordinary entry-point signature.
+pub fn analyze_library(program: &Program) -> Result<CheckedProgram<'_>, String> {
+    analyze_inner(program, false)
+}
+
+fn analyze_inner(program: &Program, require_main: bool) -> Result<CheckedProgram<'_>, String> {
     annotations::preflight_signatures(program)?;
     alloc::validate(program)?;
     let mut checker = Checker {
@@ -1488,6 +1464,7 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         solver: solver::Solver::default(),
         level: 0,
         functions: HashMap::new(),
+        source_functions: program.functions.iter().map(|f| f.name.clone()).collect(),
         parameter_modes: HashMap::new(),
         next_local: 0,
         active_loans: Vec::new(),
@@ -1499,6 +1476,9 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         pointer_types: Vec::new(),
         constants: HashMap::new(),
         expression_types: HashMap::new(),
+        application_types: HashMap::new(),
+        expression_sites: callables::sites(program),
+        closures: HashMap::new(),
         field_info: HashMap::new(),
         record_info: HashMap::new(),
         polymorphic_locals: HashMap::new(),
@@ -1722,15 +1702,21 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             .parameter_modes
             .insert(f.name.clone(), f.params.iter().map(|p| p.mode).collect());
     }
-    let main = names.get("main").ok_or("E-NAME: missing main function")?;
-    if !program.functions[*main].params.is_empty() {
-        return Err("E-ARITY: main must take zero arguments".into());
+    if let Some(main) = names.get("main") {
+        if !program.functions[*main].params.is_empty() {
+            return Err("E-ARITY: main must take zero arguments".into());
+        }
+    } else if require_main {
+        return Err("E-NAME: missing main function".into());
     }
     let n = program.functions.len();
     let mut edges = vec![Vec::new(); n];
     for (i, f) in program.functions.iter().enumerate() {
-        let mut dependencies = Vec::new();
-        calls(&f.body, &mut dependencies);
+        let dependencies = callables::free_names(
+            &f.body,
+            f.params.iter().map(|p| p.name.clone()).collect(),
+            &checker.constructors,
+        );
         for name in dependencies {
             if checker.constructors.contains_key(&name)
                 || foreign_names.contains(&name)
@@ -1738,10 +1724,9 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             {
                 continue;
             }
-            let j = names
-                .get(&name)
-                .ok_or_else(|| format!("E-NAME: unknown function '{name}'"))?;
-            edges[i].push(*j);
+            if let Some(j) = names.get(&name) {
+                edges[i].push(*j);
+            }
         }
     }
     // Retain only completed components' monomorphic free variables. Scanning
@@ -1863,12 +1848,22 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         }
     }
     checker.resolve_projections(true)?;
+    for ty in checker.expression_types.values() {
+        let resolved = checker.resolve(ty)?;
+        if let Type::Callable { environment, .. } = &resolved {
+            if checker.has_owner_dependency(environment)? {
+                return Err(
+                    "E-FUNCTION-CAPTURE: callable environments cannot capture owners".into(),
+                );
+            }
+        }
+    }
     let expression_types = checker
         .expression_types
         .iter()
         .map(|(expr, ty)| Ok((*expr, checker.resolve(ty)?)))
         .collect::<Result<_, String>>()?;
-    let functions = checker
+    let functions: HashMap<String, FunctionType> = checker
         .functions
         .iter()
         .map(|(name, signature)| {
@@ -1886,10 +1881,28 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
             ))
         })
         .collect::<Result<_, String>>()?;
+    if require_main {
+        let mut pending = vec![&functions["main"].result];
+        while let Some(ty) = pending.pop() {
+            match ty {
+                Type::Callable { .. } => return Err("E-FUNCTION-RESULT: main cannot return a callable value or an aggregate containing one".into()),
+                Type::Nominal(_, arguments) => pending.extend(arguments),
+                _ => {},
+            }
+        }
+    }
+    let application_types = checker
+        .application_types
+        .iter()
+        .map(|(expr, ty)| Ok((*expr, checker.resolve(ty)?)))
+        .collect::<Result<_, String>>()?;
     let mut checked = CheckedProgram {
         program,
         functions,
         expression_types,
+        application_types,
+        expression_sites: checker.expression_sites,
+        closures: checker.closures,
         field_info: checker.field_info,
         record_info: checker.record_info,
         polymorphic_locals: checker.polymorphic_locals,
@@ -1919,6 +1932,12 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         match ty {
             Type::Var(_) => true,
             Type::Nominal(_, arguments) => arguments.iter().any(unresolved),
+            Type::Callable {
+                environment,
+                params,
+                result,
+                ..
+            } => unresolved(environment) || params.iter().any(unresolved) || unresolved(result),
             _ => false,
         }
     }
@@ -1933,6 +1952,13 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
         }
     }
     if checked.has_owned {
+        if checked
+            .expression_types
+            .values()
+            .any(|ty| matches!(ty, Type::Callable { .. }))
+        {
+            return Err("E-FUNCTION-OWNED: first-class functions in owner programs require additional affine closure lowering".into());
+        }
         ownership::verify(&checked)?;
     }
     Ok(checked)

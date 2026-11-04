@@ -675,6 +675,12 @@ impl<'a, 's> SourceBuilder<'a, 's> {
     ) -> Result<(), String> {
         self.budget.charge(1)?;
         let kind = match expr {
+            Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..) => {
+                return Err(
+                    "E-TYPED-UNSUPPORTED: callable control proofs require closure conversion"
+                        .into(),
+                );
+            }
             Expr::Int(value) => SourceKind::Int(*value),
             Expr::Str(value) => SourceKind::Str(self.budget.text(value)?),
             Expr::CStr(value) => SourceKind::CStr(self.budget.text(value)?),

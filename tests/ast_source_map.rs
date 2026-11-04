@@ -8,12 +8,24 @@ use std::{collections::BTreeSet, fs, path::Path};
 
 fn expr_count(e: &Expr) -> usize {
     1 + match e {
-        Expr::Let(_, a, b) | Expr::LetMut(_, a, b) | Expr::Binary(_, a, b) | Expr::While(a, b) => {
-            expr_count(a) + expr_count(b)
-        }
+        Expr::Let(_, a, b)
+        | Expr::LetMut(_, a, b)
+        | Expr::Binary(_, a, b)
+        | Expr::FunctionOp(_, a, b)
+        | Expr::While(a, b) => expr_count(a) + expr_count(b),
         Expr::If(c, a, b) => expr_count(c) + expr_count(a) + expr_count(b),
         Expr::Assign(_, v) | Expr::FieldAssign(_, _, v) => expr_count(v),
         Expr::Call(_, args) => args.iter().map(expr_count).sum(),
+        Expr::Apply(callee, args) => {
+            expr_count(callee) + args.iter().map(expr_count).sum::<usize>()
+        }
+        Expr::Lambda(params, body) => {
+            expr_count(body)
+                + params
+                    .iter()
+                    .map(|p| 1 + p.annotation.as_ref().map_or(0, type_count))
+                    .sum::<usize>()
+        }
         Expr::Record(_, fields) => fields.iter().map(|(_, v)| expr_count(v)).sum(),
         Expr::Match(v, arms) => {
             expr_count(v)
@@ -347,7 +359,7 @@ fn validated_paths_reject_wrong_roles_missing_slots_and_out_of_range_indices() {
 }
 #[test]
 fn errors_never_expose_a_partial_map_and_order_is_deterministic() {
-    for src in ["fn bad(){1 2}\nfn good(){42}", "fn f(){λ}", "fn f(){"] {
+    for src in ["fn bad(){1 +}\nfn good(){42}", "fn f(){λ}", "fn f(){"] {
         let tree = SyntaxTree::parse(src);
         let error = tree.ast_source_map().unwrap_err();
         assert_eq!(error, tree.ast_source_map().unwrap_err());
@@ -456,7 +468,7 @@ fn empty_metadata_only_and_all_provenance_kinds_are_explicit() {
         let (_, map) = mapped(src);
         assert!(map.entries().is_empty());
     }
-    let (_, map) = mapped("type P={x:i32} fn main(){let x=0; -x;}");
+    let (_, map) = mapped("type P={x:i32} fn main(){let x=0; -x; not true;}");
     let kinds: BTreeSet<_> = map
         .entries()
         .iter()
@@ -471,6 +483,7 @@ fn empty_metadata_only_and_all_provenance_kinds_are_explicit() {
             "StatementDiscard",
             "ImplicitUnit",
             "UnaryNegation",
+            "BooleanNegation",
             "RecordVariant"
         ]
         .into_iter()

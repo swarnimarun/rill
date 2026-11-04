@@ -124,6 +124,17 @@ fn gap(previous: &Lexeme<'_>, current: &Lexeme<'_>, original: &str, braces: usiz
     if prev == &Kind::LBrace && curr == &Kind::RBrace {
         return Gap::None;
     }
+    // Composition uses adjacent angle tokens, which remain separate tokens so
+    // nested generic closings can be parsed independently in type positions.
+    if matches!((prev, curr), (Kind::Gt, Kind::Gt) | (Kind::Lt, Kind::Lt)) {
+        return if original.is_empty() {
+            Gap::None
+        } else if lines > 0 {
+            newline
+        } else {
+            Gap::Space
+        };
+    }
     if prev == &Kind::LBrace || curr == &Kind::RBrace || prev == &Kind::Semi {
         return newline;
     }
@@ -138,9 +149,9 @@ fn gap(previous: &Lexeme<'_>, current: &Lexeme<'_>, original: &str, braces: usiz
     {
         return newline;
     }
-    // Preserve the historical distinction between adjacent and separated call /
-    // parameter parentheses, even though today's parser accepts both as calls.
-    if matches!(prev, Kind::Ident(_)) && curr == &Kind::LParen {
+    // Whitespace arguments distinguish x(y) from x (y). Preserve every
+    // parenthesis boundary, including after another call or a lambda body.
+    if curr == &Kind::LParen && !matches!(prev, Kind::LParen | Kind::At) {
         return if original.is_empty() {
             Gap::None
         } else if lines > 0 {

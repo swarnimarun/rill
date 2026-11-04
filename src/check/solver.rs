@@ -19,6 +19,7 @@ enum Term {
     // Only non-Var, non-Nominal public types are atoms.
     Atom(Type),
     Nominal(String, Vec<TermId>),
+    Callable(Vec<crate::ast::ParamMode>, Vec<TermId>),
 }
 
 struct Variable {
@@ -49,6 +50,7 @@ enum View<'a> {
     Atom,
     PublicNominal(&'a [Type]),
     PrivateNominal(&'a [TermId]),
+    PublicCallable(TypeChildren<'a>),
 }
 
 impl Solver {
@@ -127,12 +129,30 @@ impl Solver {
                 TypeCursor::Public(Type::Nominal(name, children)) => {
                     return Ok(TypeHead::Nominal(name, TypeChildren::Public(children)));
                 }
+                TypeCursor::Public(Type::Callable {
+                    environment,
+                    params,
+                    modes,
+                    result,
+                }) => {
+                    return Ok(TypeHead::Callable(
+                        modes,
+                        TypeChildren::Callable {
+                            environment,
+                            params,
+                            result,
+                        },
+                    ));
+                }
                 TypeCursor::Public(atom) => return Ok(TypeHead::Atom(atom)),
                 TypeCursor::Private(term) => match &self.terms[term] {
                     Term::Variable(id) => *id,
                     Term::Atom(atom) => return Ok(TypeHead::Atom(atom)),
                     Term::Nominal(name, children) => {
                         return Ok(TypeHead::Nominal(name, TypeChildren::Private(children)));
+                    }
+                    Term::Callable(modes, children) => {
+                        return Ok(TypeHead::Callable(modes, TypeChildren::Private(children)));
                     }
                 },
             };
@@ -160,11 +180,22 @@ impl Solver {
         };
         match input {
             Input::Public(Type::Nominal(_, arguments)) => View::PublicNominal(arguments),
+            Input::Public(Type::Callable {
+                environment,
+                params,
+                result,
+                ..
+            }) => View::PublicCallable(TypeChildren::Callable {
+                environment,
+                params,
+                result,
+            }),
             Input::Public(_) => View::Atom,
             Input::Private(term) => match &self.terms[self.head(term)] {
                 Term::Variable(id) => View::Variable(*id),
                 Term::Atom(_) => View::Atom,
                 Term::Nominal(_, arguments) => View::PrivateNominal(arguments),
+                Term::Callable(_, arguments) => View::PrivateNominal(arguments),
             },
         }
     }
@@ -187,6 +218,14 @@ impl Solver {
                     out.insert(id);
                 }
                 View::PublicNominal(arguments) => work.extend(arguments.iter().map(Input::Public)),
+                View::PublicCallable(children) => {
+                    for index in 0..children.len() {
+                        let Some(TypeCursor::Public(ty)) = children.get(index) else {
+                            unreachable!()
+                        };
+                        work.push(Input::Public(ty));
+                    }
+                }
                 View::PrivateNominal(arguments) => {
                     work.extend(arguments.iter().map(|t| Input::Private(*t)))
                 }
@@ -203,6 +242,7 @@ impl Solver {
         enum Work {
             Visit(Type),
             Build(String, usize),
+            BuildCallable(Vec<crate::ast::ParamMode>, usize),
         }
         let mut work = vec![Work::Visit(ty)];
         let mut values = Vec::new();
@@ -211,6 +251,21 @@ impl Solver {
                 Work::Build(name, arity) => {
                     let arguments = values.split_off(values.len() - arity);
                     Term::Nominal(name, arguments)
+                }
+                Work::BuildCallable(modes, arity) => {
+                    Term::Callable(modes, values.split_off(values.len() - arity))
+                }
+                Work::Visit(Type::Callable {
+                    environment,
+                    params,
+                    modes,
+                    result,
+                }) => {
+                    work.push(Work::BuildCallable(modes, params.len() + 2));
+                    work.push(Work::Visit(*result));
+                    work.extend(params.into_iter().rev().map(Work::Visit));
+                    work.push(Work::Visit(*environment));
+                    continue;
                 }
                 Work::Visit(Type::Nominal(name, arguments)) => {
                     work.push(Work::Build(name, arguments.len()));
@@ -276,6 +331,11 @@ impl Solver {
                 (_, Term::Variable(id)) => self.bind(*id, left)?,
                 (Term::Nominal(a, aa), Term::Nominal(b, bb)) if a == b && aa.len() == bb.len() => {
                     // Keep left-to-right error ordering while using a LIFO stack.
+                    work.extend(aa.iter().zip(bb).rev().map(|(a, b)| (*a, *b)));
+                }
+                (Term::Callable(a, aa), Term::Callable(b, bb))
+                    if a == b && aa.len() == bb.len() =>
+                {
                     work.extend(aa.iter().zip(bb).rev().map(|(a, b)| (*a, *b)));
                 }
                 _ => {

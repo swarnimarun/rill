@@ -18,6 +18,9 @@ pub enum AstStep {
     Parameter(usize),
     FunctionBody,
     FunctionResult,
+    LambdaParameter(usize),
+    LambdaBody,
+    ApplyCallee,
     Annotation,
     Variant(usize),
     FieldType(usize),
@@ -144,8 +147,17 @@ impl<'a> AstNode<'a> {
             (Self::Expression(Expr::Let(_, _, b) | Expr::LetMut(_, _, b)), LetBody) => {
                 Self::Expression(b)
             }
-            (Self::Expression(Expr::Binary(_, a, _)), BinaryLeft) => Self::Expression(a),
-            (Self::Expression(Expr::Binary(_, _, b)), BinaryRight) => Self::Expression(b),
+            (Self::Expression(Expr::Binary(_, a, _) | Expr::FunctionOp(_, a, _)), BinaryLeft) => {
+                Self::Expression(a)
+            }
+            (Self::Expression(Expr::Binary(_, _, b) | Expr::FunctionOp(_, _, b)), BinaryRight) => {
+                Self::Expression(b)
+            }
+            (Self::Expression(Expr::Lambda(params, _)), LambdaParameter(i)) => {
+                Self::Parameter(params.get(i)?)
+            }
+            (Self::Expression(Expr::Lambda(_, body)), LambdaBody) => Self::Expression(body),
+            (Self::Expression(Expr::Apply(callee, _)), ApplyCallee) => Self::Expression(callee),
             (Self::Expression(Expr::If(c, _, _) | Expr::While(c, _)), Condition) => {
                 Self::Expression(c)
             }
@@ -155,7 +167,9 @@ impl<'a> AstNode<'a> {
             (Self::Expression(Expr::Assign(_, v) | Expr::FieldAssign(_, _, v)), AssignValue) => {
                 Self::Expression(v)
             }
-            (Self::Expression(Expr::Call(_, args)), Argument(i)) => Self::Expression(args.get(i)?),
+            (Self::Expression(Expr::Call(_, args) | Expr::Apply(_, args)), Argument(i)) => {
+                Self::Expression(args.get(i)?)
+            }
             (Self::Expression(Expr::Record(_, fields)), RecordField(i)) => {
                 Self::Expression(&fields.get(i)?.1)
             }
@@ -196,7 +210,14 @@ impl<'a> AstNode<'a> {
             Self::TypeExpression(t) => (0..t.args.len()).map(TypeArgument).collect(),
             Self::Expression(e) => match e {
                 Expr::Let(..) | Expr::LetMut(..) => vec![LetValue, LetBody],
-                Expr::Binary(..) => vec![BinaryLeft, BinaryRight],
+                Expr::Binary(..) | Expr::FunctionOp(..) => vec![BinaryLeft, BinaryRight],
+                Expr::Lambda(params, _) => (0..params.len())
+                    .map(LambdaParameter)
+                    .chain([LambdaBody])
+                    .collect(),
+                Expr::Apply(_, args) => std::iter::once(ApplyCallee)
+                    .chain((0..args.len()).map(Argument))
+                    .collect(),
                 Expr::If(..) => vec![Condition, Then, Else],
                 Expr::While(..) => vec![Condition, WhileBody],
                 Expr::Assign(..) | Expr::FieldAssign(..) => vec![AssignValue],
@@ -349,6 +370,9 @@ fn expression_kind(kind: SyntaxKind) -> bool {
             | SyntaxKind::ParenthesizedExpression
             | SyntaxKind::UnitExpression
             | SyntaxKind::CallExpression
+            | SyntaxKind::ApplyExpression
+            | SyntaxKind::LambdaExpression
+            | SyntaxKind::FunctionOperatorExpression
             | SyntaxKind::FieldExpression
             | SyntaxKind::NameExpression
             | SyntaxKind::RecordExpression
@@ -638,7 +662,8 @@ impl Mapper<'_, '_> {
             | (SyntaxKind::NameExpression, Expr::Var(_))
             | (SyntaxKind::MoveExpression, Expr::Move(_))
             | (SyntaxKind::FieldExpression, Expr::Field(..)) => {}
-            (SyntaxKind::BinaryExpression, Expr::Binary(_, a, b)) => {
+            (SyntaxKind::BinaryExpression, Expr::Binary(_, a, b))
+            | (SyntaxKind::FunctionOperatorExpression, Expr::FunctionOp(_, a, b)) => {
                 if children.len() != 2 {
                     return Err(fail(&path, "binary child count differs"));
                 }
@@ -722,19 +747,39 @@ impl Mapper<'_, '_> {
                 self.expr(path.child(AstStep::LetValue), a, children[0])?;
                 self.expr(path.child(AstStep::LetBody), b, children[1])?;
             }
-            (SyntaxKind::CallExpression, Expr::Call(_, args)) => {
-                let arguments = self.nodes(node, SyntaxKind::Argument);
-                if arguments.len() != args.len() {
-                    return Err(fail(&path, "call argument count differs"));
+            (SyntaxKind::LambdaExpression, Expr::Lambda(params, body)) => {
+                let parameters = self.one(&path, self.nodes(node, SyntaxKind::Parameters))?;
+                let nodes = self.nodes(parameters, SyntaxKind::Parameter);
+                if params.len() != nodes.len() {
+                    return Err(fail(&path, "lambda parameter count differs"));
                 }
-                for (i, (arg, n)) in args.iter().zip(arguments).enumerate() {
-                    let p = path.child(AstStep::Argument(i));
-                    if matches!(arg, Expr::Inout(_) | Expr::InoutField(..)) {
-                        self.insert(&p, n, OriginKind::Source, None)?;
-                    } else {
-                        self.expr(p, arg, self.one(&path, self.expressions(n))?)?;
+                for (i, (param, n)) in params.iter().zip(nodes).enumerate() {
+                    let p = path.child(AstStep::LambdaParameter(i));
+                    self.insert(&p, n, OriginKind::Source, None)?;
+                    if let Some(ty) = &param.annotation {
+                        self.ty(
+                            p.child(AstStep::Annotation),
+                            ty,
+                            self.one(&p, self.nodes(n, SyntaxKind::TypeExpression))?,
+                        )?;
                     }
                 }
+                self.expr(
+                    path.child(AstStep::LambdaBody),
+                    body,
+                    self.one(&path, children)?,
+                )?;
+            }
+            (SyntaxKind::CallExpression | SyntaxKind::ApplyExpression, Expr::Call(_, args)) => {
+                self.arguments(&path, node, args)?;
+            }
+            (SyntaxKind::ApplyExpression, Expr::Apply(callee, args)) => {
+                self.expr(
+                    path.child(AstStep::ApplyCallee),
+                    callee,
+                    self.one(&path, children)?,
+                )?;
+                self.arguments(&path, node, args)?;
             }
             (SyntaxKind::RecordExpression, Expr::Record(_, fields)) => {
                 let nodes = self.nodes(node, SyntaxKind::RecordField);
@@ -775,6 +820,26 @@ impl Mapper<'_, '_> {
                 }
             }
             _ => return Err(fail(&path, "expression grammar and AST differ")),
+        }
+        Ok(())
+    }
+    fn arguments(
+        &mut self,
+        path: &AstPath,
+        node: NodeId,
+        args: &[Expr],
+    ) -> Result<(), MappingError> {
+        let arguments = self.nodes(node, SyntaxKind::Argument);
+        if arguments.len() != args.len() {
+            return Err(fail(path, "call argument count differs"));
+        }
+        for (i, (arg, n)) in args.iter().zip(arguments).enumerate() {
+            let p = path.child(AstStep::Argument(i));
+            if matches!(arg, Expr::Inout(_) | Expr::InoutField(..)) {
+                self.insert(&p, n, OriginKind::Source, None)?;
+            } else {
+                self.expr(p, arg, self.one(path, self.expressions(n))?)?;
+            }
         }
         Ok(())
     }

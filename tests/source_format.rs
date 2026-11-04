@@ -193,7 +193,7 @@ fn empty_sources_empty_blocks_and_final_semicolons_are_preserved() {
 #[test]
 fn rejects_malformed_unsupported_and_too_deep_source() {
     for source in [
-        "fn main(){1 2}",
+        "fn main(){1 +}",
         "fn main(){",
         "fn main(){if true {1} else }",
         "fn main(){/* no block comments */42}",

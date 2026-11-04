@@ -28,6 +28,9 @@ fn expressions(root: &Expr) -> Vec<&Expr> {
     while let Some(expression) = pending.pop() {
         result.push(expression);
         match expression {
+            Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..) => {
+                panic!("callable syntax is outside the control proof test subset");
+            }
             Expr::Binary(_, left, right)
             | Expr::Let(_, left, right)
             | Expr::LetMut(_, left, right)

@@ -163,11 +163,11 @@ fn missing_delimiters_report_the_offending_token() {
     for (source, location, message) in [
         (
             "fn main() {\n let x = 1\n x\n}",
-            "3:2:",
+            "4:1:",
             "expected ';' after local binding",
         ),
         (
-            "fn main() {\n 1\n 2\n}",
+            "fn main() {\n 1\n while false {}\n}",
             "3:2:",
             "expected ';' between block statements",
         ),
@@ -179,7 +179,7 @@ fn missing_delimiters_report_the_offending_token() {
             "1:32:",
             "expected '{'",
         ),
-        ("fn main() { while true 1 }", "1:24:", "expected '{' block"),
+        ("fn main() { while true; }", "1:23:", "expected '{' block"),
     ] {
         let error = rill::parser::parse(source).unwrap_err();
         assert!(error.starts_with(location), "{error}");

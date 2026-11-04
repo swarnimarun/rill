@@ -553,6 +553,10 @@ fn contains_private_type(t: &Type, private: &HashSet<String>) -> bool {
         Type::Nominal(name, args) => {
             private.contains(name) || args.iter().any(|t| contains_private_type(t, private))
         }
+        Type::Callable { params, result, .. } => {
+            params.iter().any(|ty| contains_private_type(ty, private))
+                || contains_private_type(result, private)
+        }
         _ => false,
     }
 }
@@ -671,10 +675,13 @@ impl Rewrite<'_> {
                 }
                 let name = format!("{root}.{}", fields[0]);
                 let symbol = self.symbol(&name, Namespace::Value)?;
-                if !matches!(symbol.kind, Kind::Constructor | Kind::Constant) {
+                if !matches!(
+                    symbol.kind,
+                    Kind::Constructor | Kind::Constant | Kind::Function
+                ) {
                     return Err(err(
                         "E-MODULE-NAME",
-                        format!("{}: {name} is not a constant or constructor", self.module),
+                        format!("{}: {name} is not a value declaration", self.module),
                     ));
                 }
                 let id = symbol.id;
@@ -684,16 +691,41 @@ impl Rewrite<'_> {
             }
         }
         match e {
+            Expr::Lambda(params, body) => {
+                for (index, param) in params.iter_mut().enumerate() {
+                    self.at(AstStep::LambdaParameter(index), |rewrite| {
+                        if let Some(annotation) = &mut param.annotation {
+                            rewrite.at(AstStep::Annotation, |rewrite| {
+                                rewrite.ty(annotation, &HashSet::new())
+                            })?;
+                        }
+                        Ok(())
+                    })?;
+                    self.push(&param.name);
+                }
+                let result = self.at(AstStep::LambdaBody, |rewrite| rewrite.expr(body));
+                for param in params.iter().rev() {
+                    self.pop(&param.name);
+                }
+                result?;
+            }
+            Expr::Apply(callee, args) => {
+                self.at(AstStep::ApplyCallee, |rewrite| rewrite.expr(callee))?;
+                for (index, arg) in args.iter_mut().enumerate() {
+                    self.at(AstStep::Argument(index), |rewrite| rewrite.expr(arg))?;
+                }
+            }
+            Expr::FunctionOp(_, left, right) => {
+                self.at(AstStep::BinaryLeft, |rewrite| rewrite.expr(left))?;
+                self.at(AstStep::BinaryRight, |rewrite| rewrite.expr(right))?;
+            }
             Expr::Var(n) => {
                 if !self.locals.contains_key(n) {
                     let s = self.symbol(n, Namespace::Value)?;
-                    if !matches!(s.kind, Kind::Constructor | Kind::Constant) {
+                    if !matches!(s.kind, Kind::Constructor | Kind::Constant | Kind::Function) {
                         return Err(err(
                             "E-MODULE-NAME",
-                            format!(
-                                "{}: {n} is not a local, constant or constructor",
-                                self.module
-                            ),
+                            format!("{}: {n} is not a value declaration", self.module),
                         ));
                     }
                     let id = s.id;
@@ -735,7 +767,13 @@ impl Rewrite<'_> {
                 self.at(AstStep::Else, |rewrite| rewrite.expr(b))?;
             }
             Expr::Call(n, args) => {
-                if !builtin(n) {
+                let local = self.locals.contains_key(n) && !n.contains('.');
+                let constructor = local
+                    && self
+                        .resolver
+                        .resolve(self.module, None, n, Namespace::Value)
+                        .is_ok_and(|symbol| symbol.kind == Kind::Constructor);
+                if !builtin(n) && (!local || constructor) {
                     let id = self.symbol(n, Namespace::Value)?.id;
                     *n = self.value_name(n)?;
                     self.record(Lowering::ResolvedName(id));

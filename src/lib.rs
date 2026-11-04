@@ -4,6 +4,7 @@ pub mod c_import;
 pub mod check;
 mod display;
 pub mod formatter;
+pub mod functions;
 pub mod interpreter;
 pub mod lexer;
 pub mod modules;

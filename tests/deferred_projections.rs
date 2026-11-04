@@ -52,7 +52,17 @@ fn projections<'a>(expression: &'a Expr, found: &mut Vec<(&'a Expr, &'a [String]
             projections(b, found);
             projections(c, found);
         }
-        Expr::Assign(_, value) => projections(value, found),
+        Expr::Assign(_, value) | Expr::Lambda(_, value) => projections(value, found),
+        Expr::FunctionOp(_, a, b) => {
+            projections(a, found);
+            projections(b, found);
+        }
+        Expr::Apply(callee, arguments) => {
+            projections(callee, found);
+            for argument in arguments {
+                projections(argument, found);
+            }
+        }
         Expr::Call(_, arguments) => {
             for argument in arguments {
                 projections(argument, found);

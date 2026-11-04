@@ -206,7 +206,7 @@ fn exact_unicode_empty_comment_and_eof_spans() {
 }
 #[test]
 fn malformed_items_recover_without_ast_or_compilation() {
-    let src="fn broken(){1 2}\nfn good(){42}\ntype Bad=A(\nexport fn later(){7}\nextern fn nope()->i64;\nfn last(){9}";
+    let src="fn broken(){1 +}\nfn good(){42}\ntype Bad=A(\nexport fn later(){7}\nextern fn nope()->i64;\nfn last(){9}";
     let tree = check(src);
     assert_eq!(tree.diagnostics().len(), 3);
     assert_eq!(
@@ -226,6 +226,9 @@ fn malformed_items_recover_without_ast_or_compilation() {
         let t = check(src);
         assert_eq!(texts(&t, SyntaxKind::Function), ["fn good(){42}"]);
     }
+    let tree = check("fn bad(){ 1 + ;\nfn(x){x}\nfn good(){42}");
+    assert_eq!(tree.diagnostics().len(), 1);
+    assert_eq!(texts(&tree, SyntaxKind::Function), ["fn good(){42}"]);
 }
 #[test]
 fn diagnostic_positions_and_lexical_failure_bytes() {
@@ -260,7 +263,7 @@ fn diagnostic_positions_and_lexical_failure_bytes() {
 }
 #[test]
 fn recovery_limit_and_failed_native_rollback() {
-    let many = "fn bad(){1 2}\n".repeat(200) + "fn good(){42}";
+    let many = "fn bad(){1 +}\n".repeat(200) + "fn good(){42}";
     let tree = check(&many);
     assert_eq!(tree.diagnostics().len(), 64);
     assert_eq!(

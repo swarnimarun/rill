@@ -163,7 +163,7 @@ impl<'a> Proof<'a> {
                         TypeHead::Variable(_representative) => Ty::Other,
                         TypeHead::Atom(Type::Bool) => Ty::Bool,
                         TypeHead::Atom(Type::Unit) => Ty::Unit,
-                        TypeHead::Atom(_) => Ty::Other,
+                        TypeHead::Atom(_) | TypeHead::Callable(_, _) => Ty::Other,
                         TypeHead::Nominal(name, children) => {
                             let count = children.len();
                             self.budget.spend(count)?;
@@ -354,6 +354,7 @@ mod tests {
             solver: super::super::solver::Solver::default(),
             level: 0,
             functions: HashMap::new(),
+            source_functions: HashSet::new(),
             parameter_modes: HashMap::new(),
             next_local: 0,
             active_loans: Vec::new(),
@@ -365,6 +366,9 @@ mod tests {
             pointer_types: Vec::new(),
             constants: HashMap::new(),
             expression_types: HashMap::new(),
+            application_types: HashMap::new(),
+            expression_sites: HashMap::new(),
+            closures: HashMap::new(),
             field_info: HashMap::new(),
             record_info: HashMap::new(),
             polymorphic_locals: HashMap::new(),

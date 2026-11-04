@@ -1,7 +1,7 @@
 //! Bound all closed parameter and result annotations before recursive declaration
 //! resolution, cloning or owner classification. Public AST inputs bypass the
 //! parser's independent nesting guard, so inspect the actual borrowed tree.
-use crate::ast::{Program, TypeExpr};
+use crate::ast::{Expr, Program, TypeExpr};
 
 // Parameter and result annotations share this admission diagnostic.
 const ERROR: &str = "E-TYPE-COMPLEXITY: signature annotation input budget exceeded";
@@ -21,12 +21,14 @@ pub(crate) fn preflight_signatures(program: &Program) -> Result<(), String> {
 pub(crate) struct Budget {
     remaining: usize,
     work: usize,
+    expression_work: usize,
 }
 impl Default for Budget {
     fn default() -> Self {
         Self {
             remaining: TOTAL_WEIGHT,
             work: WORK,
+            expression_work: WORK,
         }
     }
 }
@@ -49,6 +51,35 @@ impl Budget {
                 .chain(function.result_annotation.iter())
             {
                 self.tree_named(annotation, MAX_DEPTH, TREE_WEIGHT, &mut name_len, &error)?;
+            }
+            let mut pending = vec![&function.body];
+            while let Some(expression) = pending.pop() {
+                // Admit each complete child list before allocating traversal
+                // storage, including public ASTs that bypass parser limits.
+                let children = match expression {
+                    Expr::Binary(..)
+                    | Expr::FunctionOp(..)
+                    | Expr::Let(..)
+                    | Expr::LetMut(..)
+                    | Expr::While(..) => 2,
+                    Expr::If(..) => 3,
+                    Expr::Lambda(..) | Expr::Assign(..) | Expr::FieldAssign(..) => 1,
+                    Expr::Apply(_, args) => args.len().checked_add(1).ok_or_else(&error)?,
+                    Expr::Call(_, args) => args.len(),
+                    Expr::Record(_, fields) => fields.len(),
+                    Expr::Match(_, arms) => arms.len().checked_add(1).ok_or_else(&error)?,
+                    _ => 0,
+                };
+                self.expression_work = self
+                    .expression_work
+                    .checked_sub(children.checked_add(1).ok_or_else(&error)?)
+                    .ok_or_else(&error)?;
+                if let Expr::Lambda(params, _) = expression {
+                    for annotation in params.iter().filter_map(|p| p.annotation.as_ref()) {
+                        self.tree_named(annotation, MAX_DEPTH, TREE_WEIGHT, &mut name_len, &error)?;
+                    }
+                }
+                pending.extend(super::callable_children(expression).into_iter().rev());
             }
         }
         Ok(())
@@ -102,7 +133,11 @@ impl Budget {
 
     #[cfg(test)]
     pub(crate) fn with_limits(remaining: usize, work: usize) -> Self {
-        Self { remaining, work }
+        Self {
+            remaining,
+            work,
+            expression_work: WORK,
+        }
     }
     #[cfg(test)]
     fn tree(&mut self, root: &TypeExpr, depth: usize, weight: usize) -> Result<(), String> {
@@ -122,14 +157,48 @@ mod tests {
         }
     }
     #[test]
+    fn lambda_annotations_share_source_and_resolved_admission() {
+        let program = crate::parser::parse("fn main() { let f = fn(x: i32) {x}; 42 }").unwrap();
+        assert!(Budget::with_limits(NODE_WEIGHT + 3, 1)
+            .program(&program)
+            .is_ok());
+        assert_eq!(
+            Budget::with_limits(NODE_WEIGHT + 2, 1)
+                .program(&program)
+                .unwrap_err(),
+            ERROR
+        );
+        let mut budget = Budget::with_limits(NODE_WEIGHT + 9, 1);
+        let mut names = vec![];
+        budget
+            .program_named(
+                &program,
+                |name| {
+                    names.push(name.to_owned());
+                    Ok::<_, String>(9)
+                },
+                || ERROR.to_owned(),
+            )
+            .unwrap();
+        assert_eq!(names, ["i32"]);
+        assert_eq!(budget.remaining, 0);
+    }
+
+    #[test]
     fn actual_tree_limits_are_charged_before_recursive_consumers() {
         let ty = TypeExpr {
             name: "Pair".into(),
             args: vec![atom(), atom()],
         };
         let cost = 3 * (NODE_WEIGHT + 4);
-        let run =
-            |remaining, work, depth, weight| Budget { remaining, work }.tree(&ty, depth, weight);
+        let run = |remaining, work, depth, weight| {
+            Budget {
+                remaining,
+                work,
+                expression_work: WORK,
+            }
+            .tree(&ty, depth, weight)
+        };
         assert!(run(cost, 3, 2, cost).is_ok());
         for result in [
             run(cost - 1, 3, 2, cost),
@@ -142,6 +211,7 @@ mod tests {
         let mut shared = Budget {
             remaining: cost,
             work: 6,
+            expression_work: WORK,
         };
         shared.tree(&ty, 2, cost).unwrap();
         assert_eq!(shared.tree(&ty, 2, cost).unwrap_err(), ERROR);

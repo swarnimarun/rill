@@ -1,5 +1,79 @@
 use super::*;
 
+#[test]
+fn callable_children_unify_substitute_and_reject_infinite_types() {
+    use crate::ast::ParamMode;
+    let mut solver = Solver::default();
+    let environment = solver.fresh(1);
+    let value = solver.fresh(1);
+    let callable = crate::check::callables::callable_type(
+        environment.clone(),
+        vec![value.clone()],
+        vec![ParamMode::Value],
+        value.clone(),
+    );
+    let mut free = HashSet::new();
+    solver.free_type(&callable, &mut free);
+    assert_eq!(free.len(), 2);
+    let concrete = crate::check::callables::callable_type(
+        Type::Nominal("$fn:test".into(), vec![]),
+        vec![Type::Int],
+        vec![ParamMode::Value],
+        Type::Int,
+    );
+    solver.unify(callable.clone(), concrete.clone()).unwrap();
+    assert_eq!(solver.resolve(&callable).unwrap(), concrete);
+
+    let mut solver = Solver::default();
+    let Type::Var(env) = solver.fresh(1) else {
+        unreachable!()
+    };
+    let Type::Var(argument) = solver.fresh(1) else {
+        unreachable!()
+    };
+    let callable = crate::check::callables::callable_type(
+        Type::Var(env),
+        vec![Type::Var(argument)],
+        vec![ParamMode::Value],
+        Type::Var(argument),
+    );
+    let substituted = solver
+        .substitute(
+            &callable,
+            &HashMap::from([(env, Type::Unit), (argument, Type::Bool)]),
+        )
+        .unwrap();
+    assert_eq!(
+        substituted,
+        crate::check::callables::callable_type(
+            Type::Unit,
+            vec![Type::Bool],
+            vec![ParamMode::Value],
+            Type::Bool
+        )
+    );
+    assert!(solver
+        .unify(Type::Var(argument), callable)
+        .unwrap_err()
+        .contains("infinite type"));
+    let read = crate::check::callables::callable_type(
+        Type::Unit,
+        vec![Type::Int],
+        vec![ParamMode::Read],
+        Type::Int,
+    );
+    let value = crate::check::callables::callable_type(
+        Type::Unit,
+        vec![Type::Int],
+        vec![ParamMode::Value],
+        Type::Int,
+    );
+    assert!(solver
+        .unify(read, value)
+        .unwrap_err()
+        .contains("incompatible"));
+}
+
 fn nominal(name: &str, args: Vec<Type>) -> Type {
     Type::Nominal(name.to_owned(), args)
 }

@@ -5,6 +5,9 @@ use std::collections::{HashMap, HashSet};
 use std::fmt;
 use std::rc::Rc;
 
+mod functions;
+pub use functions::Closure;
+
 type Env = HashMap<String, Rc<RefCell<Value>>>;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -17,6 +20,7 @@ pub enum Value {
     U8x16([u8; 16]),
     Record(String, Vec<(String, Value)>),
     Adt(String, Vec<Value>),
+    Callable(Box<Closure>),
 }
 impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
@@ -74,11 +78,15 @@ impl fmt::Display for Value {
                 }
                 Ok(())
             }
+            Self::Callable(_) => write!(f, "<function>"),
         }
     }
 }
 
 pub fn run(program: &Program) -> Result<Value, String> {
+    if crate::functions::needs_lowering(program) {
+        return run(&crate::functions::lower(program)?);
+    }
     let checked = crate::check::analyze(program)?;
     match crate::typed::lower_main(&checked) {
         Ok(typed) => crate::typed::evaluate(&typed),
@@ -96,6 +104,12 @@ pub fn run_reference(program: &Program) -> Result<Value, String> {
     let checked = crate::check::analyze(program)?;
     if checked.has_owned() {
         return Err("E-REFERENCE: owner programs require the checked typed path".into());
+    }
+    if matches!(
+        checked.functions.get("main").map(|f| &f.result),
+        Some(crate::check::Type::Callable { .. })
+    ) {
+        return Err("E-FUNCTION-RESULT: main cannot return a callable value".into());
     }
     run_checked_reference(program)
 }
@@ -155,6 +169,13 @@ fn eval(
     call_depth: usize,
 ) -> Result<Value, String> {
     match expr {
+        Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..) => functions::Context {
+            functions,
+            constructors,
+            externs,
+            records,
+        }
+        .expression(expr, env, call_depth),
         Expr::Int(n) => Ok(Value::Int(*n)),
         Expr::Bool(b) => Ok(Value::Bool(*b)),
         Expr::Unit => Ok(Value::Unit),
@@ -182,6 +203,8 @@ fn eval(
                 Err("E-FFI: imported C constants require native C emission".into())
             } else if constructors.get(name.as_str()) == Some(&0) {
                 Ok(Value::Adt(name.clone(), Vec::new()))
+            } else if functions.contains_key(name.as_str()) {
+                Ok(Closure::named(name.clone()))
             } else {
                 Err(format!("unknown variable: {name}"))
             }
@@ -456,6 +479,18 @@ fn eval_call(
     let Expr::Call(name, args) = expr else {
         unreachable!()
     };
+    if !constructors.contains_key(name.as_str()) {
+        if let Some(value) = env.get(name) {
+            let value = value.borrow().clone();
+            return functions::Context {
+                functions,
+                constructors,
+                externs,
+                records,
+            }
+            .apply_expressions(value, args, env, call_depth);
+        }
+    }
     if matches!(
         name.as_str(),
         "u8" | "u32" | "u64" | "f32" | "c_null" | "is_null"
@@ -587,7 +622,13 @@ fn eval_call(
         .get(name.as_str())
         .ok_or_else(|| format!("unknown function: {name}"))?;
     if fun.params.len() != args.len() {
-        return Err(format!("wrong number of arguments to {name}"));
+        return functions::Context {
+            functions,
+            constructors,
+            externs,
+            records,
+        }
+        .apply_expressions(Closure::named(name.clone()), args, env, call_depth);
     }
     let mut call_env = HashMap::new();
     let mut writebacks = Vec::new();

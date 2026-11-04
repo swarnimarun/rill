@@ -1,25 +1,26 @@
 //! Recursive-descent parser. Unsupported syntax is rejected rather than guessed.
 use crate::ast::{
-    BinaryOp, Expr, ExternConst, ExternFunction, ExternParam, ExternType, Function, MatchArm,
-    Param, ParamMode, Pattern, Program, TypeDecl, TypeExpr, VariantDecl,
+    BinaryOp, Expr, ExternConst, ExternFunction, ExternParam, ExternType, Function, FunctionOp,
+    MatchArm, Param, ParamMode, Pattern, Program, TypeDecl, TypeExpr, VariantDecl,
 };
-use crate::lexer::{lex, Kind, Token};
+use crate::lexer::{lex_lossless, Kind, Token};
 use crate::syntax::{AstDeclaration, Builder, DiagnosticCode, Marker, SyntaxKind};
 use std::cell::Cell;
+use std::collections::HashSet;
 
 pub fn parse(source: &str) -> Result<Program, String> {
-    Parser::new(lex(source)?, false, None)
+    Parser::new(lex_lossless(source)?, false, None)
         .program()
         .map(|m| m.program)
 }
 
 /// Parse module syntax without resolving imports or checking visibility.
 pub fn parse_module(source: &str) -> Result<ParsedModule, String> {
-    Parser::new(lex(source)?, true, None).program()
+    Parser::new(lex_lossless(source)?, true, None).program()
 }
 
 pub(crate) fn source_tree(source: crate::source::SourceFile<'_>) -> crate::syntax::SyntaxTree<'_> {
-    let mut parser = Parser::new(source.clone().into_tokens(), true, Some(Builder::default()));
+    let mut parser = Parser::new(source.clone(), true, Some(Builder::default()));
     let module = parser
         .program()
         .expect("source recovery handles syntax failures");
@@ -47,21 +48,43 @@ pub enum ExportKind {
 
 struct Parser {
     tokens: Vec<Token>,
+    adjacent: Vec<bool>,
     pos: usize,
     depth: usize,
     module_mode: bool,
+    module_aliases: HashSet<String>,
     block_id: usize,
     syntax: Option<Builder>,
     failure: Cell<Option<(usize, DiagnosticCode)>>,
 }
 const MAX_DEPTH: usize = 64;
 impl Parser {
-    fn new(tokens: Vec<Token>, module_mode: bool, syntax: Option<Builder>) -> Self {
+    fn new(
+        source: crate::source::SourceFile<'_>,
+        module_mode: bool,
+        syntax: Option<Builder>,
+    ) -> Self {
+        let mut previous_end = None;
+        let adjacent = source
+            .lexemes()
+            .iter()
+            .filter_map(|piece| {
+                if matches!(piece.kind(), crate::source::LexemeKind::Token(_)) {
+                    let touches = previous_end == Some(piece.span().start.byte);
+                    previous_end = Some(piece.span().end.byte);
+                    Some(touches)
+                } else {
+                    None
+                }
+            })
+            .collect();
         Self {
-            tokens,
+            tokens: source.into_tokens(),
+            adjacent,
             pos: 0,
             depth: 0,
             module_mode,
+            module_aliases: HashSet::new(),
             block_id: 0,
             syntax,
             failure: Cell::new(None),
@@ -246,16 +269,17 @@ impl Parser {
             }
             if self.module_mode && matches!(self.peek(), Kind::Ident(n) if n == "import") {
                 self.take();
-                self.name()?;
+                let mut alias = self.name()?;
                 while *self.peek() == Kind::Dot {
                     self.take();
-                    self.name()?;
+                    alias = self.name()?;
                 }
                 if matches!(self.peek(), Kind::Ident(n) if n == "as") {
                     self.take();
-                    self.name()?;
+                    alias = self.name()?;
                 }
                 self.expect(Kind::Semi)?;
+                self.module_aliases.insert(alias);
                 return Ok(None);
             }
         }
@@ -426,14 +450,19 @@ impl Parser {
         let mut parens = 0usize;
         for index in start..self.tokens.len() - 1 {
             let token = &self.tokens[index];
-            let unambiguous = matches!(token.kind, Kind::Fn | Kind::Type | Kind::Extern)
+            let named_function =
+                token.kind == Kind::Fn && matches!(self.tokens[index + 1].kind, Kind::Ident(_));
+            let unambiguous = named_function
+                || matches!(token.kind, Kind::Type | Kind::Extern)
                 || matches!(&token.kind, Kind::Ident(n) if n == "export");
             let item = unambiguous
                 || matches!(token.kind, Kind::Let | Kind::At)
                 || matches!(&token.kind, Kind::Ident(n) if n == "import");
             if index > start
                 && item
-                && ((index >= failure && braces == 0 && parens == 0)
+                && (((index >= failure || (named_function && index + 1 == failure))
+                    && braces == 0
+                    && parens == 0)
                     || (unambiguous
                         && token.line > self.tokens[start].line
                         && token.column <= self.tokens[start].column))
@@ -955,23 +984,33 @@ impl Parser {
     }
     fn binary(&mut self, min: u8) -> Result<Expr, String> {
         let marker = self.mark();
-        let mut left = self.atom()?;
+        let mut left = self.application()?;
         let mut operators = 0;
         loop {
-            let (precedence, op) = match self.peek() {
-                Kind::Or => (1, BinaryOp::Or),
-                Kind::And => (2, BinaryOp::And),
-                Kind::EqEq => (3, BinaryOp::Eq),
-                Kind::Ne => (3, BinaryOp::Ne),
-                Kind::Lt => (4, BinaryOp::Lt),
-                Kind::Le => (4, BinaryOp::Le),
-                Kind::Gt => (4, BinaryOp::Gt),
-                Kind::Ge => (4, BinaryOp::Ge),
-                Kind::Plus => (5, BinaryOp::Add),
-                Kind::Minus => (5, BinaryOp::Sub),
-                Kind::Star => (6, BinaryOp::Mul),
-                Kind::Slash => (6, BinaryOp::Div),
-                Kind::Percent => (6, BinaryOp::Rem),
+            // Keeping composition as two adjacent angle tokens also preserves
+            // separate generic closing brackets in nested type annotations.
+            let composition = match self.peek() {
+                Kind::Gt if self.adjacent_pair(&Kind::Gt) => Some(FunctionOp::ComposeForward),
+                Kind::Lt if self.adjacent_pair(&Kind::Lt) => Some(FunctionOp::ComposeBackward),
+                _ => None,
+            };
+            let (precedence, binary, function) = match self.peek() {
+                Kind::PipeForward => (1, None, Some(FunctionOp::PipeForward)),
+                Kind::PipeBackward => (1, None, Some(FunctionOp::PipeBackward)),
+                _ if composition.is_some() => (4, None, composition),
+                Kind::Or => (2, Some(BinaryOp::Or), None),
+                Kind::And => (3, Some(BinaryOp::And), None),
+                Kind::EqEq => (5, Some(BinaryOp::Eq), None),
+                Kind::Ne => (5, Some(BinaryOp::Ne), None),
+                Kind::Lt => (6, Some(BinaryOp::Lt), None),
+                Kind::Le => (6, Some(BinaryOp::Le), None),
+                Kind::Gt => (6, Some(BinaryOp::Gt), None),
+                Kind::Ge => (6, Some(BinaryOp::Ge), None),
+                Kind::Plus => (7, Some(BinaryOp::Add), None),
+                Kind::Minus => (7, Some(BinaryOp::Sub), None),
+                Kind::Star => (8, Some(BinaryOp::Mul), None),
+                Kind::Slash => (8, Some(BinaryOp::Div), None),
+                Kind::Percent => (8, Some(BinaryOp::Rem), None),
                 _ => break,
             };
             if precedence < min {
@@ -982,13 +1021,96 @@ impl Parser {
                 return Err(self.error("E-PARSE-DEPTH: operator chain exceeds 64"));
             }
             self.take();
-            let right = self.binary(precedence + 1)?;
-            left = Expr::Binary(op, Box::new(left), Box::new(right));
-            self.finish(marker, SyntaxKind::BinaryExpression);
+            if composition.is_some() {
+                self.take();
+            }
+            let next_precedence = if function == Some(FunctionOp::PipeBackward) {
+                precedence
+            } else {
+                precedence + 1
+            };
+            // Right-associated backward application can recurse at the same
+            // precedence, unlike the bounded precedence ladder above.
+            if self.depth >= MAX_DEPTH {
+                return Err(self.error("E-PARSE-DEPTH: syntax nesting exceeds 64"));
+            }
+            self.depth += 1;
+            let right = self.binary(next_precedence);
+            self.depth -= 1;
+            let right = right?;
+            let kind = if let Some(op) = binary {
+                left = Expr::Binary(op, Box::new(left), Box::new(right));
+                SyntaxKind::BinaryExpression
+            } else {
+                left = Expr::FunctionOp(function.unwrap(), Box::new(left), Box::new(right));
+                SyntaxKind::FunctionOperatorExpression
+            };
+            self.finish(marker, kind);
         }
         Ok(left)
     }
+    fn adjacent_pair(&self, kind: &Kind) -> bool {
+        let first = &self.tokens[self.pos];
+        self.tokens.get(self.pos + 1).is_some_and(|second| {
+            second.kind == *kind && second.line == first.line && second.column == first.column + 1
+        })
+    }
+    fn application(&mut self) -> Result<Expr, String> {
+        let marker = self.mark();
+        let callee = self.atom()?;
+        let mut args = Vec::new();
+        while !self.exported_item_start()
+            && (matches!(
+                self.peek(),
+                Kind::Ident(_)
+                    | Kind::Int(_)
+                    | Kind::Str(_)
+                    | Kind::CStr(_)
+                    | Kind::True
+                    | Kind::False
+                    | Kind::LParen
+                    | Kind::Move
+                    | Kind::Record
+            ) || (*self.peek() == Kind::Fn
+                && self
+                    .tokens
+                    .get(self.pos + 1)
+                    .is_some_and(|t| t.kind == Kind::LParen)))
+        {
+            if args.len() == MAX_DEPTH {
+                return Err(self.error("E-PARSE-DEPTH: application exceeds 64 arguments"));
+            }
+            let argument = self.mark();
+            args.push(self.atom_with_postfix(true)?);
+            self.finish(argument, SyntaxKind::Argument);
+        }
+        if args.is_empty() {
+            return Ok(callee);
+        }
+        let result = if let Expr::Var(name) = callee {
+            Expr::Call(name, args)
+        } else {
+            Expr::Apply(Box::new(callee), args)
+        };
+        self.finish(marker, SyntaxKind::ApplyExpression);
+        Ok(result)
+    }
+    fn exported_item_start(&self) -> bool {
+        self.module_mode
+            && matches!(self.peek(), Kind::Ident(name) if name == "export")
+            && self.tokens.get(self.pos + 1).is_some_and(|next| {
+                matches!(next.kind, Kind::Let | Kind::Type | Kind::Extern)
+                    || (next.kind == Kind::Fn
+                        && self
+                            .tokens
+                            .get(self.pos + 2)
+                            .is_some_and(|name| matches!(name.kind, Kind::Ident(_))))
+            })
+    }
     fn atom(&mut self) -> Result<Expr, String> {
+        self.atom_with_postfix(false)
+    }
+    fn atom_with_postfix(&mut self, adjacent_only: bool) -> Result<Expr, String> {
         let marker = self.mark();
         let first = self.peek().clone();
         let unit = first == Kind::LParen
@@ -996,13 +1118,18 @@ impl Parser {
                 .tokens
                 .get(self.pos + 1)
                 .is_some_and(|t| t.kind == Kind::RParen);
-        let result = self.guarded(Self::atom_inner);
+        let mut result = self.guarded(if adjacent_only {
+            Self::argument_atom_inner
+        } else {
+            Self::atom_inner
+        });
         let kind = match (&first, &result) {
             (_, Err(_)) => SyntaxKind::Error,
-            (Kind::LBrace, _) => return result,
+            (Kind::LBrace, _) => SyntaxKind::Block,
             (Kind::LParen, _) if unit => SyntaxKind::UnitExpression,
             (Kind::LParen, _) => SyntaxKind::ParenthesizedExpression,
             (Kind::Minus | Kind::Not, _) => SyntaxKind::UnaryExpression,
+            (Kind::Fn, _) => SyntaxKind::LambdaExpression,
             (_, Ok(Expr::Call(..))) => SyntaxKind::CallExpression,
             (_, Ok(Expr::Field(..))) => SyntaxKind::FieldExpression,
             (_, Ok(Expr::Var(..))) => SyntaxKind::NameExpression,
@@ -1010,15 +1137,41 @@ impl Parser {
             (_, Ok(Expr::Move(..))) => SyntaxKind::MoveExpression,
             _ => SyntaxKind::LiteralExpression,
         };
-        self.finish(marker, kind);
+        if first != Kind::LBrace {
+            self.finish(marker, kind);
+        }
+        let mut calls = 0;
+        while result.is_ok()
+            && *self.peek() == Kind::LParen
+            && (!adjacent_only || self.adjacent[self.pos])
+        {
+            calls += 1;
+            if calls > MAX_DEPTH {
+                return Err(self.error("E-PARSE-DEPTH: application chain exceeds 64"));
+            }
+            let args = self.call_args()?;
+            result = result.map(|callee| Expr::Apply(Box::new(callee), args));
+            self.finish(marker, SyntaxKind::ApplyExpression);
+        }
         result
     }
     fn atom_inner(&mut self) -> Result<Expr, String> {
+        self.atom_inner_with_postfix(false)
+    }
+    fn argument_atom_inner(&mut self) -> Result<Expr, String> {
+        self.atom_inner_with_postfix(true)
+    }
+    fn atom_inner_with_postfix(&mut self, adjacent_only: bool) -> Result<Expr, String> {
         if *self.peek() == Kind::LBrace {
             return self.block();
         }
         let start = self.pos;
         match self.take() {
+            Kind::Fn => {
+                let params = self.fn_params()?;
+                let body = self.block()?;
+                Ok(Expr::Lambda(params, Box::new(body)))
+            }
             Kind::Move => Ok(Expr::Move(self.name()?)),
             Kind::Record => {
                 let first = self.name()?;
@@ -1067,7 +1220,12 @@ impl Parser {
             Kind::Ident(name) => {
                 let path = self.field_path()?;
                 let name = if !path.is_empty() {
-                    if self.module_mode && path.len() == 1 && *self.peek() == Kind::LParen {
+                    if self.module_mode
+                        && self.module_aliases.contains(&name)
+                        && path.len() == 1
+                        && *self.peek() == Kind::LParen
+                        && (!adjacent_only || self.adjacent[self.pos])
+                    {
                         format!("{name}.{}", path[0])
                     } else {
                         return Ok(Expr::Field(name, path));
@@ -1075,34 +1233,10 @@ impl Parser {
                 } else {
                     name
                 };
-                if *self.peek() != Kind::LParen {
+                if *self.peek() != Kind::LParen || (adjacent_only && !self.adjacent[self.pos]) {
                     return Ok(Expr::Var(name));
                 }
-                self.take();
-                let mut args = Vec::new();
-                if *self.peek() != Kind::RParen {
-                    loop {
-                        let argument = self.mark();
-                        if *self.peek() == Kind::Inout {
-                            self.take();
-                            let root = self.name()?;
-                            let path = self.field_path()?;
-                            if !path.is_empty() {
-                                args.push(Expr::InoutField(root, path));
-                            } else {
-                                args.push(Expr::Inout(root));
-                            }
-                        } else {
-                            args.push(self.expr()?);
-                        }
-                        self.finish(argument, SyntaxKind::Argument);
-                        if *self.peek() != Kind::Comma {
-                            break;
-                        }
-                        self.take();
-                    }
-                }
-                self.expect(Kind::RParen)?;
+                let args = self.call_args()?;
                 Ok(Expr::Call(name, args))
             }
             Kind::LParen => {
@@ -1128,6 +1262,35 @@ impl Parser {
         }
     }
 
+    fn call_args(&mut self) -> Result<Vec<Expr>, String> {
+        self.expect(Kind::LParen)?;
+        let mut args = Vec::new();
+        if *self.peek() != Kind::RParen {
+            loop {
+                let argument = self.mark();
+                if *self.peek() == Kind::Inout {
+                    self.take();
+                    let root = self.name()?;
+                    let path = self.field_path()?;
+                    args.push(if path.is_empty() {
+                        Expr::Inout(root)
+                    } else {
+                        Expr::InoutField(root, path)
+                    });
+                } else {
+                    args.push(self.expr()?);
+                }
+                self.finish(argument, SyntaxKind::Argument);
+                if *self.peek() != Kind::Comma {
+                    break;
+                }
+                self.take();
+            }
+        }
+        self.expect(Kind::RParen)?;
+        Ok(args)
+    }
+
     fn check_expr_depth(&self, expr: &Expr) -> Result<(), String> {
         let mut work = vec![(expr, 1)];
         while let Some((node, depth)) = work.pop() {
@@ -1136,7 +1299,7 @@ impl Parser {
             }
             let next = depth + 1;
             match node {
-                Expr::Binary(_, a, b) | Expr::While(a, b) => {
+                Expr::Binary(_, a, b) | Expr::FunctionOp(_, a, b) | Expr::While(a, b) => {
                     work.push((a, next));
                     work.push((b, next));
                 }
@@ -1154,6 +1317,11 @@ impl Parser {
                     work.extend(fields.iter().map(|(_, value)| (value, next)))
                 }
                 Expr::Call(_, args) => work.extend(args.iter().map(|arg| (arg, next))),
+                Expr::Apply(callee, args) => {
+                    work.push((callee, next));
+                    work.extend(args.iter().map(|arg| (arg, next)));
+                }
+                Expr::Lambda(_, body) => work.push((body, next)),
                 Expr::Match(value, arms) => {
                     work.push((value, next));
                     work.extend(arms.iter().map(|arm| (&arm.body, next)));
@@ -1288,7 +1456,11 @@ mod tests {
             && matches!(&arms[1].pattern, Pattern::Constructor(name, fields) if name == "h.None" && fields.is_empty()))
         );
         assert!(parse(src).is_err());
-        assert!(parse("let main = h.id(1)").is_err());
+        assert!(matches!(
+            &parse("let main = h.id(1)").unwrap().functions[0].body,
+            Expr::Apply(callee, args) if matches!(callee.as_ref(), Expr::Field(root, path)
+                if root == "h" && path == &["id"]) && args == &[Expr::Int(1)]
+        ));
         let foreign =
             parse_module("export extern fn x() -> i32; export extern const FLAG: u32;").unwrap();
         assert_eq!(
@@ -1306,6 +1478,28 @@ mod tests {
         );
         assert!(parse("export extern fn x() -> i32;").is_err());
         assert!(parse_module("import h let main = 1").is_err());
+    }
+    #[test]
+    fn legacy_bodies_preserve_following_exports_and_contextual_names() {
+        let parsed = parse_module(
+            "export let first value = let outcome = value in move outcome\n\
+             export let second value = value\n\
+             export fn third() { identity export }",
+        )
+        .unwrap();
+        assert_eq!(
+            parsed
+                .exports
+                .iter()
+                .map(|item| item.name.as_str())
+                .collect::<Vec<_>>(),
+            ["first", "second", "third"]
+        );
+        assert_eq!(parsed.program.functions[1].body, Expr::Var("value".into()));
+        assert_eq!(
+            parsed.program.functions[2].body,
+            Expr::Call("identity".into(), vec![Expr::Var("export".into())])
+        );
     }
     #[test]
     fn lets_and_conditionals() {

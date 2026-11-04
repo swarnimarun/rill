@@ -144,6 +144,14 @@ interrupted-call modes remain unsupported. Its
 passed 892 default and 940 importer-enabled tests, both strict lint and Windows
 compile modes, plus independent source/proof/event checks.
 
+First-class Rill functions, `fn(x) { ... }` lambdas, immutable Copy closures,
+higher-order callbacks and currying are supported. Both `add(20, 22)` and
+`add(20)(22)` work, as does whitespace application `add 20 22`. Pipelines use
+`|>`/`<|`; composition uses `>>`/`<<`. See [function syntax and boundaries](docs/functions.md)
+and the [runnable example](examples/functions/README.md). Function values still
+require checked conversion before typed lowering; optional typed-origin APIs
+reject this conversion boundary explicitly.
+
 The subset includes signed 32-bit integers, booleans, unit, arithmetic,
 comparisons, boolean negation (`not value` or `!value`), short-circuit `&&` and
 `||`, generic algebraic types and exhaustive pattern matching. `//` starts a comment. Evaluation is left-to-right; integer

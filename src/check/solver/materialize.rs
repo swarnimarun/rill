@@ -72,23 +72,30 @@ enum Head<'a> {
     Variable(usize),
     Atom(&'a Type),
     Nominal(&'a str, Children<'a>),
+    Callable(&'a [crate::ast::ParamMode], Children<'a>),
     Replacement(&'a Type),
 }
 enum Children<'a> {
     Solved(TypeChildren<'a>),
     Raw(&'a [Type]),
+    RawCallable(TypeChildren<'a>),
 }
 impl<'a> Children<'a> {
     fn len(&self) -> usize {
         match self {
             Self::Solved(children) => children.len(),
             Self::Raw(children) => children.len(),
+            Self::RawCallable(children) => children.len(),
         }
     }
     fn get(&self, index: usize) -> Source<'a> {
         match self {
             Self::Solved(children) => Source::Solved(children.get(index).unwrap()),
             Self::Raw(children) => Source::Raw(&children[index]),
+            Self::RawCallable(children) => match children.get(index).unwrap() {
+                TypeCursor::Public(ty) => Source::Raw(ty),
+                TypeCursor::Private(_) => unreachable!(),
+            },
         }
     }
 }
@@ -130,6 +137,19 @@ impl Solver {
                 self.materialization.work(1)?;
                 Ok(match ty {
                     Type::Nominal(name, children) => Head::Nominal(name, Children::Raw(children)),
+                    Type::Callable {
+                        environment,
+                        params,
+                        modes,
+                        result,
+                    } => Head::Callable(
+                        modes,
+                        Children::RawCallable(TypeChildren::Callable {
+                            environment,
+                            params,
+                            result,
+                        }),
+                    ),
                     atom => Head::Atom(atom),
                 })
             }
@@ -143,6 +163,9 @@ impl Solver {
                     TypeHead::Atom(atom) => Head::Atom(atom),
                     TypeHead::Nominal(name, children) => {
                         Head::Nominal(name, Children::Solved(children))
+                    }
+                    TypeHead::Callable(modes, children) => {
+                        Head::Callable(modes, Children::Solved(children))
                     }
                 })
             }
@@ -170,8 +193,9 @@ impl Solver {
             self.materialization.work(1)?;
             let (key, size, head) = match step {
                 Work::Finish(key, mut size, head) => {
-                    let Head::Nominal(_, children) = &head else {
-                        unreachable!()
+                    let children = match &head {
+                        Head::Nominal(_, children) | Head::Callable(_, children) => children,
+                        _ => unreachable!(),
                     };
                     let count = children.len();
                     for child in sizes.drain(sizes.len() - count..) {
@@ -206,8 +230,13 @@ impl Solver {
                             work.push(Work::Visit(Source::Raw(ty), depth));
                             continue;
                         }
-                        Head::Nominal(name, children) => {
-                            let size = Size::node(name.len())?;
+                        Head::Nominal(_, children) | Head::Callable(_, children) => {
+                            let metadata = match &head {
+                                Head::Nominal(name, _) => name.len(),
+                                Head::Callable(modes, _) => modes.len(),
+                                _ => unreachable!(),
+                            };
+                            let size = Size::node(metadata)?;
                             let count = children.len();
                             // Reject impossible width before scheduling/allocating it.
                             let minimum = count
@@ -253,6 +282,7 @@ impl Solver {
         enum Work<'a> {
             Visit(Source<'a>),
             Build(&'a str, usize),
+            BuildCallable(&'a [crate::ast::ParamMode], usize),
         }
         let mut work = vec![Work::Visit(source)];
         let mut values = Vec::new();
@@ -264,12 +294,29 @@ impl Solver {
                     let arguments = values.split_off(values.len() - arity);
                     values.push(Type::Nominal(name.to_owned(), arguments));
                 }
+                Work::BuildCallable(modes, arity) => {
+                    let mut children = values.split_off(values.len() - arity);
+                    let result = Box::new(children.pop().unwrap());
+                    let environment = Box::new(children.remove(0));
+                    values.push(Type::Callable {
+                        environment,
+                        params: children,
+                        modes: modes.to_vec(),
+                        result,
+                    });
+                }
                 Work::Visit(source) => match &plan[&source.key()].head {
                     Head::Variable(id) => values.push(Type::Var(*id)),
                     Head::Atom(atom) => values.push((*atom).clone()),
                     Head::Replacement(ty) => work.push(Work::Visit(Source::Raw(ty))),
                     Head::Nominal(name, children) => {
                         work.push(Work::Build(name, children.len()));
+                        for index in (0..children.len()).rev() {
+                            work.push(Work::Visit(children.get(index)));
+                        }
+                    }
+                    Head::Callable(modes, children) => {
+                        work.push(Work::BuildCallable(modes, children.len()));
                         for index in (0..children.len()).rev() {
                             work.push(Work::Visit(children.get(index)));
                         }

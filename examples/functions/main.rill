@@ -1,0 +1,27 @@
+fn add(x, y) {
+    x + y
+}
+
+fn apply(f, x) {
+    f(x)
+}
+
+fn make_adder(amount) {
+    fn(value) {
+        amount + value
+    }
+}
+
+fn main() {
+    let identity = fn(value) {
+        value
+    };
+    let increment = apply(add, 1);
+    let add_twenty = make_adder(20);
+    let pipeline = increment >> add_twenty;
+    if identity(true) {
+        21 |> pipeline
+    } else {
+        identity(0)
+    }
+}

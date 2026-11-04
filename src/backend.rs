@@ -209,6 +209,9 @@ fn unwrap_c(ty: &ExternType, value: &str) -> String {
 }
 
 pub fn emit(program: &Program) -> Result<String, String> {
+    if crate::functions::needs_lowering(program) {
+        return emit(&crate::functions::lower(program)?);
+    }
     let checked = crate::check::analyze(program)?;
     match crate::typed::lower_main(&checked) {
         Ok(typed) => return crate::typed::emit_c(&typed),
@@ -232,6 +235,9 @@ fn emit_checked_reference(checked: &crate::check::CheckedProgram<'_>) -> Result<
         return Err("E-REFERENCE: owner programs require the checked typed path".into());
     }
     let program = checked.program;
+    if crate::functions::needs_lowering(program) {
+        return Err("E-REFERENCE: callable C emission requires checked closure conversion".into());
+    }
     let has_payload = program
         .types
         .iter()
@@ -522,6 +528,9 @@ impl Emitter<'_, '_> {
     fn expr(&mut self, e: &Expr, env: &mut HashMap<String, String>) -> Result<String, String> {
         let result = self.temp();
         match e {
+            Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..) => {
+                return Err("E-FUNCTION: callable conversion was not run before C emission".into());
+            }
             Expr::Int(n) => {
                 writeln!(self.out, "rl_value {result} = rl_make(0, INT32_C({n}));").unwrap();
             }
@@ -953,6 +962,11 @@ fn c_literal(value: &str) -> String {
 
 fn has_bytes(expr: &Expr) -> bool {
     match expr {
+        Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..) => {
+            crate::check::callable_children(expr)
+                .into_iter()
+                .any(has_bytes)
+        }
         Expr::Call(name, args) => {
             matches!(
                 name.as_str(),

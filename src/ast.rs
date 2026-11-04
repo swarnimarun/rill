@@ -107,7 +107,7 @@ pub struct Param {
     pub annotation: Option<TypeExpr>,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum ParamMode {
     Value,
     Read,
@@ -129,6 +129,9 @@ pub enum Expr {
     Field(String, Vec<String>),
     FieldAssign(String, Vec<String>, Box<Expr>),
     Binary(BinaryOp, Box<Expr>, Box<Expr>),
+    Lambda(Vec<Param>, Box<Expr>),
+    Apply(Box<Expr>, Vec<Expr>),
+    FunctionOp(FunctionOp, Box<Expr>, Box<Expr>),
     If(Box<Expr>, Box<Expr>, Box<Expr>),
     Let(String, Box<Expr>, Box<Expr>),
     LetMut(String, Box<Expr>, Box<Expr>),
@@ -136,6 +139,14 @@ pub enum Expr {
     Call(String, Vec<Expr>),
     Match(Box<Expr>, Vec<MatchArm>),
     While(Box<Expr>, Box<Expr>),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum FunctionOp {
+    PipeForward,
+    PipeBackward,
+    ComposeForward,
+    ComposeBackward,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

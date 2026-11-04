@@ -95,6 +95,16 @@ impl CheckedProgram<'_> {
         }
         let result = match ty {
             Type::SystemBoxI32 | Type::SystemBytes => Ok(true),
+            Type::Callable { environment, .. } => {
+                self.owner_at_depth(environment, depth + 1, active)
+            }
+            Type::Nominal(name, arguments) if name.starts_with('$') => {
+                let mut owned = false;
+                for argument in arguments {
+                    owned |= self.owner_at_depth(argument, depth + 1, active)?;
+                }
+                Ok(owned)
+            }
             Type::Nominal(_, _) => {
                 let mut owned = false;
                 for variant in self.adt_variants(ty)? {
@@ -122,6 +132,19 @@ impl CheckedProgram<'_> {
         expression: &TypeExpr,
         variables: &HashMap<String, Type>,
     ) -> Result<Type, String> {
+        if expression.args.is_empty() {
+            if expression.name == "$cstr" {
+                return Ok(Type::CStr);
+            }
+            if let Some(length) = expression
+                .name
+                .strip_prefix("$bytes:")
+                .and_then(|n| n.parse::<usize>().ok())
+                .filter(|n| *n <= 256)
+            {
+                return Ok(Type::Bytes(length));
+            }
+        }
         if let Some(ty) = variables.get(&expression.name) {
             if !expression.args.is_empty() {
                 return Err("E-OWNED-TYPE: type variable has arguments".into());
@@ -185,6 +208,18 @@ fn require_concrete(ty: &Type) -> Result<(), String> {
                 require_concrete(argument)?;
             }
             Ok(())
+        }
+        Type::Callable {
+            environment,
+            params,
+            result,
+            ..
+        } => {
+            require_concrete(environment)?;
+            for parameter in params {
+                require_concrete(parameter)?;
+            }
+            require_concrete(result)
         }
         _ => Ok(()),
     }

@@ -31,6 +31,8 @@ pub enum Kind {
     LBrace,
     RBrace,
     Pipe,
+    PipeForward,
+    PipeBackward,
     Arrow,
     ThinArrow,
     Assign,
@@ -249,12 +251,14 @@ pub(crate) fn lex_diagnostic(source: &str) -> Result<SourceFile<'_>, LexError> {
                 '!' if paired('=') => Kind::Ne,
                 '!' => Kind::Not,
                 '<' if paired('-') => Kind::Assign,
+                '<' if paired('|') => Kind::PipeBackward,
                 '<' if paired('=') => Kind::Le,
                 '<' => Kind::Lt,
                 '>' if paired('=') => Kind::Ge,
                 '>' => Kind::Gt,
                 '&' if paired('&') => Kind::And,
                 '|' if paired('|') => Kind::Or,
+                '|' if paired('>') => Kind::PipeForward,
                 '|' => Kind::Pipe,
                 _ => {
                     return Err(error(

@@ -81,6 +81,9 @@ fn size(ty: &Type, program: &Program, depth: usize) -> Result<usize, String> {
         return Err("E-C-ADT: inline layout exceeds nesting limit".into());
     }
     match ty {
+        Type::Callable { .. } => {
+            Err("E-FUNCTION: callable conversion is required before layout".into())
+        }
         Type::Var(_) => {
             Err("E-C-ADT: unresolved polymorphic value requires local specialization".into())
         }
@@ -199,6 +202,9 @@ impl Analyzer<'_> {
         let ty = self.expr_type(expr, context)?;
         self.max = self.max.max(size(&ty, self.checked.program, 0)?);
         match expr {
+            Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..) => {
+                return Err("E-FUNCTION: callable conversion is required before layout".into())
+            }
             Expr::Binary(_, a, b)
             | Expr::Let(_, a, b)
             | Expr::LetMut(_, a, b)

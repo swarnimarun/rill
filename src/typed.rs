@@ -355,6 +355,11 @@ fn lower_main_traced<'source>(
     body_trace: Option<&mut nodes::Trace<'source>>,
 ) -> Result<(TypedMain, instances::Instances), String> {
     let program = checked.program;
+    if crate::functions::needs_lowering(program) {
+        return Err(
+            "E-TYPED-UNSUPPORTED: callable programs require checked closure conversion".into(),
+        );
+    }
     let native = NativeManifest::from_checked(checked)?;
     if checked.has_owned() && (native.has_foreign() || checked.has_c_values()) {
         return Err(
