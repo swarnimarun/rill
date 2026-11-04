@@ -6,6 +6,7 @@ use super::*;
 use std::cell::RefCell;
 use std::rc::Rc;
 
+pub(in super::super) const UNREPRESENTABLE: &str = "E-TYPED-UNSUPPORTED: unresolved polymorphic value requires local specialization; physical payload needs contextual discard proof";
 const UNSUPPORTED: &str = "E-TYPED-UNSUPPORTED: unresolved polymorphic value requires local specialization; every physical field must have a finite Copy representation";
 
 #[derive(Debug)]
@@ -320,7 +321,7 @@ impl Catalog {
             return Err(LIMIT.into());
         }
         match ty {
-            SourceType::Var(_) => Err(UNSUPPORTED.into()),
+            SourceType::Var(_) => Err(UNREPRESENTABLE.into()),
             SourceType::Nominal(name, args) => {
                 let id = self.definition(name, budget)?;
                 if args.len() != self.arities[id] {

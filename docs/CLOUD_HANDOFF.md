@@ -226,8 +226,8 @@ migrated where K3 adds support; unknown physical payloads remain rejected.
 Bare recursive results use no storage or fabricated values. Mandatory source
 correspondence and separate source/IR flow proofs precede consumption. See the
 [bounded contract](blockers/nonreturning-results.md) for current exclusions;
-interrupted eager arguments are accepted below, while discarded returning results
-remain a separate representation task. The full language plan remains open.
+interrupted eager arguments and bounded discarded returning enum results are
+accepted below. The full language plan remains open.
 
 
 ## Interrupted eager arguments
@@ -241,4 +241,23 @@ remain mandatory. The [integrated matrix](verification/2026-11-04-interrupted-ar
 passed 892 default and 940 importer-enabled tests, both strict Clippy modes and
 both Windows GNU compile checks. Independent verification adds 12 private tests
 and 76 GCC/Clang executions; two fixtures retain documented Clang style warnings.
-Normally returning discarded results and the remaining full PLAN gates are open.
+Bounded normally returning discarded enum results are accepted below; full PLAN
+gates remain open.
+
+## Normally returning discarded results
+
+The accepted bounded [discard-result implementation](blockers/discarded-results.md)
+adds demand-aware instances, real normal void returns, enum operand effects and
+mandatory full logical/source correspondence. Direct layoutless records,
+local-shape mixing, observed/used/mutable unknown values and new owner/native
+combinations remain excluded. The [integrated record](verification/2026-11-04-discarded-results.md)
+passes 939 default and 987 importer-enabled tests, both strict Clippy modes and
+both Windows GNU compile checks, with no dependency skips.
+
+The [frozen author record](verification/2026-11-04-discarded-results-author.md)
+identifies source `ee5763f`: 504 focused GCC tests, 9 additional Clang tests,
+124 new-suite C executions, formatting and default strict all-target Clippy.
+The [independent record](verification/2026-11-04-discarded-results-independent.md)
+adds 25 private proof tests and 212 final C executions; an explicitly migrated
+K3b expectation has 80 further C executions. Known legacy Clang match warnings
+are retained. Direct layoutless records are the next bounded structural task.

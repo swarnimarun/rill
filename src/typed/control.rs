@@ -9,8 +9,8 @@
 //! Admission requires canonical source/IR correspondence and bounded recursive
 //! consumers, composed at the public verifier boundary.
 use super::{
-    CallArg, Computation, ExprKind, ExprNode, ForeignArg, NoNormalExpr, NoNormalKind, OwnerInit,
-    TypedMain,
+    CallArg, Computation, DiscardExpr, DiscardKind, ExprKind, ExprNode, ForeignArg, NoNormalExpr,
+    NoNormalKind, OwnerInit, TypedMain,
 };
 use crate::ast::{BinaryOp, Expr, ParamMode, Pattern};
 use crate::check::{CheckedProgram, Type};
@@ -941,11 +941,39 @@ impl<'a, 's> SourceFacts<'a, 's> {
         };
         Some(self.witness.bindings[binding.0].uses != 0)
     }
+    pub fn global_constructor_reference(&self, expression: &Expr) -> Result<bool, String> {
+        let id = self.occurrence(expression)?;
+        Ok(matches!(
+            &self.witness.nodes[id].kind,
+            SourceKind::Var(Reference::Global(_)) | SourceKind::Call(CallTarget::Other(_), _, _)
+        ))
+    }
     pub fn occurrence(&self, expression: &Expr) -> Result<usize, String> {
         self.expression_ids
             .get(&(expression as *const Expr))
             .map(|id| id.0)
             .ok_or(INVALID.into())
+    }
+    pub fn discard_binding(
+        &self,
+        expression: &Expr,
+        domain: &super::logical::Domain,
+    ) -> Result<super::NoStorageBinding, String> {
+        let id = self.occurrence(expression)?;
+        let SourceKind::Let(binding, _, _) = &self.witness.nodes[id].kind else {
+            return Err(INVALID.into());
+        };
+        let canonical = &self.witness.bindings[binding.0];
+        if canonical.mutable || canonical.uses != 0 {
+            return Err(
+                "E-TYPED-UNSUPPORTED: discarded initializer requires an unused immutable binding"
+                    .into(),
+            );
+        }
+        Ok(super::NoStorageBinding {
+            domain: domain.clone(),
+            occurrence: binding.0,
+        })
     }
     pub fn no_storage_binding(
         &self,
@@ -967,7 +995,7 @@ impl<'a, 's> SourceFacts<'a, 's> {
     }
     pub fn check_pure_subset(&self) -> Result<(), String> {
         self.check_depth()?;
-        const UNSUPPORTED: &str = "E-TYPED-UNSUPPORTED: no-normal result lowering requires pure Copy computations without local shape elaboration";
+        const UNSUPPORTED: &str = "E-TYPED-UNSUPPORTED: no-normal or discarded result lowering requires pure Copy computations without local shape elaboration";
         let mut budget = Budget::default();
         budget.charge(self.witness_work)?;
         let environment = &self.witness.environment;
@@ -1076,12 +1104,14 @@ pub(super) struct IrFacts<'a> {
     expressions: HashMap<*const ExprNode, GateId>,
     functions: Vec<GateId>,
     no_normal: HashMap<*const NoNormalExpr, GateId>,
+    discarded: HashMap<*const DiscardExpr, GateId>,
     values: Vec<bool>,
 }
 #[derive(Clone, Copy)]
 enum IrNode<'a> {
     Value(&'a ExprNode),
     NoNormal(&'a NoNormalExpr),
+    Discarded(&'a DiscardExpr),
 }
 struct IrBuilder<'a> {
     program: &'a TypedMain,
@@ -1090,6 +1120,7 @@ struct IrBuilder<'a> {
     functions: Vec<GateId>,
     expressions: HashMap<*const ExprNode, GateId>,
     no_normal: HashMap<*const NoNormalExpr, GateId>,
+    discarded: HashMap<*const DiscardExpr, GateId>,
     pending: Vec<(IrNode<'a>, GateId)>,
 }
 impl<'a> IrBuilder<'a> {
@@ -1122,6 +1153,78 @@ impl<'a> IrBuilder<'a> {
         self.no_normal.insert(expression as *const NoNormalExpr, id);
         self.pending.push((IrNode::NoNormal(expression), id));
         Ok(id)
+    }
+    fn discarded(&mut self, expression: &'a DiscardExpr) -> Result<GateId, String> {
+        self.budget.charge(1)?;
+        if self
+            .discarded
+            .contains_key(&(expression as *const DiscardExpr))
+        {
+            return Err(INVALID.into());
+        }
+        let id = self.circuit.reserve(&mut self.budget)?;
+        self.budget.charge(2)?;
+        self.discarded.insert(expression as *const DiscardExpr, id);
+        self.pending.push((IrNode::Discarded(expression), id));
+        Ok(id)
+    }
+    fn discarded_node(&mut self, expression: &'a DiscardExpr, id: GateId) -> Result<(), String> {
+        self.budget.charge(1)?;
+        let inputs = match &expression.kind {
+            DiscardKind::Value(value) => {
+                self.budget.charge(1)?;
+                vec![self.expression(value)?]
+            }
+            DiscardKind::FromNoNormal(value) => {
+                self.budget.charge(1)?;
+                vec![self.no_normal(value)?]
+            }
+            DiscardKind::Call(callee, args) => self.call(*callee, args)?,
+            DiscardKind::Constructor { fields, .. } => {
+                self.budget.charge(fields.len())?;
+                let mut inputs = Vec::with_capacity(fields.len());
+                for field in fields {
+                    inputs.push(self.discarded(field)?);
+                }
+                inputs
+            }
+            DiscardKind::Let { value, body, .. } => {
+                self.budget.charge(2)?;
+                vec![self.expression(value)?, self.discarded(body)?]
+            }
+            DiscardKind::DiscardLet { value, body, .. } => {
+                self.budget.charge(2)?;
+                vec![self.discarded(value)?, self.discarded(body)?]
+            }
+            DiscardKind::NoStorageLet { value, body, .. } => {
+                self.budget.charge(2)?;
+                vec![self.no_normal(value)?, self.discarded(body)?]
+            }
+            DiscardKind::If { condition, yes, no } => {
+                let condition = self.expression(condition)?;
+                let yes = self.discarded(yes)?;
+                let no = self.discarded(no)?;
+                let arms = self.circuit.any([yes, no].into_iter(), &mut self.budget)?;
+                self.budget.charge(2)?;
+                vec![condition, arms]
+            }
+            DiscardKind::Match { value, arms } => {
+                if arms.is_empty() {
+                    return Err(INVALID.into());
+                }
+                let value = self.expression(value)?;
+                self.budget.charge(arms.len())?;
+                let mut flows = Vec::with_capacity(arms.len());
+                for arm in arms {
+                    flows.push(self.discarded(&arm.body)?);
+                }
+                let arms = self.circuit.any(flows.into_iter(), &mut self.budget)?;
+                self.budget.charge(2)?;
+                vec![value, arms]
+            }
+        };
+        self.circuit
+            .define(id, Operator::All, inputs.into_iter(), &mut self.budget)
     }
     fn call(&mut self, callee: usize, args: &'a [CallArg]) -> Result<Vec<GateId>, String> {
         let function = self.program.functions.get(callee).ok_or(INVALID)?;
@@ -1159,6 +1262,7 @@ impl<'a> IrBuilder<'a> {
         }
         inputs.push(match &*call.barrier {
             Computation::Value(value) => self.expression(value)?,
+            Computation::Discarded(value) => self.discarded(value)?,
             Computation::NoNormal(value) => self.no_normal(value)?,
         });
         Ok(inputs)
@@ -1173,6 +1277,10 @@ impl<'a> IrBuilder<'a> {
             NoNormalKind::Let { value, body, .. } => {
                 self.budget.charge(2)?;
                 vec![self.expression(value)?, self.no_normal(body)?]
+            }
+            NoNormalKind::DiscardLet { value, body, .. } => {
+                self.budget.charge(2)?;
+                vec![self.discarded(value)?, self.no_normal(body)?]
             }
             NoNormalKind::NoStorageLet { value, body, .. } => {
                 self.budget.charge(2)?;
@@ -1220,6 +1328,10 @@ impl<'a> IrBuilder<'a> {
         let inputs = match &expression.kind {
             ExprKind::InterruptedCall(call) => self.interrupted(call)?,
             ExprKind::Call(callee, args) => self.call(*callee, args)?,
+            ExprKind::DiscardLet { value, body, .. } => {
+                self.budget.charge(2)?;
+                vec![self.discarded(value)?, self.expression(body)?]
+            }
             ExprKind::NoStorageLet { value, body, .. } => {
                 self.budget.charge(2)?;
                 vec![self.no_normal(value)?, self.expression(body)?]
@@ -1369,6 +1481,7 @@ impl<'a> IrBuilder<'a> {
         for (ordinal, function) in self.program.functions.iter().enumerate() {
             let body = match &function.body {
                 Computation::Value(value) => self.expression(value)?,
+                Computation::Discarded(value) => self.discarded(value)?,
                 Computation::NoNormal(value) => self.no_normal(value)?,
             };
             self.circuit.define(
@@ -1383,6 +1496,7 @@ impl<'a> IrBuilder<'a> {
             match expression {
                 IrNode::Value(value) => self.node(value, id)?,
                 IrNode::NoNormal(value) => self.no_normal_node(value, id)?,
+                IrNode::Discarded(value) => self.discarded_node(value, id)?,
             }
         }
         let values = self.circuit.solve(&mut self.budget)?;
@@ -1391,6 +1505,7 @@ impl<'a> IrBuilder<'a> {
             expressions: self.expressions,
             functions: self.functions,
             no_normal: self.no_normal,
+            discarded: self.discarded,
             values,
         })
     }
@@ -1404,6 +1519,7 @@ impl<'a> IrFacts<'a> {
             functions: Vec::new(),
             expressions: HashMap::new(),
             no_normal: HashMap::new(),
+            discarded: HashMap::new(),
             pending: Vec::new(),
         }
         .build()
@@ -1418,6 +1534,10 @@ impl<'a> IrFacts<'a> {
                 .get(&(value as *const ExprNode))
                 .map(|id| self.values[id.0]),
             Computation::NoNormal(value) => self.no_normal_may_return(value),
+            Computation::Discarded(value) => self
+                .discarded
+                .get(&(value as *const DiscardExpr))
+                .map(|id| self.values[id.0]),
         }
     }
     pub fn no_normal_may_return(&self, expression: &NoNormalExpr) -> Option<bool> {

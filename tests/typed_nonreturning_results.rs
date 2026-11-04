@@ -250,7 +250,6 @@ fn unsupported_representation_is_not_admitted_by_discard_or_nonreturning_context
         "fn forever() { forever() } fn main() { let used = forever(); used }",
         "fn forever() { forever() } fn main() { let mut unused = forever(); 42 }",
         "type O<a> = None | Some(a) fn forever() { forever() } fn main() { let unused = forever(); None }",
-        "type O<a> = None | Some(a) fn again() { if false { None } else { again() } } fn main() { let unused = again(); 42 }",
     ] {
         let program = parser::parse(source).unwrap();
         let checked = check::analyze(&program).unwrap_or_else(|error| panic!("must remain source-accepted: {error}\n{source}"));

@@ -103,6 +103,9 @@ fn emit_verified(program: &TypedMain) -> Result<String, String> {
                 || function.params.iter().any(|(_, ty, _)| ty.is_owner())
                 || match &function.body {
                     super::Computation::Value(value) => contains_owner(value),
+                    super::Computation::Discarded(value) => {
+                        value.any_value_root(&mut contains_owner)
+                    }
                     super::Computation::NoNormal(value) => {
                         value.any_value_root(&mut contains_owner)
                     }
@@ -121,6 +124,12 @@ fn emit_verified(program: &TypedMain) -> Result<String, String> {
         }
         match &function.body {
             super::Computation::Value(value) => collect_expr(value, &mut capacities),
+            super::Computation::Discarded(value) => {
+                value.any_value_root(&mut |value| {
+                    collect_expr(value, &mut capacities);
+                    false
+                });
+            }
             super::Computation::NoNormal(value) => {
                 value.any_value_root(&mut |value| {
                     collect_expr(value, &mut capacities);
@@ -207,7 +216,20 @@ fn emit_verified(program: &TypedMain) -> Result<String, String> {
             emitter.add_cost(*ty);
             emitter.add_cost(*ty);
         }
+        if let super::Computation::Discarded(body) = &function.body {
+            let completed = emitter.discard(body);
+            if emitter.frame_cost > 1024 * 1024 {
+                return Err("E-C-STACK: estimated typed frame exceeds 1 MiB limit".into());
+            }
+            if completed {
+                emitter.out.push_str("rl_leave(); return;\n}\n");
+            } else {
+                emitter.out.push_str("rl_trap();\n}\n");
+            }
+            continue;
+        }
         let result = match &function.body {
+            super::Computation::Discarded(_) => unreachable!("handled without a result slot"),
             super::Computation::Value(value) => emitter.expr(value),
             super::Computation::NoNormal(value) => emitter.no_normal(value),
         };
@@ -272,7 +294,7 @@ fn emit_verified(program: &TypedMain) -> Result<String, String> {
 fn result_type(result: &super::ResultRepr) -> String {
     match result {
         super::ResultRepr::Value(ty) => c_type(*ty),
-        super::ResultRepr::NoNormal(_) => "void".into(),
+        super::ResultRepr::NoNormal(_) | super::ResultRepr::Discarded(_) => "void".into(),
     }
 }
 fn c_type(ty: Type) -> String {
@@ -322,6 +344,13 @@ fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
                 collect_expr(value, output);
                 false
             });
+        }
+        ExprKind::DiscardLet { value, body, .. } => {
+            value.any_value_root(&mut |value| {
+                collect_expr(value, output);
+                false
+            });
+            collect_expr(body, output);
         }
         ExprKind::NoStorageLet { value, body, .. } => {
             value.any_value_root(&mut |value| {
@@ -428,6 +457,9 @@ fn contains_owner(expr: &ExprNode) -> bool {
     }
     match &expr.kind {
         ExprKind::InterruptedCall(call) => call.any_value_root(&mut contains_owner),
+        ExprKind::DiscardLet { value, body, .. } => {
+            value.any_value_root(&mut contains_owner) || contains_owner(body)
+        }
         ExprKind::NoStorageLet { value, body, .. } => {
             value.any_value_root(&mut contains_owner) || contains_owner(body)
         }
@@ -580,6 +612,13 @@ impl Emitter<'_> {
         if let ExprKind::InterruptedCall(call) = &expr.kind {
             return self.interrupted(call);
         }
+        if let ExprKind::DiscardLet { value, body, .. } = &expr.kind {
+            return if self.discard(value) {
+                self.expr(body)
+            } else {
+                EmitOutcome::NoNormal
+            };
+        }
         if let ExprKind::NoStorageLet { value, .. } = &expr.kind {
             return self.no_normal(value);
         }
@@ -588,7 +627,9 @@ impl Emitter<'_> {
         self.add_cost(expr.ty);
         match &expr.kind {
             ExprKind::InterruptedCall(_) => unreachable!("handled without a result slot"),
-            ExprKind::NoStorageLet { .. } => unreachable!("handled without a result slot"),
+            ExprKind::NoStorageLet { .. } | ExprKind::DiscardLet { .. } => {
+                unreachable!("handled without a result slot")
+            }
 
             ExprKind::ForeignCall(id, args) => return self.foreign_call(&result, *id, args),
             ExprKind::ForeignConst(id) => self.foreign_constant(&result, *id),

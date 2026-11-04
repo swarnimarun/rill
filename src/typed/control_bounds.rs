@@ -208,10 +208,17 @@ impl SourceFacts<'_, '_> {
 pub(in crate::typed) enum Tree<'a> {
     Value(&'a ExprNode),
     NoNormal(&'a NoNormalExpr),
+    Discarded(&'a DiscardExpr),
 }
 impl<'a> Tree<'a> {
     fn child_bound(self) -> usize {
         match self {
+            Self::Discarded(node) => match &node.kind {
+                DiscardKind::Call(_, args) => args.len(),
+                DiscardKind::Constructor { fields, .. } => fields.len(),
+                DiscardKind::Match { arms, .. } => arms.len().saturating_add(1),
+                _ => 3,
+            },
             Self::NoNormal(node) => match &node.kind {
                 NoNormalKind::InterruptedCall(call) => call.prefix.len().saturating_add(1),
                 NoNormalKind::Call(_, args) => args.len(),
@@ -235,6 +242,45 @@ impl<'a> Tree<'a> {
 
     pub(in crate::typed) fn children(self, mut add: impl FnMut(Tree<'a>)) {
         match self {
+            Self::Discarded(node) => match &node.kind {
+                DiscardKind::Value(value) => add(Self::Value(value)),
+                DiscardKind::FromNoNormal(value) => add(Self::NoNormal(value)),
+                DiscardKind::Call(_, args) => {
+                    for arg in args {
+                        if let CallArg::Value(v) | CallArg::ReadTemporary(v) = arg {
+                            add(Self::Value(v));
+                        }
+                    }
+                }
+                DiscardKind::Constructor { fields, .. } => {
+                    for field in fields {
+                        add(Self::Discarded(field));
+                    }
+                }
+                DiscardKind::Let { value, body, .. } => {
+                    add(Self::Value(value));
+                    add(Self::Discarded(body));
+                }
+                DiscardKind::DiscardLet { value, body, .. } => {
+                    add(Self::Discarded(value));
+                    add(Self::Discarded(body));
+                }
+                DiscardKind::NoStorageLet { value, body, .. } => {
+                    add(Self::NoNormal(value));
+                    add(Self::Discarded(body));
+                }
+                DiscardKind::If { condition, yes, no } => {
+                    add(Self::Value(condition));
+                    add(Self::Discarded(yes));
+                    add(Self::Discarded(no));
+                }
+                DiscardKind::Match { value, arms } => {
+                    add(Self::Value(value));
+                    for arm in arms {
+                        add(Self::Discarded(&arm.body));
+                    }
+                }
+            },
             Self::NoNormal(node) => match &node.kind {
                 NoNormalKind::InterruptedCall(call) => {
                     for value in &call.prefix {
@@ -243,6 +289,7 @@ impl<'a> Tree<'a> {
                     add(match &*call.barrier {
                         Computation::Value(value) => Self::Value(value),
                         Computation::NoNormal(value) => Self::NoNormal(value),
+                        Computation::Discarded(value) => Self::Discarded(value),
                     });
                 }
                 NoNormalKind::Call(_, args) => {
@@ -254,6 +301,10 @@ impl<'a> Tree<'a> {
                 }
                 NoNormalKind::Let { value, body, .. } => {
                     add(Self::Value(value));
+                    add(Self::NoNormal(body));
+                }
+                NoNormalKind::DiscardLet { value, body, .. } => {
+                    add(Self::Discarded(value));
                     add(Self::NoNormal(body));
                 }
                 NoNormalKind::NoStorageLet { value, body, .. } => {
@@ -273,6 +324,10 @@ impl<'a> Tree<'a> {
                 }
             },
             Self::Value(node) => match &node.kind {
+                ExprKind::DiscardLet { value, body, .. } => {
+                    add(Self::Discarded(value));
+                    add(Self::Value(body));
+                }
                 ExprKind::NoStorageLet { value, body, .. } => {
                     add(Self::NoNormal(value));
                     add(Self::Value(body));
@@ -291,6 +346,7 @@ impl<'a> Tree<'a> {
                     add(match &*call.barrier {
                         Computation::Value(value) => Self::Value(value),
                         Computation::NoNormal(value) => Self::NoNormal(value),
+                        Computation::Discarded(value) => Self::Discarded(value),
                     });
                 }
                 ExprKind::Call(_, args) => {
@@ -393,12 +449,34 @@ fn pattern_walk(
     pattern(p, depth, storage, budget)
 }
 
+fn logical_type(ty: &crate::typed::LogicalType, budget: &mut Budget) -> Result<(), String> {
+    use crate::typed::LogicalType;
+    let mut pending = vec![(ty, 0usize)];
+    while let Some((ty, depth)) = pending.pop() {
+        budget.charge(1)?;
+        if depth > MAX_TYPE_DEPTH {
+            return Err(LIMIT.into());
+        }
+        match ty {
+            LogicalType::Atom(leaf) => budget.reserve_type(leaf, depth)?,
+            LogicalType::Opaque(_) => {}
+            LogicalType::Nominal { arguments, .. } => {
+                budget.charge(arguments.len())?;
+                pending.extend(arguments.iter().map(|a| (a, depth + 1)));
+            }
+        }
+    }
+    Ok(())
+}
 pub(in crate::typed) fn preflight_ir(program: &TypedMain) -> Result<(), String> {
     let mut budget = Budget::default();
     let layout = layout_bound(&program.adts, &mut budget)?;
     budget.charge(program.functions.len())?;
     for function in &program.functions {
         budget.charge(function.params.len())?;
+        if let ResultRepr::Discarded(ty) = &function.result {
+            logical_type(ty, &mut budget)?;
+        }
         let mut storage = Storage {
             bindings: function.params.len(),
             ..Storage::default()
@@ -407,6 +485,7 @@ pub(in crate::typed) fn preflight_ir(program: &TypedMain) -> Result<(), String> 
         let root = match &function.body {
             Computation::Value(v) => Tree::Value(v),
             Computation::NoNormal(v) => Tree::NoNormal(v),
+            Computation::Discarded(v) => Tree::Discarded(v),
         };
         let mut pending = vec![(root, 0usize)];
         while let Some((tree, depth)) = pending.pop() {
@@ -418,6 +497,25 @@ pub(in crate::typed) fn preflight_ir(program: &TypedMain) -> Result<(), String> 
             budget.charge(tree.child_bound().checked_mul(2).ok_or(LIMIT)?)?;
             tree.children(|child| pending.push((child, depth + 1)));
             match tree {
+                Tree::Discarded(node) => {
+                    logical_type(&node.result, &mut budget)?;
+                    match &node.kind {
+                        DiscardKind::Let { .. } => storage.bindings += 1,
+                        DiscardKind::Call(_, args) => {
+                            storage.forks += 1;
+                            call_paths(args, &mut storage, &mut budget)?;
+                        }
+                        DiscardKind::If { .. } => storage.forks += 3,
+                        DiscardKind::Match { arms, .. } => {
+                            budget.charge(arms.len())?;
+                            storage.forks += arms.len().checked_mul(3).ok_or(LIMIT)? + 1;
+                            for arm in arms {
+                                pattern(&arm.pattern, 0, &mut storage, &mut budget)?;
+                            }
+                        }
+                        _ => {}
+                    }
+                }
                 Tree::NoNormal(node) => match &node.kind {
                     NoNormalKind::Let { .. } => storage.bindings += 1,
                     NoNormalKind::Call(_, args) => {
@@ -474,8 +572,8 @@ fn call_paths(args: &[CallArg], storage: &mut Storage, budget: &mut Budget) -> R
 pub(in crate::typed) fn has_extension(program: &TypedMain) -> bool {
     if program.logical.control.is_some()
         || program.functions.iter().any(|f| {
-            matches!(f.result, ResultRepr::NoNormal(_))
-                || matches!(f.body, Computation::NoNormal(_))
+            matches!(f.result, ResultRepr::NoNormal(_) | ResultRepr::Discarded(_))
+                || matches!(f.body, Computation::NoNormal(_) | Computation::Discarded(_))
         })
     {
         return true;
@@ -487,11 +585,13 @@ pub(in crate::typed) fn has_extension(program: &TypedMain) -> bool {
         let mut pending = vec![Tree::Value(root)];
         while let Some(tree) = pending.pop() {
             match tree {
-                Tree::NoNormal(_) => return true,
+                Tree::NoNormal(_) | Tree::Discarded(_) => return true,
                 Tree::Value(value)
                     if matches!(
                         value.kind,
-                        ExprKind::NoStorageLet { .. } | ExprKind::InterruptedCall(_)
+                        ExprKind::NoStorageLet { .. }
+                            | ExprKind::DiscardLet { .. }
+                            | ExprKind::InterruptedCall(_)
                     ) =>
                 {
                     return true

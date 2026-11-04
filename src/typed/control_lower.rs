@@ -66,7 +66,19 @@ impl Lower<'_, '_> {
                 NoNormalKind::Call(callee, args)
             }
             Expr::Let(name, value, body) | Expr::LetMut(name, value, body) => {
-                if matches!(self.source_type(value)?, InferredType::Var(_)) {
+                if self.instances.initializer_demand(
+                    self.checked,
+                    expression,
+                    self.substitution,
+                    self.control,
+                )? == instances::Demand::Discard
+                {
+                    NoNormalKind::DiscardLet {
+                        binding: facts.discard_binding(expression, &self.instances.domain)?,
+                        value: Box::new(self.discard(value)?),
+                        body: Box::new(self.no_normal(body)?),
+                    }
+                } else if matches!(self.source_type(value)?, InferredType::Var(_)) {
                     let binding = facts.no_storage_binding(expression, &self.instances.domain)?;
                     NoNormalKind::NoStorageLet {
                         binding,

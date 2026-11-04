@@ -50,6 +50,9 @@ impl Registry {
             for ty in &instance.params {
                 registry.register(checked, ty)?;
             }
+            if instance.demand == super::instances::Demand::Discard {
+                continue;
+            }
             if matches!(instance.result, SourceType::Var(_)) {
                 if !control
                     .is_some_and(|facts| facts.function_may_return(instance.source) == Some(false))
@@ -62,21 +65,42 @@ impl Registry {
         }
         for instance in &instances.list {
             instances.charge_control(1)?;
-            let mut pending = vec![&checked.program.functions[instance.source].body];
-            while let Some(expr) = pending.pop() {
+            let mut pending = vec![(
+                &checked.program.functions[instance.source].body,
+                instance.demand,
+            )];
+            while let Some((expr, demand)) = pending.pop() {
                 instances.charge_control(1)?;
-                let ty = instances.expression_result_type(
+                let ty = instances.expression_type_demand(
                     checked,
                     expr,
                     &instance.substitution,
                     control,
+                    demand,
                 )?;
-                if !matches!(ty, SourceType::Var(_)) || control.is_none() {
+                let represented_interruption = !matches!(ty, SourceType::Var(_))
+                    && control
+                        .map(|facts| instances.interruption(checked, expr, facts))
+                        .transpose()?
+                        .flatten()
+                        .is_some();
+                if (represented_interruption
+                    || demand != super::instances::Demand::Discard
+                    || !instances.discard_structural(checked, expr, control)?)
+                    && (!matches!(ty, SourceType::Var(_)) || control.is_none())
+                {
                     registry.register(checked, &ty)?;
                 }
                 instances
                     .charge_control(super::instances::source_child_count(expr).saturating_mul(2))?;
-                instances.runtime_children(checked, expr, control, &mut pending)?;
+                instances.runtime_children_demand(
+                    checked,
+                    expr,
+                    &instance.substitution,
+                    control,
+                    demand,
+                    &mut pending,
+                )?;
             }
         }
         layout_costs(&registry.types)?;

@@ -16,6 +16,7 @@ mod independent_nonreturning_relation_tests;
 #[derive(Debug)]
 struct Instance {
     source: usize,
+    demand: instances::Demand,
     scope: usize,
     params: Vec<Type>,
     result: Type,
@@ -55,6 +56,7 @@ impl SourceFacts<'_, '_> {
             }
             frozen.push(Instance {
                 source: instance.source,
+                demand: instance.demand,
                 scope: instance.scope,
                 params,
                 result,
@@ -226,7 +228,7 @@ impl Frozen {
     fn signatures(&self, budget: &mut Budget) -> Result<(), String> {
         budget.charge(self.witness.nodes.len())?;
         if self.witness.nodes.iter().any(|node| node.elaborated_local) {
-            return Err("E-TYPED-UNSUPPORTED: no-normal results do not combine with local shape elaboration".into());
+            return Err("E-TYPED-UNSUPPORTED: no-normal or discarded results do not combine with local shape elaboration".into());
         }
         if self.instances.len() > MAX_INSTANCES
             || self.entry >= self.instances.len()
@@ -287,7 +289,12 @@ impl Frozen {
             {
                 copy_type(ty, budget, 0)?;
             }
-            if !keys.insert((instance.source, &instance.params, &instance.result)) {
+            if !keys.insert((
+                instance.source,
+                instance.demand,
+                &instance.params,
+                &instance.result,
+            )) {
                 return Err(INVALID.into());
             }
             let used = scopes.get_mut(instance.scope).ok_or(INVALID)?;
@@ -299,7 +306,10 @@ impl Frozen {
                 .charge(source_functions.len().checked_add(1).ok_or(LIMIT)?.ilog2() as usize + 1)?;
             let source = source_functions.get(&instance.source).ok_or(INVALID)?;
             if source.params.len() != instance.params.len()
-                || (slot == self.entry && (source.name != "main" || !instance.params.is_empty()))
+                || (slot == self.entry
+                    && (source.name != "main"
+                        || !instance.params.is_empty()
+                        || instance.demand != instances::Demand::Observe))
             {
                 return Err(INVALID.into());
             }
@@ -786,3 +796,15 @@ mod tests {
 #[cfg(test)]
 #[path = "independent_interrupted_relation_tests.rs"]
 mod independent_interrupted_relation_tests;
+
+#[cfg(test)]
+#[path = "discarded_relation_tests.rs"]
+mod discarded_relation_tests;
+
+#[cfg(test)]
+#[path = "independent_discarded_relation_tests.rs"]
+mod independent_discarded_relation_tests;
+
+#[cfg(test)]
+#[path = "independent_discarded_suffix_relation_tests.rs"]
+mod independent_discarded_suffix_relation_tests;

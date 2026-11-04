@@ -1,6 +1,6 @@
 //! Layoutless control results use an internal void ABI and no result slot.
 use super::*;
-use crate::typed::{NoNormalExpr, NoNormalKind};
+use crate::typed::{DiscardExpr, DiscardKind, NoNormalExpr, NoNormalKind};
 
 impl Emitter<'_> {
     pub(super) fn interrupted(&mut self, call: &crate::typed::InterruptedCall) -> EmitOutcome {
@@ -10,6 +10,9 @@ impl Emitter<'_> {
             }
         }
         match &*call.barrier {
+            crate::typed::Computation::Discarded(_) => {
+                self.out.push_str("rl_trap();\n");
+            }
             crate::typed::Computation::Value(value) => {
                 if let EmitOutcome::Value(_) = self.expr(value) {
                     self.out.push_str("rl_trap();\n");
@@ -22,6 +25,93 @@ impl Emitter<'_> {
         EmitOutcome::NoNormal
     }
 
+    /// True means normal completion without a Rill value; false is emitted
+    /// nonreturning control. Neither case allocates a result or aggregate slot.
+    pub(super) fn discard(&mut self, mut expression: &DiscardExpr) -> bool {
+        loop {
+            match &expression.kind {
+                DiscardKind::Value(value) => {
+                    return matches!(self.expr(value), EmitOutcome::Value(_))
+                }
+                DiscardKind::FromNoNormal(value) => {
+                    self.no_normal(value);
+                    return false;
+                }
+                DiscardKind::Call(callee, args) => {
+                    let Some(values) = self.call_arguments(*callee, args) else {
+                        return false;
+                    };
+                    writeln!(self.out, "rl_fn_{callee}({});", values.join(", ")).unwrap();
+                    return true;
+                }
+                DiscardKind::Constructor { fields, .. } => {
+                    for field in fields {
+                        if !self.discard(field) {
+                            return false;
+                        }
+                    }
+                    return true;
+                }
+                DiscardKind::Let {
+                    local, value, body, ..
+                } => {
+                    let value_type = value.ty;
+                    let EmitOutcome::Value(value) = self.expr(value) else {
+                        return false;
+                    };
+                    self.add_cost(value_type);
+                    writeln!(
+                        self.out,
+                        "{} rl_l_{} = {value};",
+                        c_type(value_type),
+                        local.0
+                    )
+                    .unwrap();
+                    expression = body;
+                }
+                DiscardKind::DiscardLet { value, body, .. } => {
+                    if !self.discard(value) {
+                        return false;
+                    }
+                    expression = body;
+                }
+                DiscardKind::NoStorageLet { value, .. } => {
+                    self.no_normal(value);
+                    return false;
+                }
+                DiscardKind::If { condition, yes, no } => {
+                    let EmitOutcome::Value(condition) = self.expr(condition) else {
+                        return false;
+                    };
+                    writeln!(self.out, "if ({condition}) {{").unwrap();
+                    let yes = self.discard(yes);
+                    self.out.push_str("} else {\n");
+                    let no = self.discard(no);
+                    self.out.push_str("}\n");
+                    return yes || no;
+                }
+                DiscardKind::Match { value, arms } => {
+                    let value_type = value.ty;
+                    let EmitOutcome::Value(value) = self.expr(value) else {
+                        return false;
+                    };
+                    let mut completed = false;
+                    for (index, arm) in arms.iter().enumerate() {
+                        if index != 0 {
+                            self.out.push_str("else ");
+                        }
+                        let condition = copy_match::condition(&arm.pattern, &value);
+                        writeln!(self.out, "if (0 != {condition}) {{").unwrap();
+                        self.bind_pattern(&arm.pattern, value_type, &value);
+                        completed |= self.discard(&arm.body);
+                        self.out.push_str("}\n");
+                    }
+                    self.out.push_str("else { rl_trap(); }\n");
+                    return completed;
+                }
+            }
+        }
+    }
     pub(super) fn no_normal(&mut self, mut expression: &NoNormalExpr) -> EmitOutcome {
         loop {
             match &expression.kind {
@@ -50,6 +140,12 @@ impl Emitter<'_> {
                         local.0
                     )
                     .unwrap();
+                    expression = body;
+                }
+                NoNormalKind::DiscardLet { value, body, .. } => {
+                    if !self.discard(value) {
+                        return EmitOutcome::NoNormal;
+                    }
                     expression = body;
                 }
                 NoNormalKind::NoStorageLet { value, .. } => expression = value,

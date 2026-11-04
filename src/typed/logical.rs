@@ -358,6 +358,58 @@ pub(super) fn schema_dependencies(
 }
 
 impl Metadata {
+    pub fn logical_type(
+        &self,
+        ty: &SourceType,
+        budget: &mut super::control::Budget,
+    ) -> Result<LogicalType, String> {
+        fn convert(
+            meta: &Metadata,
+            ty: &SourceType,
+            budget: &mut super::control::Budget,
+            depth: usize,
+        ) -> Result<LogicalType, String> {
+            budget.charge(1)?;
+            if depth > MAX_DEPTH {
+                return Err(LIMIT.into());
+            }
+            Ok(match ty {
+                SourceType::Var(index) => LogicalType::Opaque(meta.opaque_id(*index)?),
+                SourceType::Nominal(name, arguments) => {
+                    budget.charge(meta.declarations.len())?;
+                    let mut definition = None;
+                    for (id, declaration) in meta.declarations.iter().enumerate() {
+                        budget.charge(name.len().saturating_add(declaration.name.len()))?;
+                        if declaration.name == *name {
+                            definition = Some(id);
+                            break;
+                        }
+                    }
+                    let definition = definition.ok_or(INVALID)?;
+                    if meta.declarations[definition].params.len() != arguments.len() {
+                        return Err(INVALID.into());
+                    }
+                    budget.charge(arguments.len())?;
+                    LogicalType::Nominal {
+                        definition,
+                        arguments: arguments
+                            .iter()
+                            .map(|a| convert(meta, a, budget, depth + 1))
+                            .collect::<Result<_, _>>()?,
+                    }
+                }
+                leaf => {
+                    budget.reserve_type(leaf, depth)?;
+                    let deps = atom(leaf)?;
+                    if deps.owner || deps.native {
+                        return Err(INVALID.into());
+                    }
+                    LogicalType::Atom(leaf.clone())
+                }
+            })
+        }
+        convert(self, ty, budget, 0)
+    }
     pub fn opaque_id(&self, index: usize) -> Result<OpaqueId, String> {
         if self.binders.get(index).is_none() {
             return Err(INVALID.into());
@@ -589,11 +641,22 @@ impl Metadata {
         if program.adts.len() > 1024 || program.functions.len() > 1024 {
             return Err(LIMIT.into());
         }
-        let symbolic = program.adts.iter().any(|a| a.symbolic.is_some())
-            || program
-                .functions
-                .iter()
-                .any(|f| matches!(f.result, super::ResultRepr::NoNormal(_)));
+        // A retained interruption suffix may be the only logical-only evidence:
+        // no executable result or physical ADT need mention its frozen classes.
+        // The public verifier first binds these tables to the complete proof.
+        let symbolic = (self.control.is_some() && !self.binders.is_empty())
+            || program.adts.iter().any(|a| a.symbolic.is_some())
+            || program.functions.iter().any(|f| {
+                matches!(
+                    f.result,
+                    super::ResultRepr::NoNormal(_) | super::ResultRepr::Discarded(_)
+                )
+            })
+            || program.functions.iter().any(|function| {
+                super::any_computation(&function.body, &|kind| {
+                    matches!(kind, super::ExprKind::DiscardLet { .. })
+                })
+            });
         if !symbolic {
             if self.domain.is_some()
                 || !self.binders.is_empty()
@@ -608,6 +671,7 @@ impl Metadata {
                 domain: None,
                 adt_binders: vec![HashSet::new(); program.adts.len()],
                 allowed: vec![HashSet::new(); program.functions.len()],
+                schemas: Vec::new(),
             });
         }
         let mut preparation = Budget::default();
@@ -780,6 +844,9 @@ impl Metadata {
         for (index, function) in program.functions.iter().enumerate() {
             let scope = self.function_scopes[index];
             budget.charge(function.params.len())?;
+            if let super::ResultRepr::Discarded(result) = &function.result {
+                layout::charge_logical(result, 0, budget)?;
+            }
             if !keys.insert((
                 self.scope_sources[scope],
                 function
@@ -791,6 +858,9 @@ impl Metadata {
             )) {
                 return Err(INVALID.into());
             }
+            if let super::ResultRepr::Discarded(result) = &function.result {
+                layout::charge_logical(result, 0, budget)?;
+            }
             budget.charge(own[scope].len())?;
             let mut visible = own[scope].clone();
             for ty in function
@@ -799,7 +869,7 @@ impl Metadata {
                 .map(|(_, ty, _)| ty)
                 .chain(match &function.result {
                     super::ResultRepr::Value(ty) => Some(ty),
-                    super::ResultRepr::NoNormal(_) => None,
+                    super::ResultRepr::NoNormal(_) | super::ResultRepr::Discarded(_) => None,
                 })
             {
                 if let Type::Adt { id, .. } = ty {
@@ -817,9 +887,25 @@ impl Metadata {
                 }
                 visible.insert(result.index);
             }
+            if let super::ResultRepr::Discarded(result) = &function.result {
+                let mut binders = HashSet::new();
+                let deps = self.check_type(result, schema, &mut binders, 0, budget)?;
+                if deps.owner || deps.native {
+                    return Err(INVALID.into());
+                }
+                budget.charge(binders.len())?;
+                visible.extend(binders);
+            }
             allowed.push(visible);
         }
+        budget.charge(self.declarations.len())?;
         Ok(Facts {
+            schemas: self
+                .declarations
+                .iter()
+                .zip(schema)
+                .map(|(declaration, dependencies)| (declaration.params.len(), *dependencies))
+                .collect(),
             domain: self.domain.clone(),
             adt_binders,
             allowed,
@@ -828,11 +914,37 @@ impl Metadata {
 }
 
 pub(super) struct Facts {
+    schemas: Vec<(usize, Dependencies)>,
     domain: Option<Domain>,
     adt_binders: Vec<HashSet<usize>>,
     allowed: Vec<HashSet<usize>>,
 }
 impl Facts {
+    pub fn logical_in_scope(&self, ty: &LogicalType, function: usize) -> Result<(), String> {
+        let mut pending = vec![ty];
+        while let Some(ty) = pending.pop() {
+            match ty {
+                LogicalType::Opaque(id) => self.opaque_in_scope(id, function)?,
+                LogicalType::Nominal {
+                    definition,
+                    arguments,
+                } => {
+                    let (arity, deps) = self.schemas.get(*definition).ok_or(INVALID)?;
+                    if *arity != arguments.len() || deps.owner || deps.native {
+                        return Err(INVALID.into());
+                    }
+                    pending.extend(arguments);
+                }
+                LogicalType::Atom(leaf) => {
+                    let deps = atom(leaf)?;
+                    if deps.owner || deps.native {
+                        return Err(INVALID.into());
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
     pub fn opaque_in_scope(&self, id: &OpaqueId, function: usize) -> Result<(), String> {
         if self.domain.as_ref() != Some(&id.domain)
             || !self

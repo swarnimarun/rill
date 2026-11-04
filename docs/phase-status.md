@@ -62,8 +62,8 @@ not a replacement for those gates.
   preserving full source evidence and real evaluation order. Its
   [integrated acceptance](verification/2026-11-04-interrupted-arguments.md)
   passed 892 default and 940 importer-enabled tests plus independent event/C
-  and malformed-proof checks. Genuinely stored or normally returning discarded
-  unknown payloads still require representation work.
+  and malformed-proof checks. Normally returning discarded enum results now have
+  the bounded acceptance below; genuinely unknown storage remains open.
   Other unsupported Copy layouts retain the uniform fallback. This is not P1 or P5 completion; see the
   [F2 evidence and limits](verification/2026-11-03-typed-native-transport.md) and
   [final integrated checks and SDL captures](verification/2026-11-03-typed-native-raw-integration.md).
@@ -133,3 +133,11 @@ and 726 importer-enabled tests plus independent command probes. It keeps legacy
 commands unchanged and requires fresh supervised validation for opted-in
 capture/materialization and consumers. This bounded acceptance closes no full
 phase gate. See the [configuration record](verification/2026-11-03-native-configurations.md).
+
+The accepted bounded [discard-result increment](blockers/discarded-results.md) covers
+normally returning unused immutable enum results through a separate logical-only
+computation, with real call/return effects. This narrows one P1 representation
+gap. Its [integrated checks](verification/2026-11-04-discarded-results.md) passed
+939 default and 987 importer-enabled tests, strict lint and Windows compile modes
+plus independent proof/event/C cases. Direct layoutless records, unknown physical
+storage, observed unknown results and full phase gates remain open.

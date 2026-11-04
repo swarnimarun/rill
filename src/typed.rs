@@ -47,8 +47,10 @@ mod logical;
 #[cfg(test)]
 mod logical_tests;
 pub use logical::{LogicalType, OpaqueId, SymbolicInstance};
+mod discarded;
 mod places;
 mod results;
+pub use discarded::{DiscardArm, DiscardExpr, DiscardKind};
 pub use results::{
     Computation, InterruptedCall, NoNormalArm, NoNormalExpr, NoNormalKind, NoStorageBinding,
     ResultRepr,
@@ -178,6 +180,11 @@ pub struct ExprNode {
 #[derive(Clone, Debug)]
 pub enum ExprKind {
     InterruptedCall(Box<InterruptedCall>),
+    DiscardLet {
+        binding: NoStorageBinding,
+        value: Box<DiscardExpr>,
+        body: Box<ExprNode>,
+    },
     NoStorageLet {
         binding: NoStorageBinding,
         value: Box<NoNormalExpr>,
@@ -357,7 +364,9 @@ fn lower_main_traced<'source>(
     let mut control = None;
     let instances = match instances::Instances::discover_traced(checked, trace) {
         Ok(instances) => instances,
-        Err(error) if error == instances::BARE_RESULT => {
+        Err(error)
+            if error == instances::BARE_RESULT || error == logical::layout::UNREPRESENTABLE =>
+        {
             let facts = control::SourceFacts::build(checked)?;
             let instances = instances::Instances::discover_control(checked, &facts)?;
             control = Some(facts);
@@ -414,11 +423,20 @@ fn lower_main_traced<'source>(
         }
         let function = &program.functions[instance.source];
         lower.substitution = &instance.substitution;
-        let result_type = match instance.result {
-            InferredType::Var(index) if control.is_some() => {
-                ResultRepr::NoNormal(lower.registry.logical.opaque_id(index)?)
+        let result_type = if instance.demand == instances::Demand::Discard {
+            ResultRepr::Discarded(
+                lower
+                    .registry
+                    .logical
+                    .logical_type(&instance.result, &mut *instances.control_budget()?)?,
+            )
+        } else {
+            match instance.result {
+                InferredType::Var(index) if control.is_some() => {
+                    ResultRepr::NoNormal(lower.registry.logical.opaque_id(index)?)
+                }
+                _ => ResultRepr::Value(lower.registry.convert(&instance.result)?),
             }
-            _ => ResultRepr::Value(lower.registry.convert(&instance.result)?),
         };
         let param_types = instance
             .params
@@ -454,6 +472,9 @@ fn lower_main_traced<'source>(
             params.push((id, ty, param.mode));
         }
         let (body, body_fragment) = match &result_type {
+            ResultRepr::Discarded(_) => {
+                (Computation::Discarded(lower.discard(&function.body)?), None)
+            }
             ResultRepr::Value(_) => {
                 let lowered = lower.expr_observed(&function.body)?;
                 (Computation::Value(lowered.value), lowered.trace)
@@ -540,6 +561,15 @@ impl Lower<'_, '_> {
         name: &str,
         args: &[Expr],
     ) -> Result<(usize, Vec<CallArg>), String> {
+        self.call_arguments_demand(expr, name, args, instances::Demand::Observe)
+    }
+    fn call_arguments_demand(
+        &mut self,
+        expr: &Expr,
+        name: &str,
+        args: &[Expr],
+        demand: instances::Demand,
+    ) -> Result<(usize, Vec<CallArg>), String> {
         self.instances
             .charge_control(args.len().saturating_mul(3))?;
         let param_types = args
@@ -549,9 +579,18 @@ impl Lower<'_, '_> {
         for ty in &param_types {
             self.instances.reserve_control_type(ty, 1)?;
         }
-        let id = self
-            .instances
-            .call(name, param_types.clone(), self.source_type(expr)?)?;
+        let id = self.instances.call_demand(
+            name,
+            param_types.clone(),
+            self.instances.expression_type_demand(
+                self.checked,
+                expr,
+                self.substitution,
+                self.control,
+                demand,
+            )?,
+            demand,
+        )?;
         let modes = self
             .function_modes
             .get(name)
@@ -780,6 +819,26 @@ impl Lower<'_, '_> {
                 ExprKind::Read(local.id)
             }
             Expr::Let(name, value, body) | Expr::LetMut(name, value, body) => {
+                if self.instances.initializer_demand(
+                    self.checked,
+                    expr,
+                    self.substitution,
+                    self.control,
+                )? == instances::Demand::Discard
+                {
+                    let binding = self
+                        .control
+                        .ok_or(instances::BARE_RESULT)?
+                        .discard_binding(expr, &self.instances.domain)?;
+                    return Ok(ExprNode {
+                        ty,
+                        kind: ExprKind::DiscardLet {
+                            binding,
+                            value: Box::new(self.discard(value)?),
+                            body: Box::new(self.expr(body)?),
+                        },
+                    });
+                }
                 let source_type = self.source_type(value)?;
                 if matches!(source_type, InferredType::Var(_)) {
                     let binding = self
@@ -1101,7 +1160,7 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
         proof.verify_structure(program)?;
     } else if has_control_extension(program) {
         return Err(
-            "E-TYPED-CONTROL: no-normal representation requires the canonical source proof".into(),
+            "E-TYPED-CONTROL: no-normal or discarded representation requires the canonical source proof".into(),
         );
     }
     program.native.verify()?;
@@ -1139,6 +1198,9 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
         .functions
         .get(program.entry)
         .ok_or("E-TYPED: invalid entry")?;
+    if matches!(entry.result, ResultRepr::Discarded(_)) {
+        return Err("E-TYPED-CONTROL: main cannot discard its observed result".into());
+    }
     if matches!(entry.result, ResultRepr::Value(ty) if ty.is_owner()) {
         return Err("E-TYPED-OWNER: main cannot return an owner".into());
     }
@@ -1226,6 +1288,7 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
                 program.native.validate_type(*ty)?;
             }
             ResultRepr::NoNormal(id) => logical_facts.opaque_in_scope(id, function_index)?,
+            ResultRepr::Discarded(ty) => logical_facts.logical_in_scope(ty, function_index)?,
         }
         if matches!(function.result, ResultRepr::Value(Type::Bytes(n)) if n > 256) {
             return Err("E-TYPED: invalid buffer capacity".into());
@@ -1256,6 +1319,9 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
             );
         }
         let actual_result = match &function.body {
+            Computation::Discarded(value) => {
+                ResultRepr::Discarded(discarded::verify(value, &mut scope, &mut ids, &context)?)
+            }
             Computation::Value(value) => {
                 ResultRepr::Value(verify_expr(value, &mut scope, &mut ids, &context)?)
             }
@@ -1422,6 +1488,10 @@ fn verify_expr(
         ExprKind::InterruptedCall(call) => {
             results::verify_interrupted(call, scope, ids, context)?;
             expr.ty
+        }
+        ExprKind::DiscardLet { value, body, .. } => {
+            discarded::verify(value, scope, ids, context)?;
+            verify_expr(body, scope, ids, context)?
         }
         ExprKind::NoStorageLet { value, body, .. } => {
             results::verify_no_normal(value, scope, ids, context)?;
@@ -1837,6 +1907,9 @@ fn has_control_extension(program: &TypedMain) -> bool {
 fn any_computation(computation: &Computation, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
     match computation {
         Computation::Value(value) => any_expr(value, predicate),
+        Computation::Discarded(value) => {
+            value.any_value_root(&mut |value| any_expr(value, predicate))
+        }
         Computation::NoNormal(value) => {
             value.any_value_root(&mut |value| any_expr(value, predicate))
         }
@@ -1849,6 +1922,9 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
     }
     match &expr.kind {
         ExprKind::InterruptedCall(call) => call.any_value_root(&mut |value| any_expr(value, predicate)),
+        ExprKind::DiscardLet { value, body, .. } => {
+            value.any_value_root(&mut |value| any_expr(value, predicate)) || any_expr(body, predicate)
+        }
         ExprKind::NoStorageLet { value, body, .. } => {
             value.any_value_root(&mut |value| any_expr(value, predicate)) || any_expr(body, predicate)
         }
@@ -1897,6 +1973,10 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
 fn collect_calls(expr: &ExprNode, out: &mut Vec<usize>) {
     match &expr.kind {
         ExprKind::InterruptedCall(call) => call.visit_calls(out),
+        ExprKind::DiscardLet { value, body, .. } => {
+            value.visit_calls(out);
+            collect_calls(body, out);
+        }
         ExprKind::NoStorageLet { value, body, .. } => {
             value.visit_calls(out);
             collect_calls(body, out);
@@ -2058,6 +2138,19 @@ enum EvalArg {
     Owner(OwnerHandle),
 }
 
+#[derive(Debug)]
+enum FunctionReturn {
+    Value(EvalArg),
+    Discarded,
+}
+impl FunctionReturn {
+    fn value(self) -> Result<EvalArg, String> {
+        match self {
+            Self::Value(value) => Ok(value),
+            Self::Discarded => Err("E-TYPED-CONTROL: discarded result used as value".into()),
+        }
+    }
+}
 fn evaluate_function(
     program: &TypedMain,
     id: usize,
@@ -2065,6 +2158,15 @@ fn evaluate_function(
     depth: usize,
     state: &mut EvalState,
 ) -> Result<EvalArg, String> {
+    evaluate_function_outcome(program, id, args, depth, state)?.value()
+}
+fn evaluate_function_outcome(
+    program: &TypedMain,
+    id: usize,
+    args: Vec<EvalArg>,
+    depth: usize,
+    state: &mut EvalState,
+) -> Result<FunctionReturn, String> {
     let function = &program.functions[id];
     let mut locals = CopyLocals::default();
     let mut owners = HashMap::new();
@@ -2082,7 +2184,10 @@ fn evaluate_function(
             _ => return Err("E-TYPED-OWNER: invalid runtime argument".into()),
         }
     }
-    let result = if let Computation::NoNormal(body) = &function.body {
+    let result = if let Computation::Discarded(body) = &function.body {
+        discarded::evaluate(body, &mut locals, program, depth, state, &mut owners)
+            .map(|()| FunctionReturn::Discarded)
+    } else if let Computation::NoNormal(body) = &function.body {
         match results::evaluate_no_normal(body, &mut locals, program, depth, state, &mut owners) {
             Ok(never) => match never {},
             Err(error) => Err(error),
@@ -2096,7 +2201,7 @@ fn evaluate_function(
             state,
             &mut owners,
         )
-        .map(EvalArg::Owner)
+        .map(|value| FunctionReturn::Value(EvalArg::Owner(value)))
     } else {
         evaluate_expr(
             function.body.value_expr()?,
@@ -2106,7 +2211,7 @@ fn evaluate_function(
             state,
             &mut owners,
         )
-        .map(EvalArg::Value)
+        .map(|value| FunctionReturn::Value(EvalArg::Value(value)))
     };
     if result.is_ok() {
         for cleanup in &function.param_cleanup {
@@ -2144,6 +2249,10 @@ fn evaluate_expr(
                 Ok(never) => match never {},
                 Err(error) => Err(error),
             }
+        }
+        ExprKind::DiscardLet { value, body, .. } => {
+            discarded::evaluate(value, locals, program, depth, state, owners)?;
+            evaluate_expr(body, locals, program, depth, state, owners)
         }
         ExprKind::NoStorageLet { value, .. } => {
             match results::evaluate_no_normal(value, locals, program, depth, state, owners) {
@@ -2457,6 +2566,17 @@ fn evaluate_call(
     state: &mut EvalState,
     owners: &mut HashMap<LocalId, OwnerHandle>,
 ) -> Result<EvalArg, String> {
+    evaluate_call_outcome(id, args, locals, program, depth, state, owners)?.value()
+}
+fn evaluate_call_outcome(
+    id: usize,
+    args: &[CallArg],
+    locals: &mut CopyLocals,
+    program: &TypedMain,
+    depth: usize,
+    state: &mut EvalState,
+    owners: &mut HashMap<LocalId, OwnerHandle>,
+) -> Result<FunctionReturn, String> {
     let mut values = Vec::new();
     for arg in args {
         match arg {
@@ -2495,7 +2615,7 @@ fn evaluate_call(
     if depth >= 32 {
         return Err("runtime trap".into());
     }
-    evaluate_function(program, id, values, depth + 1, state)
+    evaluate_function_outcome(program, id, values, depth + 1, state)
 }
 
 fn evaluate_owner_expr(
@@ -3750,3 +3870,15 @@ mod tests {
 #[cfg(test)]
 #[path = "typed/independent_interrupted_tests.rs"]
 mod independent_interrupted_tests;
+
+#[cfg(test)]
+#[path = "typed/independent_discarded_proof_tests.rs"]
+mod independent_discarded_proof_tests;
+
+#[cfg(test)]
+#[path = "typed/independent_discarded_internal_tests.rs"]
+mod independent_discarded_internal_tests;
+
+#[cfg(test)]
+#[path = "typed/independent_discarded_suffix_tests.rs"]
+mod independent_discarded_suffix_tests;

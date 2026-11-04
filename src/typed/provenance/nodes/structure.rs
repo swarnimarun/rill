@@ -174,7 +174,9 @@ fn child_count(node: TypedNodeRef<'_>) -> usize {
             | CallArg::InoutOwner(_) => 0,
         },
         TypedNodeRef::Expression(expression) => match &expression.kind {
-            ExprKind::NoStorageLet { .. } | ExprKind::InterruptedCall(_) => 0,
+            ExprKind::NoStorageLet { .. }
+            | ExprKind::DiscardLet { .. }
+            | ExprKind::InterruptedCall(_) => 0,
             ExprKind::Record { fields, .. } => fields.len(),
             ExprKind::Call(_, arguments) => arguments.len(),
             ExprKind::Constructor { fields, .. } => fields.len(),
@@ -267,7 +269,9 @@ fn child_at(node: TypedNodeRef<'_>, index: usize) -> Option<(TypedChildRole, Typ
             | CallArg::InoutOwner(_) => None,
         },
         Node::Expression(value) => match &value.kind {
-            ExprKind::NoStorageLet { .. } | ExprKind::InterruptedCall(_) => None,
+            ExprKind::NoStorageLet { .. }
+            | ExprKind::DiscardLet { .. }
+            | ExprKind::InterruptedCall(_) => None,
             ExprKind::Record { fields, .. } => fields.get(index).map(|(declaration, value)| {
                 (
                     Role::RecordField(index),
@@ -434,9 +438,9 @@ fn copy_type(ty: Type, typed: &TypedMain, budget: &mut BodyBudget) -> Result<(),
 
 fn copy_operation(kind: &ExprKind) -> Result<(), String> {
     match kind {
-        ExprKind::NoStorageLet { .. } | ExprKind::InterruptedCall(_) => {
-            Err(outside("no-normal control result"))
-        }
+        ExprKind::NoStorageLet { .. }
+        | ExprKind::DiscardLet { .. }
+        | ExprKind::InterruptedCall(_) => Err(outside("no-normal control result")),
         ExprKind::Int(_)
         | ExprKind::Str(_)
         | ExprKind::Bool(_)
@@ -770,9 +774,9 @@ pub(super) fn fingerprint(
         TypedNodeRef::Expression(expression) => Fingerprint::Expression(
             expression.ty,
             match &expression.kind {
-                ExprKind::NoStorageLet { .. } | ExprKind::InterruptedCall(_) => {
-                    return Err(outside("no-normal control result"))
-                }
+                ExprKind::NoStorageLet { .. }
+                | ExprKind::DiscardLet { .. }
+                | ExprKind::InterruptedCall(_) => return Err(outside("no-normal control result")),
                 ExprKind::Int(value) => ExpressionFingerprint::Int(*value),
                 ExprKind::Str(value) => {
                     budget.work(value.len())?;

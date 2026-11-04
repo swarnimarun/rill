@@ -232,6 +232,9 @@ pub(super) fn has_native_representation(typed: &TypedMain) -> bool {
                     };
                     match &function.body {
                         super::Computation::Value(value) => super::any_expr(value, &predicate),
+                        super::Computation::Discarded(value) => {
+                            value.any_value_root(&mut |value| super::any_expr(value, &predicate))
+                        }
                         super::Computation::NoNormal(value) => {
                             value.any_value_root(&mut |value| super::any_expr(value, &predicate))
                         }
@@ -248,7 +251,7 @@ fn lower_with_trace(
     let (typed, instances) = super::lower_main_traced(&checked, Some(&mut trace), None)?;
     if super::has_control_extension(&typed) {
         return Err(
-            "E-TYPED-UNSUPPORTED: function origin index does not map no-normal control results"
+            "E-TYPED-UNSUPPORTED: function origin index does not map no-normal or discarded control results"
                 .into(),
         );
     }

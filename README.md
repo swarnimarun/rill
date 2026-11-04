@@ -406,3 +406,10 @@ To reproduce actual headless SDL3 framebuffer captures of both games, see
 [native SDL3 verification report](docs/verification/2026-11-03-sdl3-native.md).
 These captures use the real SDL software renderer; they do not simulate
 physical keyboard or mouse input.
+
+The accepted bounded implementation of [normally returning discarded results](docs/blockers/discarded-results.md)
+adds a separate logical-only result for unused immutable bindings, with actual
+calls and constructor operand effects. It does not admit unknown stored payloads
+or observable unresolved main results. Its [integrated verification](docs/verification/2026-11-04-discarded-results.md)
+passes 939 default and 987 importer-enabled tests, strict lint and Windows compile
+checks, plus independent proof/event/C cases. Direct layoutless records remain open.

@@ -12,15 +12,24 @@ pub(super) const BARE_RESULT: &str = "E-TYPED-UNSUPPORTED: bare unresolved polym
 const MAX_INSTANCES: usize = 1024;
 const MAX_TYPE_DEPTH: usize = 128;
 
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Hash)]
+pub(super) enum Demand {
+    #[default]
+    Observe,
+    Discard,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
 struct Key {
     source: usize,
+    demand: Demand,
     params: Vec<Type>,
     result: Type,
 }
 
 pub(super) struct Instance {
     pub source: usize,
+    pub demand: Demand,
     pub scope: usize,
     pub params: Vec<Type>,
     pub result: Type,
@@ -96,6 +105,7 @@ impl Instances {
         result.freeze_unbound(checked, main, 0, &mut entry_context)?;
         let entry_key = Key {
             source: main,
+            demand: Demand::Observe,
             params: vec![],
             result: result.substituted_type(
                 checked,
@@ -124,20 +134,34 @@ impl Instances {
                 result.reserve_control_type(ty, 1)?;
             }
             let context = instance.substitution.clone();
+            let demand = instance.demand;
             let source = instance.source;
             let function = &checked.program.functions[source];
             // A single mutable path and depth checkpoints avoid copying ancestor
             // paths at every node. Only actual request edges retain a path.
             let mut path = AstPath::root(AstDeclaration::Function(source));
             result.charge_control(1)?;
-            let mut pending = vec![(&function.body, 0, ChildSteps::one(AstStep::FunctionBody))];
-            while let Some((expr, depth, steps)) = pending.pop() {
+            let mut pending = vec![(
+                &function.body,
+                demand,
+                0,
+                ChildSteps::one(AstStep::FunctionBody),
+            )];
+            while let Some((expr, demand, depth, steps)) = pending.pop() {
                 result.charge_control(1)?;
                 if trace.as_mut().is_some_and(|trace| trace.charge(1)) {
                     path.steps.truncate(depth);
                     steps.append(&mut path.steps);
                 }
-                let ty = result.expression_result_type(checked, expr, &context, control)?;
+                let ty = result.expression_type_demand(checked, expr, &context, control, demand)?;
+                let demand = if demand == Demand::Discard
+                    && matches!(ty, Type::Var(_))
+                    && control.is_some_and(|facts| facts.expression_may_return(expr) == Some(false))
+                {
+                    Demand::Observe
+                } else {
+                    demand
+                };
                 if let Some(index) = control
                     .map(|facts| result.interruption(checked, expr, facts))
                     .transpose()?
@@ -150,6 +174,7 @@ impl Instances {
                     for (ordinal, arg) in args[..=index].iter().enumerate().rev() {
                         pending.push((
                             arg,
+                            Demand::Observe,
                             path.steps.len(),
                             ChildSteps::one(AstStep::Argument(ordinal)),
                         ));
@@ -176,6 +201,7 @@ impl Instances {
                             checked,
                             Key {
                                 source,
+                                demand,
                                 params,
                                 result: ty,
                             },
@@ -191,9 +217,11 @@ impl Instances {
                         .checked_mul(2)
                         .ok_or("E-TYPED-CONTROL-COMPLEXITY: control work limit exceeded")?,
                 )?;
-                runtime_children_with_steps(checked, expr, |child, steps| {
-                    pending.push((child, depth, steps));
-                });
+                for (child, child_demand, steps) in
+                    result.demand_children(checked, expr, &context, control, demand)?
+                {
+                    pending.push((child, child_demand, depth, steps));
+                }
             }
             next += 1;
         }
@@ -236,6 +264,7 @@ impl Instances {
             result.ids.insert(
                 Key {
                     source: instance.source,
+                    demand: instance.demand,
                     params: instance.params.clone(),
                     result: instance.result.clone(),
                 },
@@ -287,29 +316,6 @@ impl Instances {
             .map(|work| work.borrow_mut())
             .ok_or_else(|| "E-TYPED-CONTROL: missing control budget".into())
     }
-    pub fn runtime_children<'e>(
-        &self,
-        checked: &CheckedProgram<'_>,
-        expression: &'e Expr,
-        control: Option<&super::control::SourceFacts<'_, '_>>,
-        pending: &mut Vec<&'e Expr>,
-    ) -> Result<(), String> {
-        if let Some(index) = control
-            .map(|facts| self.interruption(checked, expression, facts))
-            .transpose()?
-            .flatten()
-        {
-            let Expr::Call(_, args) = expression else {
-                unreachable!()
-            };
-            self.charge_control(index + 1)?;
-            pending.extend(args[..=index].iter().rev());
-        } else {
-            runtime_children(checked, expression, pending);
-        }
-        Ok(())
-    }
-
     pub fn charge_control(&self, amount: usize) -> Result<(), String> {
         if let Some(work) = &self.control_work {
             work.borrow_mut().charge(amount)?;
@@ -331,6 +337,16 @@ impl Instances {
         ty: &Type,
         context: &Substitution,
         bare_result: bool,
+    ) -> Result<Type, String> {
+        self.substituted_demand(checked, ty, context, bare_result, Demand::Observe)
+    }
+    fn substituted_demand(
+        &self,
+        checked: &CheckedProgram<'_>,
+        ty: &Type,
+        context: &Substitution,
+        bare_result: bool,
+        demand: Demand,
     ) -> Result<Type, String> {
         let Some(work) = &self.control_work else {
             return substitute_logical(checked, ty, context, &self.admission);
@@ -363,6 +379,9 @@ impl Instances {
             })
         }
         let result = substitute(ty, context, &mut work.borrow_mut(), 0)?;
+        if demand == Demand::Discard {
+            return Ok(result);
+        }
         if matches!(result, Type::Var(_)) {
             if bare_result {
                 return Ok(result);
@@ -379,14 +398,165 @@ impl Instances {
         context: &Substitution,
         control: Option<&super::control::SourceFacts<'_, '_>>,
     ) -> Result<Type, String> {
-        self.substituted_type(
+        self.expression_type_demand(checked, expr, context, control, Demand::Observe)
+    }
+    pub fn expression_type_demand(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expr: &Expr,
+        context: &Substitution,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+        demand: Demand,
+    ) -> Result<Type, String> {
+        self.substituted_demand(
             checked,
             checked
                 .expression_type(expr)
                 .ok_or("E-TYPED: missing checked expression type")?,
             context,
             control.is_some_and(|facts| facts.expression_may_return(expr) == Some(false)),
+            demand,
         )
+    }
+
+    pub fn initializer_demand(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expression: &Expr,
+        context: &Substitution,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+    ) -> Result<Demand, String> {
+        let Some(facts) = control else {
+            return Ok(Demand::Observe);
+        };
+        let (Expr::Let(_, value, _) | Expr::LetMut(_, value, _)) = expression else {
+            return Err("E-TYPED-CONTROL: expected binding".into());
+        };
+        let ty = self.expression_type_demand(checked, value, context, control, Demand::Discard)?;
+        if matches!(ty, Type::Var(_)) && facts.expression_may_return(value) == Some(false) {
+            return Ok(Demand::Observe);
+        }
+        let physical = if matches!(ty, Type::Var(_)) {
+            Err(BARE_RESULT.into())
+        } else {
+            self.admission.admit(checked, &ty)
+        };
+        match physical {
+            Ok(()) => Ok(Demand::Observe),
+            Err(error)
+                if error == super::logical::layout::UNREPRESENTABLE || error == BARE_RESULT =>
+            {
+                facts.discard_binding(expression, &self.domain)?;
+                Ok(Demand::Discard)
+            }
+            Err(error) => Err(error),
+        }
+    }
+    pub fn discard_structural(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expression: &Expr,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+    ) -> Result<bool, String> {
+        match expression {
+            Expr::Let(..) | Expr::LetMut(..) | Expr::If(..) | Expr::Match(..) => Ok(true),
+            Expr::Call(name, _) if self.functions.contains_key(name) => {
+                self.charge_control(name.len())?;
+                Ok(true)
+            }
+            Expr::Call(name, _) | Expr::Var(name) => {
+                if !control
+                    .map(|facts| facts.global_constructor_reference(expression))
+                    .transpose()?
+                    .unwrap_or(false)
+                {
+                    return Ok(false);
+                }
+                self.charge_control(checked.program.types.len())?;
+                for declaration in &checked.program.types {
+                    self.charge_control(declaration.variants.len())?;
+                    for variant in &declaration.variants {
+                        self.charge_control(name.len().saturating_add(variant.name.len()))?;
+                        if declaration.record_fields.is_none()
+                            && variant.name == *name
+                            && (!matches!(expression, Expr::Var(_)) || variant.fields.is_empty())
+                        {
+                            return Ok(true);
+                        }
+                    }
+                }
+                Ok(false)
+            }
+            _ => Ok(false),
+        }
+    }
+    fn demand_children<'e>(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expression: &'e Expr,
+        context: &Substitution,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+        demand: Demand,
+    ) -> Result<Vec<(&'e Expr, Demand, ChildSteps)>, String> {
+        let mut children = Vec::new();
+        let initializer = if matches!(expression, Expr::Let(..) | Expr::LetMut(..)) {
+            self.initializer_demand(checked, expression, context, control)?
+        } else {
+            Demand::Observe
+        };
+        let structural =
+            demand == Demand::Discard && self.discard_structural(checked, expression, control)?;
+        runtime_children_with_steps(checked, expression, |child, steps| {
+            let child_demand = match expression {
+                Expr::Let(..) | Expr::LetMut(..) if steps.0 == AstStep::LetValue => initializer,
+                Expr::Let(..) | Expr::LetMut(..) => demand,
+                Expr::If(..) if matches!(steps.0, AstStep::Then | AstStep::Else) => demand,
+                Expr::Match(..) if matches!(steps.0, AstStep::Arm(_)) => demand,
+                Expr::Call(name, _)
+                    if demand == Demand::Discard
+                        && !self.functions.contains_key(name)
+                        && structural =>
+                {
+                    Demand::Discard
+                }
+                _ => Demand::Observe,
+            };
+            children.push((child, child_demand, steps));
+        });
+        Ok(children)
+    }
+    pub fn runtime_children_demand<'e>(
+        &self,
+        checked: &CheckedProgram<'_>,
+        expression: &'e Expr,
+        context: &Substitution,
+        control: Option<&super::control::SourceFacts<'_, '_>>,
+        demand: Demand,
+        pending: &mut Vec<(&'e Expr, Demand)>,
+    ) -> Result<(), String> {
+        if let Some(index) = control
+            .map(|facts| self.interruption(checked, expression, facts))
+            .transpose()?
+            .flatten()
+        {
+            let Expr::Call(_, args) = expression else {
+                unreachable!()
+            };
+            self.charge_control(index + 1)?;
+            pending.extend(
+                args[..=index]
+                    .iter()
+                    .rev()
+                    .map(|arg| (arg, Demand::Observe)),
+            );
+        } else {
+            pending.extend(
+                self.demand_children(checked, expression, context, control, demand)?
+                    .into_iter()
+                    .map(|(expr, demand, _)| (expr, demand)),
+            );
+        }
+        Ok(())
     }
 
     fn insert(&mut self, checked: &CheckedProgram<'_>, key: Key) -> Result<usize, String> {
@@ -450,6 +620,7 @@ impl Instances {
         self.freeze_unbound(checked, key.source, id, &mut substitution)?;
         self.list.push(Instance {
             source: key.source,
+            demand: key.demand,
             scope: id,
             params: key.params.clone(),
             result: key.result.clone(),
@@ -556,6 +727,15 @@ impl Instances {
     }
 
     pub fn call(&self, name: &str, params: Vec<Type>, result: Type) -> Result<usize, String> {
+        self.call_demand(name, params, result, Demand::Observe)
+    }
+    pub fn call_demand(
+        &self,
+        name: &str,
+        params: Vec<Type>,
+        result: Type,
+        demand: Demand,
+    ) -> Result<usize, String> {
         self.admission.reserve_entries(name.len() + params.len())?;
         self.charge_control(
             name.len()
@@ -573,6 +753,7 @@ impl Instances {
         self.ids
             .get(&Key {
                 source,
+                demand,
                 params,
                 result,
             })
@@ -950,6 +1131,7 @@ mod tests {
             .unwrap();
         let key = Key {
             source: instance.source,
+            demand: Demand::Observe,
             params: instance.params.clone(),
             result: instance.result.clone(),
         };
@@ -1088,6 +1270,7 @@ mod tests {
                     &checked,
                     Key {
                         source,
+                        demand: Demand::Observe,
                         params: vec![ty.clone()],
                         result: ty,
                     },
@@ -1100,6 +1283,7 @@ mod tests {
                 &checked,
                 Key {
                     source,
+                    demand: Demand::Observe,
                     params: vec![Type::Int],
                     result: Type::Int,
                 },
@@ -1110,6 +1294,7 @@ mod tests {
                 &checked,
                 Key {
                     source,
+                    demand: Demand::Observe,
                     params: vec![Type::Bool],
                     result: Type::Bool
                 }

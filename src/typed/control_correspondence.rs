@@ -1,8 +1,9 @@
 //! Direct structural relation, not a replay of lowerer decisions or a flow hash.
 use super::*;
 use crate::typed::{
-    AdtOrigin, CallArg, Computation, CopyPattern, ExprKind, ExprNode, FieldPlace, LocalId,
-    LogicalType, NoNormalExpr, NoNormalKind, ResultRepr, Type as RuntimeType, TypedMain,
+    AdtOrigin, CallArg, Computation, CopyPattern, DiscardExpr, DiscardKind, ExprKind, ExprNode,
+    FieldPlace, LocalId, LogicalType, NoNormalExpr, NoNormalKind, ResultRepr, Type as RuntimeType,
+    TypedMain,
 };
 use std::collections::{HashMap, HashSet};
 
@@ -10,6 +11,7 @@ use std::collections::{HashMap, HashSet};
 enum Actual<'a> {
     Value(&'a ExprNode),
     NoNormal(&'a NoNormalExpr),
+    Discarded(&'a DiscardExpr),
 }
 
 impl Frozen {
@@ -130,6 +132,7 @@ impl Frozen {
     ) -> Result<Type, String> {
         match result {
             ResultRepr::Value(ty) => self.runtime_type(*ty, program, budget, 0),
+            ResultRepr::Discarded(ty) => self.logical_source(ty, budget, 0),
             ResultRepr::NoNormal(id)
                 if id.domain == self.domain && id.index < self.binders.len() =>
             {
@@ -287,7 +290,9 @@ impl Frozen {
             {
                 return Err(INVALID.into());
             }
-            if actual.params.len() != source.params.len()
+            if (instance.demand == instances::Demand::Discard)
+                != matches!(actual.result, ResultRepr::Discarded(_))
+                || actual.params.len() != source.params.len()
                 || !actual.param_cleanup.is_empty()
                 || self.result_type(&actual.result, program, &mut budget)?
                     != copy_type(&instance.result, &mut budget, 0)?
@@ -328,6 +333,7 @@ impl Frozen {
             }
             let body = match &actual.body {
                 Computation::Value(value) => Actual::Value(value),
+                Computation::Discarded(value) => Actual::Discarded(value),
                 Computation::NoNormal(value) => Actual::NoNormal(value),
             };
             if self
@@ -490,14 +496,15 @@ impl<'a> Relation<'a, '_> {
         source: usize,
         modes: &[ParamMode],
         args: &[NodeId],
-        callee: usize,
+        (callee, demand): (usize, instances::Demand),
         actual: &'a [CallArg],
     ) -> Result<(), String> {
         self.budget.charge(1)?;
         self.edges.push(callee);
         let target = self.frozen.instances.get(callee).ok_or(INVALID)?;
         let function = self.program.functions.get(callee).ok_or(INVALID)?;
-        if target.source != source
+        if target.demand != demand
+            || target.source != source
             || args.len() != actual.len()
             || modes.len() != actual.len()
             || function.params.len() != actual.len()
@@ -673,6 +680,7 @@ impl<'a> Relation<'a, '_> {
             )?;
         }
         let barrier = match &*actual.barrier {
+            Computation::Discarded(_) => return Err(INVALID.into()),
             Computation::Value(value) => Actual::Value(value),
             Computation::NoNormal(value) => Actual::NoNormal(value),
         };
@@ -881,6 +889,23 @@ impl<'a> Relation<'a, '_> {
                     }
                     (
                         SourceKind::Let(binding, value, body),
+                        ExprKind::DiscardLet {
+                            binding: actual_binding,
+                            value: actual_value,
+                            body: actual_body,
+                        },
+                    ) => {
+                        self.no_storage(source, *binding, actual_binding)?;
+                        self.child(source, *body, Role::LetBody, Actual::Value(actual_body))?;
+                        self.child(
+                            source,
+                            *value,
+                            Role::LetValue,
+                            Actual::Discarded(actual_value),
+                        )?;
+                    }
+                    (
+                        SourceKind::Let(binding, value, body),
                         ExprKind::NoStorageLet {
                             binding: actual_binding,
                             value: actual_value,
@@ -899,7 +924,14 @@ impl<'a> Relation<'a, '_> {
                     (
                         SourceKind::Call(CallTarget::Function(target), modes, args),
                         ExprKind::Call(callee, actual),
-                    ) => self.call(source, *target, modes, args, *callee, actual)?,
+                    ) => self.call(
+                        source,
+                        *target,
+                        modes,
+                        args,
+                        (*callee, instances::Demand::Observe),
+                        actual,
+                    )?,
                     (SourceKind::Call(CallTarget::Other(name), modes, args), _)
                         if modes.is_empty() =>
                     {
@@ -979,6 +1011,174 @@ impl<'a> Relation<'a, '_> {
                     _ => return Err(INVALID.into()),
                 }
             }
+            Actual::Discarded(actual) => {
+                if actual.occurrence != source.0
+                    || self.frozen.logical_source(&actual.result, self.budget, 0)? != expected
+                {
+                    return Err(INVALID.into());
+                }
+                match (&node.kind, &actual.kind) {
+                    (_, DiscardKind::Value(value)) => {
+                        if !matches!(value.kind, ExprKind::InterruptedCall(_))
+                            && matches!(
+                                node.kind,
+                                SourceKind::Let(..)
+                                    | SourceKind::If(..)
+                                    | SourceKind::Match(..)
+                                    | SourceKind::Call(CallTarget::Function(_), _, _)
+                            )
+                        {
+                            return Err(INVALID.into());
+                        }
+                        self.node(source, Actual::Value(value))?;
+                    }
+                    (_, DiscardKind::FromNoNormal(value)) => {
+                        self.node(source, Actual::NoNormal(value))?
+                    }
+                    (
+                        SourceKind::Call(CallTarget::Function(target), modes, args),
+                        DiscardKind::Call(callee, arguments),
+                    ) => self.call(
+                        source,
+                        *target,
+                        modes,
+                        args,
+                        (*callee, instances::Demand::Discard),
+                        arguments,
+                    )?,
+                    (
+                        SourceKind::Var(Reference::Global(name)),
+                        DiscardKind::Constructor {
+                            definition,
+                            variant,
+                            fields,
+                        },
+                    ) if fields.is_empty() => {
+                        self.discard_constructor(name, &expected, *definition, *variant, fields)?
+                    }
+                    (
+                        SourceKind::Call(CallTarget::Other(name), modes, args),
+                        DiscardKind::Constructor {
+                            definition,
+                            variant,
+                            fields,
+                        },
+                    ) if modes.is_empty() && args.len() == fields.len() => {
+                        self.discard_constructor(name, &expected, *definition, *variant, fields)?;
+                        self.budget.charge(fields.len())?;
+                        for (ordinal, (source_value, value)) in args.iter().zip(fields).enumerate()
+                        {
+                            self.child(
+                                source,
+                                *source_value,
+                                Role::Argument(ordinal),
+                                Actual::Discarded(value),
+                            )?;
+                        }
+                    }
+                    (
+                        SourceKind::Let(binding, value, body),
+                        DiscardKind::Let {
+                            local,
+                            mutable,
+                            value: actual_value,
+                            body: actual_body,
+                        },
+                    ) => {
+                        let canonical =
+                            self.frozen.witness.bindings.get(binding.0).ok_or(INVALID)?;
+                        if canonical.site != BindingSite::Let(source)
+                            || canonical.mutable != *mutable
+                        {
+                            return Err(INVALID.into());
+                        }
+                        self.bind(*binding, *local)?;
+                        self.child(source, *body, Role::LetBody, Actual::Discarded(actual_body))?;
+                        self.child(source, *value, Role::LetValue, Actual::Value(actual_value))?;
+                    }
+                    (
+                        SourceKind::Let(binding, value, body),
+                        DiscardKind::DiscardLet {
+                            binding: actual_binding,
+                            value: actual_value,
+                            body: actual_body,
+                        },
+                    ) => {
+                        self.no_storage(source, *binding, actual_binding)?;
+                        self.child(source, *body, Role::LetBody, Actual::Discarded(actual_body))?;
+                        self.child(
+                            source,
+                            *value,
+                            Role::LetValue,
+                            Actual::Discarded(actual_value),
+                        )?;
+                    }
+                    (
+                        SourceKind::Let(binding, value, body),
+                        DiscardKind::NoStorageLet {
+                            binding: actual_binding,
+                            value: actual_value,
+                            body: actual_body,
+                        },
+                    ) => {
+                        self.no_storage(source, *binding, actual_binding)?;
+                        self.child(source, *body, Role::LetBody, Actual::Discarded(actual_body))?;
+                        self.child(
+                            source,
+                            *value,
+                            Role::LetValue,
+                            Actual::NoNormal(actual_value),
+                        )?;
+                    }
+                    (
+                        SourceKind::If(condition, yes, no),
+                        DiscardKind::If {
+                            condition: actual_condition,
+                            yes: actual_yes,
+                            no: actual_no,
+                        },
+                    ) => {
+                        self.child(source, *no, Role::Else, Actual::Discarded(actual_no))?;
+                        self.child(source, *yes, Role::Then, Actual::Discarded(actual_yes))?;
+                        self.child(
+                            source,
+                            *condition,
+                            Role::Condition,
+                            Actual::Value(actual_condition),
+                        )?;
+                    }
+                    (
+                        SourceKind::Match(value, arms),
+                        DiscardKind::Match {
+                            value: actual_value,
+                            arms: actual_arms,
+                        },
+                    ) => {
+                        if arms.len() != actual_arms.len() {
+                            return Err(INVALID.into());
+                        }
+                        self.budget.charge(arms.len())?;
+                        for (ordinal, ((pattern, body), actual)) in
+                            arms.iter().zip(actual_arms).enumerate()
+                        {
+                            self.pattern(*pattern, &actual.pattern, 0)?;
+                            self.child(
+                                source,
+                                *body,
+                                Role::MatchArm(ordinal),
+                                Actual::Discarded(&actual.body),
+                            )?;
+                        }
+                        self.child(
+                            source,
+                            *value,
+                            Role::MatchValue,
+                            Actual::Value(actual_value),
+                        )?;
+                    }
+                    _ => return Err(INVALID.into()),
+                }
+            }
             Actual::NoNormal(actual) => {
                 if actual.result.domain != self.frozen.domain
                     || actual.result.index >= self.frozen.binders.len()
@@ -997,7 +1197,14 @@ impl<'a> Relation<'a, '_> {
                     (
                         SourceKind::Call(CallTarget::Function(target), modes, args),
                         NoNormalKind::Call(callee, actual),
-                    ) => self.call(source, *target, modes, args, *callee, actual)?,
+                    ) => self.call(
+                        source,
+                        *target,
+                        modes,
+                        args,
+                        (*callee, instances::Demand::Observe),
+                        actual,
+                    )?,
                     (
                         SourceKind::Let(binding, value, body),
                         NoNormalKind::Let {
@@ -1017,6 +1224,23 @@ impl<'a> Relation<'a, '_> {
                         self.bind(*binding, *local)?;
                         self.child(source, *body, Role::LetBody, Actual::NoNormal(actual_body))?;
                         self.child(source, *value, Role::LetValue, Actual::Value(actual_value))?;
+                    }
+                    (
+                        SourceKind::Let(binding, value, body),
+                        NoNormalKind::DiscardLet {
+                            binding: actual_binding,
+                            value: actual_value,
+                            body: actual_body,
+                        },
+                    ) => {
+                        self.no_storage(source, *binding, actual_binding)?;
+                        self.child(source, *body, Role::LetBody, Actual::NoNormal(actual_body))?;
+                        self.child(
+                            source,
+                            *value,
+                            Role::LetValue,
+                            Actual::Discarded(actual_value),
+                        )?;
                     }
                     (
                         SourceKind::Let(binding, value, body),
@@ -1083,6 +1307,49 @@ impl<'a> Relation<'a, '_> {
                     }
                     _ => return Err(INVALID.into()),
                 }
+            }
+        }
+        Ok(())
+    }
+    fn discard_constructor(
+        &mut self,
+        name: &str,
+        result: &Type,
+        definition: usize,
+        variant: usize,
+        fields: &[DiscardExpr],
+    ) -> Result<(), String> {
+        let Type::Nominal(nominal, arguments) = result else {
+            return Err(INVALID.into());
+        };
+        let declaration = self
+            .frozen
+            .witness
+            .environment
+            .types
+            .get(definition)
+            .ok_or(INVALID)?;
+        self.budget
+            .charge(nominal.len().saturating_add(declaration.name.len()))?;
+        if declaration.record_fields.is_some()
+            || declaration.name != *nominal
+            || declaration.params.len() != arguments.len()
+        {
+            return Err(INVALID.into());
+        }
+        let constructor = declaration.variants.get(variant).ok_or(INVALID)?;
+        self.budget
+            .charge(name.len().saturating_add(constructor.name.len()))?;
+        if constructor.name != name || constructor.fields.len() != fields.len() {
+            return Err(INVALID.into());
+        }
+        self.budget.charge(fields.len())?;
+        for (schema, field) in constructor.fields.iter().zip(fields) {
+            let expected =
+                self.frozen
+                    .schema_type(schema, &declaration.params, arguments, self.budget, 0)?;
+            if self.frozen.logical_source(&field.result, self.budget, 0)? != expected {
+                return Err(INVALID.into());
             }
         }
         Ok(())
@@ -1294,6 +1561,7 @@ mod tests {
             assert_eq!(classes.len(), 1);
             instances.push(Instance {
                 source,
+                demand: instances::Demand::Observe,
                 scope: if source == 1 { 0 } else { 1 },
                 params: vec![],
                 result: if source == 1 && concrete_tail {

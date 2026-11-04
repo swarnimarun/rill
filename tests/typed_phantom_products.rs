@@ -302,11 +302,9 @@ fn unused_products_and_selected_branches_preserve_runtime_traps() {
 fn genuinely_unknown_physical_fields_stay_unsupported_after_no_normal_admission() {
     for source in [
         "type Option<a> = None | Some(a)\nfn main() { None }",
-        "type Option<a> = None | Some(a)\nfn make() { None }\nfn main() { let unused = make(); 42 }",
         "type Option<a> = None | Some(a)\ntype Wrap<a> = Wrap(Option<a>)\nfn main() { match Wrap(None) { Wrap(None) => 42 | Wrap(Some(_)) => 0 } }",
         "type Option<a> = None | Some(a)\ntype Store<a> = { value: Option<a> }\nfn make() { record Store { value = None } }\nfn main() { let unused = make(); 42 }",
         "type Store<a> = { value: a }\nfn forever() { forever() }\nfn main() { let unused = record Store { value = forever() }; 42 }",
-        "type Option<a> = None | Some(a)\nfn main() { if false { let weak = if true { None } else { None }; 0 } else { 42 } }",
     ] {
         let program = parser::parse(source).unwrap();
         let checked = check::analyze(&program).unwrap_or_else(|e| panic!("{source}: {e}"));
@@ -494,15 +492,21 @@ fn optional_origin_errors_keep_ordinary_semantic_precedence() {
     }
     for source in [
         "type Option<a> = None | Some(a)\nfn main() { None }",
-        "type Option<a> = None | Some(a)\nfn make() { None }\nfn main() { let unused = make(); 42 }",
+        "type Option<a> = None | Some(a)\nfn make(){None}\nfn main(){make()}",
     ] {
         let fixture = Fixture::new();
         let path = fixture.write("main.rill", source);
         let sources = load_program_with_sources(&path).unwrap();
         let checked = check::analyze(sources.program()).unwrap();
         let ordinary = typed::lower_main(&checked).unwrap_err();
-        assert_eq!(lower_main_with_function_origins(sources.clone()).unwrap_err(), ordinary);
-        assert_eq!(lower_main_with_copy_node_origins(sources).unwrap_err(), ordinary);
+        assert_eq!(
+            lower_main_with_function_origins(sources.clone()).unwrap_err(),
+            ordinary
+        );
+        assert_eq!(
+            lower_main_with_copy_node_origins(sources).unwrap_err(),
+            ordinary
+        );
     }
 }
 
@@ -614,4 +618,12 @@ fn product_storage_does_not_reorder_native_argument_errors() {
         assert_eq!(interpreter::run_reference(&program).unwrap_err(), expected, "{source}");
         assert_eq!(interpreter::run(&program).unwrap_err(), expected, "{source}");
     }
+}
+
+#[test]
+fn unused_normally_returning_results_migrate_to_discard_computations() {
+    for source in [
+        "type Option<a> = None | Some(a)\nfn make() { None }\nfn main() { let unused = make(); 42 }",
+        "type Option<a> = None | Some(a)\nfn main() { if false { let weak = if true { None } else { None }; 0 } else { 42 } }",
+    ] { compare(source, Some("42")); }
 }

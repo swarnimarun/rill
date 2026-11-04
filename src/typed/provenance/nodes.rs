@@ -339,7 +339,7 @@ fn lower_with_budget(
     )?;
     if crate::typed::has_control_extension(&typed) {
         return Err(
-            "E-TYPED-UNSUPPORTED: Copy node origin index does not map no-normal control results"
+            "E-TYPED-UNSUPPORTED: Copy node origin index does not map no-normal or discarded control results"
                 .into(),
         );
     }

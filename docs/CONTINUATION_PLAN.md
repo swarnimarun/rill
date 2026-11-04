@@ -205,6 +205,11 @@ The bounded interrupted eager value-argument increment now accepts
 unknown argument storage or entry to the outer callee. Its
 [full matrix](verification/2026-11-04-interrupted-arguments.md) passed 892 default
 and 940 importer-enabled tests plus independent proof/event/C checks.
-Next, address discarded normally-returning unknown results separately. Keep used/mutable
-layoutless bindings and observable unknown payloads outside those bounded
-contracts until their representation and verification rules are established.
+The bounded [discarded-result increment](blockers/discarded-results.md) now has
+[integrated acceptance](verification/2026-11-04-discarded-results.md): 939 default
+and 987 importer-enabled tests, strict lint and Windows compile checks, plus
+independent proof/event/C cases. It retains actual normal calls and enum operand
+effects without storing unknown results. Next, add direct layoutless records
+under discard demand with independent schema/field/order evidence. Keep used or
+mutable layoutless bindings, observable unknown payloads and local-shape mixing
+outside these contracts until their representation rules are established.

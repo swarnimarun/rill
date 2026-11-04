@@ -8,18 +8,23 @@ use super::{CallArg, CopyPattern, ExprNode, LocalId, OpaqueId, Type};
 pub enum ResultRepr {
     Value(Type),
     NoNormal(OpaqueId),
+    Discarded(super::LogicalType),
 }
 impl ResultRepr {
     pub(super) fn value(&self) -> Result<Type, String> {
         match self {
             Self::Value(ty) => Ok(*ty),
-            Self::NoNormal(_) => Err("E-TYPED-CONTROL: a value result is required".into()),
+            Self::NoNormal(_) | Self::Discarded(_) => {
+                Err("E-TYPED-CONTROL: a value result is required".into())
+            }
         }
     }
     pub(super) fn value_ref(&self) -> Result<&Type, String> {
         match self {
             Self::Value(ty) => Ok(ty),
-            Self::NoNormal(_) => Err("E-TYPED-CONTROL: a value result is required".into()),
+            Self::NoNormal(_) | Self::Discarded(_) => {
+                Err("E-TYPED-CONTROL: a value result is required".into())
+            }
         }
     }
 }
@@ -43,19 +48,24 @@ impl PartialEq<ResultRepr> for Type {
 pub enum Computation {
     Value(ExprNode),
     NoNormal(NoNormalExpr),
+    Discarded(super::DiscardExpr),
 }
 impl Computation {
     pub(super) fn value_expr(&self) -> Result<&ExprNode, String> {
         match self {
             Self::Value(value) => Ok(value),
-            Self::NoNormal(_) => Err("E-TYPED-CONTROL: a value expression is required".into()),
+            Self::NoNormal(_) | Self::Discarded(_) => {
+                Err("E-TYPED-CONTROL: a value expression is required".into())
+            }
         }
     }
     #[cfg(test)]
     pub(super) fn value_expr_mut(&mut self) -> Result<&mut ExprNode, String> {
         match self {
             Self::Value(value) => Ok(value),
-            Self::NoNormal(_) => Err("E-TYPED-CONTROL: a value expression is required".into()),
+            Self::NoNormal(_) | Self::Discarded(_) => {
+                Err("E-TYPED-CONTROL: a value expression is required".into())
+            }
         }
     }
 }
@@ -94,6 +104,11 @@ pub enum NoNormalKind {
         value: Box<ExprNode>,
         body: Box<NoNormalExpr>,
     },
+    DiscardLet {
+        binding: NoStorageBinding,
+        value: Box<super::DiscardExpr>,
+        body: Box<NoNormalExpr>,
+    },
     NoStorageLet {
         binding: NoStorageBinding,
         value: Box<NoNormalExpr>,
@@ -123,6 +138,7 @@ impl InterruptedCall {
         self.prefix.iter().any(&mut *predicate)
             || match &*self.barrier {
                 Computation::Value(value) => predicate(value),
+                Computation::Discarded(value) => value.any_value_root(predicate),
                 Computation::NoNormal(value) => value.any_value_root(predicate),
             }
     }
@@ -132,6 +148,7 @@ impl InterruptedCall {
         }
         match &*self.barrier {
             Computation::Value(value) => super::collect_calls(value, output),
+            Computation::Discarded(value) => value.visit_calls(output),
             Computation::NoNormal(value) => value.visit_calls(output),
         }
     }
@@ -160,6 +177,12 @@ impl NoNormalExpr {
                 }
                 NoNormalKind::Let { value, body, .. } => {
                     if predicate(value) {
+                        return true;
+                    }
+                    pending.push(body);
+                }
+                NoNormalKind::DiscardLet { value, body, .. } => {
+                    if value.any_value_root(predicate) {
                         return true;
                     }
                     pending.push(body);
@@ -202,6 +225,10 @@ impl NoNormalExpr {
                     super::collect_calls(value, output);
                     pending.push(body);
                 }
+                NoNormalKind::DiscardLet { value, body, .. } => {
+                    value.visit_calls(output);
+                    pending.push(body);
+                }
                 NoNormalKind::NoStorageLet { value, body, .. } => {
                     pending.push(body);
                     pending.push(value);
@@ -232,6 +259,9 @@ pub(super) fn evaluate_interrupted(
         super::evaluate_expr(value, locals, program, depth, state, owners)?;
     }
     match &*call.barrier {
+        Computation::Discarded(_) => {
+            Err("E-TYPED-CONTROL: discarded interruption barrier is unsupported".into())
+        }
         Computation::Value(value) => {
             super::evaluate_expr(value, locals, program, depth, state, owners)?;
             Err("E-TYPED-CONTROL: interrupted argument unexpectedly returned".into())
@@ -254,6 +284,9 @@ pub(super) fn verify_interrupted(
         }
     }
     match &*call.barrier {
+        Computation::Discarded(_) => {
+            return Err("E-TYPED-CONTROL: discarded interruption barrier is unsupported".into())
+        }
         Computation::Value(value) => {
             super::verify_expr(value, scope, ids, context)?;
         }
@@ -291,6 +324,10 @@ pub(super) fn evaluate_no_normal(
                 let value = super::evaluate_expr(value, locals, program, depth, state, owners)?;
                 locals.insert(*local, value);
                 introduced.push(*local);
+                expression = body;
+            }
+            NoNormalKind::DiscardLet { value, body, .. } => {
+                super::discarded::evaluate(value, locals, program, depth, state, owners)?;
                 expression = body;
             }
             NoNormalKind::NoStorageLet { value, .. } => expression = value,
@@ -402,6 +439,10 @@ pub(super) fn verify_no_normal(
                     },
                 );
                 introduced.push(*local);
+                expression = body;
+            }
+            NoNormalKind::DiscardLet { value, body, .. } => {
+                super::discarded::verify(value, scope, ids, context)?;
                 expression = body;
             }
             NoNormalKind::NoStorageLet { value, body, .. } => {

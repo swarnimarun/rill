@@ -276,11 +276,10 @@ fn unresolved_non_generalized_uses_keep_an_explicit_representation_boundary() {
     for source in [
         "type O<a> = None | Some(a)\nfn main() { let n = None; match n { None => 42 | Some(_) => 0 } }",
         "type O<a> = None | Some(a)\ntype R<a> = { value: O<a> }\nfn main() { let r = record R { value = None }; let weak = r.value; 42 }",
-        "type O<a> = None | Some(a)\nfn absent() { None }\nfn main() { let weak = absent(); 42 }",
     ] {
         let program = rill::parser::parse(source).unwrap();
         let checked = rill::check::analyze(&program).unwrap();
-        assert!(rill::typed::lower_main(&checked).unwrap_err().contains("local specialization"));
+        assert!(rill::typed::lower_main(&checked).unwrap_err().starts_with("E-TYPED-UNSUPPORTED:"));
         assert_eq!(rill::interpreter::run_reference(&program).unwrap().to_string(), "42");
     }
 }

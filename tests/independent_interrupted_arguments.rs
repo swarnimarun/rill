@@ -185,11 +185,21 @@ fn independent_unexecuted_source_still_checks_first() {
     }
 }
 #[test]
+fn independent_returning_immutable_discard_uses_typed_path() {
+    // K4 now supports this previously excluded K3b fixture. Keep its source
+    // unchanged and require the real typed/reference/C path, not fallback.
+    compare(
+        "type O<a> = None | Some(a) fn absent(){None} fn main(){let unused=absent();42}",
+        Some("42"),
+    );
+}
+#[test]
 fn independent_genuine_layout_and_mode_boundaries_remain() {
     for source in [
         "fn spin(){spin()} fn main(){let used=spin();used}",
         "fn spin(){spin()} fn main(){let mut unused=spin();42}",
-        "type O<a> = None | Some(a) fn absent(){None} fn main(){let unused=absent();42}",
+        "type O<a> = None | Some(a) fn absent(){None} fn main(){let used=absent();used}",
+        "type O<a> = None | Some(a) fn absent(){None} fn main(){let mut unused=absent();42}",
         "type O<a> = None | Some(a) fn spin(){spin()} fn ignore(a,b){42} fn main(){ignore(None,spin())}",
         "fn spin(){spin()} fn ignore(read a,b){42} fn main(){let n=0;ignore(n,spin())}",
         "fn spin(){spin()} fn ignore(inout a,b){42} fn main(){let mut n=0;ignore(inout n,spin())}",

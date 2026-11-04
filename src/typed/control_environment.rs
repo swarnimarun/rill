@@ -52,7 +52,7 @@ fn external(ty: &ExternType, budget: &mut Budget) -> Result<(), String> {
 }
 
 impl Frozen {
-    fn schema_type(
+    pub(super) fn schema_type(
         &self,
         ty: &TypeExpr,
         parameters: &[String],
@@ -97,8 +97,9 @@ impl Frozen {
                 break;
             }
         }
-        let declaration = definition
-            .ok_or("E-TYPED-UNSUPPORTED: no-normal control schemas require pure Copy values")?;
+        let declaration = definition.ok_or(
+            "E-TYPED-UNSUPPORTED: no-normal or discarded control schemas require pure Copy values",
+        )?;
         if declaration.params.len() != ty.args.len() {
             return Err(INVALID.into());
         }
@@ -109,11 +110,129 @@ impl Frozen {
         }
         Ok(Type::Nominal(budget.text(&ty.name)?, args))
     }
+    /// Reconstruct the source-only purity obligation independently of lowering.
+    /// Interrupted suffixes have no executable node on which ordinary runtime
+    /// or discarded-result validation could enforce this boundary.
+    fn check_source_purity(&self, budget: &mut Budget) -> Result<(), String> {
+        let environment = &self.witness.environment;
+        let dependencies =
+            logical::schema_dependencies(&environment.types, &mut logical::Budget::default())?;
+        budget.charge(environment.types.len())?;
+        let mut declarations = HashMap::new();
+        for (index, declaration) in environment.types.iter().enumerate() {
+            text(&declaration.name, budget)?;
+            if declarations
+                .insert(declaration.name.as_str(), index)
+                .is_some()
+            {
+                return Err(INVALID.into());
+            }
+        }
+        fn pure(
+            ty: &Type,
+            declarations: &HashMap<&str, usize>,
+            environment: &SourceEnvironment,
+            dependencies: &[logical::Dependencies],
+            budget: &mut Budget,
+            depth: usize,
+        ) -> Result<(), String> {
+            budget.charge(1)?;
+            if depth > MAX_TYPE_DEPTH {
+                return Err(LIMIT.into());
+            }
+            match ty {
+                Type::Int
+                | Type::Bool
+                | Type::Unit
+                | Type::StaticStr
+                | Type::U8x16
+                | Type::Var(_) => {}
+                Type::Bytes(n) if *n <= 256 => {}
+                Type::Nominal(name, arguments) => {
+                    text(name, budget)?;
+                    let id = *declarations.get(name.as_str()).ok_or(INVALID)?;
+                    let declaration = environment.types.get(id).ok_or(INVALID)?;
+                    let dependency = dependencies.get(id).ok_or(INVALID)?;
+                    if declaration.params.len() != arguments.len()
+                        || dependency.owner
+                        || dependency.native
+                    {
+                        return Err(INVALID.into());
+                    }
+                    budget.charge(arguments.len())?;
+                    for arg in arguments {
+                        pure(
+                            arg,
+                            declarations,
+                            environment,
+                            dependencies,
+                            budget,
+                            depth + 1,
+                        )?;
+                    }
+                }
+                _ => return Err(INVALID.into()),
+            }
+            Ok(())
+        }
+        budget.charge(
+            environment
+                .externs
+                .len()
+                .saturating_add(environment.constants.len()),
+        )?;
+        let mut foreign = std::collections::HashSet::new();
+        for name in environment
+            .externs
+            .iter()
+            .map(|f| &f.name)
+            .chain(environment.constants.iter().map(|c| &c.name))
+        {
+            text(name, budget)?;
+            foreign.insert(name.as_str());
+        }
+        budget.charge(self.witness.functions.len())?;
+        for function in &self.witness.functions {
+            budget.charge(function.params.len())?;
+            for (_, ty) in &function.params {
+                pure(ty, &declarations, environment, &dependencies, budget, 0)?;
+            }
+            pure(
+                &function.result,
+                &declarations,
+                environment,
+                &dependencies,
+                budget,
+                0,
+            )?;
+        }
+        budget.charge(self.witness.nodes.len())?;
+        for node in &self.witness.nodes {
+            pure(
+                &node.ty,
+                &declarations,
+                environment,
+                &dependencies,
+                budget,
+                0,
+            )?;
+            if let SourceKind::Call(CallTarget::Other(name), _, _)
+            | SourceKind::Var(Reference::Global(name)) = &node.kind
+            {
+                text(name, budget)?;
+                if foreign.contains(name.as_str()) {
+                    return Err(INVALID.into());
+                }
+            }
+        }
+        Ok(())
+    }
     pub(super) fn check_environment(
         &self,
         program: &TypedMain,
         budget: &mut Budget,
     ) -> Result<(), String> {
+        self.check_source_purity(budget)?;
         let expected = &self.witness.environment;
         let native = &program.native;
         for list in [
