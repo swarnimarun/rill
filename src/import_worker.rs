@@ -3,10 +3,11 @@
 //! This bounds IPC and elapsed work; it is not a memory or security sandbox.
 use rill::c_import::{
     configuration,
-    selected::{Preparation, Selection},
+    selected::{Automatic, Generated, Preparation, Selection},
     Config,
 };
 use std::{
+    collections::HashSet,
     ffi::{OsStr, OsString},
     fs,
     io::{self, Read, Write},
@@ -26,6 +27,18 @@ pub(super) const COMMAND: &str = "__rill-import-worker-v1";
 const REQUEST_MAGIC: &[u8] = b"RILL-IMPORT-REQUEST\0\x01";
 const PREPARE_REQUEST_MAGIC: &[u8] = b"RILL-IMPORT-PREPARE-REQUEST\0\x02";
 const RESPONSE_MAGIC: &[u8] = b"RILL-IMPORT-RESPONSE\0\x01";
+const AUTOMATIC_REQUEST_MAGIC: &[u8] = b"RILL-AUTO-IMPORT-REQUEST\0\x02";
+const AUTOMATIC_RESPONSE_MAGIC: &[u8] = b"RILL-AUTO-IMPORT-RESPONSE\0\x02";
+const MAX_DEPENDENCY_BYTES: usize = 512 * 1024;
+const MAX_INPUT_STATE: usize = 2 * 1024 * 1024;
+const MAX_AUTOMATIC_RESPONSE: usize = AUTOMATIC_RESPONSE_MAGIC.len()
+    + 4
+    + MAX_MODULE
+    + 4
+    + MAX_ITEMS * 4
+    + MAX_DEPENDENCY_BYTES
+    + 4
+    + MAX_INPUT_STATE;
 const MAX_REQUEST: usize = 1024 * 1024;
 const MAX_MODULE: usize = 1024 * 1024;
 const MAX_RESPONSE: usize = RESPONSE_MAGIC.len() + 4 + MAX_MODULE;
@@ -36,10 +49,10 @@ fn protocol_error() -> String {
     "E-C-IMPORT: malformed or incompatible import worker protocol".into()
 }
 
-struct Encoder(Vec<u8>);
+struct Encoder(Vec<u8>, usize);
 impl Encoder {
     fn bytes(&mut self, bytes: &[u8]) -> Result<(), String> {
-        if bytes.len() > MAX_REQUEST.saturating_sub(self.0.len() + 4) {
+        if bytes.len() > self.1.saturating_sub(self.0.len() + 4) {
             return Err("E-C-IMPORT: import worker request exceeds 1 MiB".into());
         }
         self.0
@@ -112,7 +125,7 @@ fn encode_request(
     compiler: &OsStr,
     zig_cc: bool,
 ) -> Result<Vec<u8>, String> {
-    let mut output = Encoder(REQUEST_MAGIC.to_vec());
+    let mut output = Encoder(REQUEST_MAGIC.to_vec(), MAX_REQUEST);
     for list in [
         &selection.native.includes,
         &selection.native.links,
@@ -167,6 +180,130 @@ fn decode_request(bytes: &[u8]) -> Result<(Selection, OsString, bool), String> {
         compiler,
         zig_cc,
     ))
+}
+
+fn encode_automatic_request(
+    request: &Automatic,
+    compiler: &OsStr,
+    zig_cc: bool,
+) -> Result<Vec<u8>, String> {
+    let selection = Selection {
+        native: request.native.clone(),
+        functions: request.names.clone(),
+        c_args: request.c_args.clone(),
+        resource_dir: request.resource_dir.clone(),
+        ..Selection::default()
+    };
+    let mut bytes = encode_request(&selection, compiler, zig_cc)?;
+    bytes.splice(
+        ..REQUEST_MAGIC.len(),
+        AUTOMATIC_REQUEST_MAGIC.iter().copied(),
+    );
+    if bytes.len() > MAX_REQUEST {
+        return Err("E-C-IMPORT: import worker request exceeds 1 MiB".into());
+    }
+    Ok(bytes)
+}
+
+fn decode_automatic_request(bytes: &[u8]) -> Result<(Automatic, OsString, bool), String> {
+    if bytes.len() > MAX_REQUEST || !bytes.starts_with(AUTOMATIC_REQUEST_MAGIC) {
+        return Err(protocol_error());
+    }
+    let mut selected = REQUEST_MAGIC.to_vec();
+    selected.extend_from_slice(&bytes[AUTOMATIC_REQUEST_MAGIC.len()..]);
+    let (selection, compiler, zig_cc) = decode_request(&selected)?;
+    if !selection.constants.is_empty() {
+        return Err(protocol_error());
+    }
+    Ok((
+        Automatic {
+            native: selection.native,
+            names: selection.functions,
+            c_args: selection.c_args,
+            resource_dir: selection.resource_dir,
+        },
+        compiler,
+        zig_cc,
+    ))
+}
+
+fn validate_dependencies(dependencies: &[PathBuf]) -> Result<(), String> {
+    let mut names = HashSet::new();
+    let mut size = 0usize;
+    if dependencies.len() > MAX_ITEMS {
+        return Err(protocol_error());
+    }
+    for path in dependencies {
+        let bytes = path.as_os_str().as_bytes();
+        size += bytes.len();
+        if !path.is_absolute()
+            || bytes.len() > 16 * 1024
+            || bytes.contains(&0)
+            || size > MAX_DEPENDENCY_BYTES
+            || !names.insert(path)
+        {
+            return Err(protocol_error());
+        }
+    }
+    Ok(())
+}
+
+fn encode_automatic_response(generated: &Generated) -> Result<Vec<u8>, String> {
+    if generated.module.is_empty() || generated.module.len() > MAX_MODULE {
+        return Err(protocol_error());
+    }
+    validate_dependencies(&generated.dependencies)?;
+    if generated.dependencies.is_empty() || !generated.inputs.covers(&generated.dependencies) {
+        return Err(protocol_error());
+    }
+    let inputs = generated
+        .inputs
+        .to_wire()
+        .map_err(|error| error.to_string())?;
+    if inputs.len() > MAX_INPUT_STATE {
+        return Err(protocol_error());
+    }
+    let mut output = Encoder(AUTOMATIC_RESPONSE_MAGIC.to_vec(), MAX_AUTOMATIC_RESPONSE);
+    output.bytes(generated.module.as_bytes())?;
+    output.list(generated.dependencies.iter().map(|path| path.as_os_str()))?;
+    output.bytes(&inputs)?;
+    Ok(output.0)
+}
+
+fn decode_automatic_response(bytes: &[u8], request: &Automatic) -> Result<Generated, String> {
+    if bytes.len() > MAX_AUTOMATIC_RESPONSE {
+        return Err(protocol_error());
+    }
+    let mut input = Decoder(bytes);
+    if input.take(AUTOMATIC_RESPONSE_MAGIC.len())? != AUTOMATIC_RESPONSE_MAGIC {
+        return Err(protocol_error());
+    }
+    let module = input.bytes()?;
+    if module.is_empty() || module.len() > MAX_MODULE {
+        return Err(protocol_error());
+    }
+    let module = std::str::from_utf8(module).map_err(|_| protocol_error())?;
+    let dependencies: Vec<_> = input.list()?.into_iter().map(PathBuf::from).collect();
+    let inputs = input.bytes()?;
+    if inputs.len() > MAX_INPUT_STATE {
+        return Err(protocol_error());
+    }
+    let inputs =
+        rill::c_import::inputs::InputState::from_wire(inputs).map_err(|_| protocol_error())?;
+    input.done()?;
+    validate_dependencies(&dependencies)?;
+    if dependencies.is_empty() || !inputs.covers(&dependencies) {
+        return Err(protocol_error());
+    }
+    rill::c_import::selected::shape::validate_automatic(module, request)
+        .map_err(|_| protocol_error())?;
+    rill::modules::compile::check_binding_source(module)
+        .map_err(|e| format!("E-C-IMPORT: invalid import worker module: {e}"))?;
+    Ok(Generated {
+        module: module.to_owned(),
+        dependencies,
+        inputs,
+    })
 }
 
 fn decode_response(bytes: &[u8], selection: &Selection) -> Result<String, String> {
@@ -271,7 +408,14 @@ pub(super) fn run() -> Result<(), String> {
         .take((MAX_REQUEST + 1) as u64)
         .read_to_end(&mut request)
         .map_err(|e| format!("E-C-IMPORT: cannot read import worker request: {e}"))?;
-    if request.starts_with(PREPARE_REQUEST_MAGIC) {
+    if request.starts_with(AUTOMATIC_REQUEST_MAGIC) {
+        let (request, compiler, zig_cc) = decode_automatic_request(&request)?;
+        let generated = rill::c_import::selected::generate_automatic(&request, &compiler, zig_cc)?;
+        io::stdout()
+            .lock()
+            .write_all(&encode_automatic_response(&generated)?)
+            .map_err(|e| format!("E-C-IMPORT: cannot write automatic response: {e}"))
+    } else if request.starts_with(PREPARE_REQUEST_MAGIC) {
         let (selection, compiler, zig_cc, declared_links) = decode_prepare_request(&request)?;
         let prepared = rill::c_import::selected::prepare_checked(
             &selection,
@@ -330,7 +474,7 @@ fn encode_prepare_request(
         return Err("E-C-CONFIG: preparation requires an absolute explicit compiler".into());
     }
     let legacy = encode_request(selection, compiler, zig_cc)?;
-    let mut output = Encoder(PREPARE_REQUEST_MAGIC.to_vec());
+    let mut output = Encoder(PREPARE_REQUEST_MAGIC.to_vec(), MAX_REQUEST);
     output.bytes(&legacy)?;
     output.list(declared_links.iter().map(OsString::as_os_str))?;
     if output.0.len() > MAX_REQUEST {
@@ -381,6 +525,22 @@ pub(super) fn prepare(
         .map_err(|e| format!("E-C-IMPORT: invalid prepared binding module: {e}"))?;
     check_cancelled()?;
     Ok(prepared)
+}
+
+pub(super) fn generate_automatic(
+    request: &Automatic,
+    compiler: &OsStr,
+    zig_cc: bool,
+    timeout: Duration,
+) -> Result<Generated, String> {
+    let _cancellation = Cancellation::install()?;
+    let executable = std::env::current_exe()
+        .map_err(|e| format!("E-C-IMPORT: cannot locate import worker executable: {e}"))?;
+    let encoded = encode_automatic_request(request, compiler, zig_cc)?;
+    let response = supervise_in(&executable, &encoded, timeout, None, MAX_AUTOMATIC_RESPONSE)?;
+    let generated = decode_automatic_response(&response, request)?;
+    check_cancelled()?;
+    Ok(generated)
 }
 
 struct Workspace(PathBuf);
@@ -517,6 +677,77 @@ fn read_available(
         }
     }
     Ok(false)
+}
+
+/// an explicit user cancellation must still stop build preparation.
+pub(super) fn probe(command: &mut Command, timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+    let _cancellation = Cancellation::install()?;
+    let output = probe_output(command, timeout);
+    check_cancelled()?;
+    output
+}
+
+fn probe_output(command: &mut Command, timeout: Duration) -> Result<Option<Vec<u8>>, String> {
+    let start = Instant::now();
+    let child = match command
+        .process_group(0)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+    {
+        Ok(child) => child,
+        Err(_) => return Ok(None),
+    };
+    let mut process = Process(Some(child));
+    let child = process.0.as_mut().unwrap();
+    let mut stdout = child.stdout.take().unwrap();
+    let mut stderr = child.stderr.take().unwrap();
+    if nonblocking(&stdout).is_err() || nonblocking(&stderr).is_err() {
+        return Ok(None);
+    }
+    let mut output = Vec::new();
+    let mut diagnostics = Vec::new();
+    let (mut out_done, mut err_done, mut exited) = (false, false, false);
+    loop {
+        check_cancelled()?;
+        if start.elapsed() >= timeout {
+            return Ok(None);
+        }
+        if !out_done {
+            let Ok(done) = read_available(&mut stdout, &mut output, MAX_DIAGNOSTICS, "output")
+            else {
+                return Ok(None);
+            };
+            out_done = done;
+        }
+        if !err_done {
+            let Ok(done) = read_available(
+                &mut stderr,
+                &mut diagnostics,
+                MAX_DIAGNOSTICS,
+                "diagnostics",
+            ) else {
+                return Ok(None);
+            };
+            err_done = done;
+        }
+        if !exited {
+            let Ok(done) = process.exited() else {
+                return Ok(None);
+            };
+            if done {
+                exited = true;
+                process.kill_group();
+            }
+        }
+        if exited && out_done && err_done {
+            let status = process.finish().ok();
+            check_cancelled()?;
+            return Ok(status.filter(ExitStatus::success).map(|_| output));
+        }
+        std::thread::sleep(Duration::from_millis(2).min(timeout.saturating_sub(start.elapsed())));
+    }
 }
 
 fn supervise(executable: &Path, request: &[u8], timeout: Duration) -> Result<Vec<u8>, String> {
@@ -697,9 +928,17 @@ mod tests {
         fn script(&self, body: &str) -> PathBuf {
             let path = self.path.join("worker with spaces");
             // Record the parent-owned workspace before fault injection.
-            let script = format!("#!/bin/sh\nprintf '%s' \"$TMPDIR\" > '{}'/workspace\nprintf artifact > \"$TMPDIR/artifact\"\n{body}\n", self.path.display());
+            let script = format!("#!/bin/sh\nif test \"$1\" = __rill-fixture-ready; then exit 0; fi\nprintf '%s' \"$TMPDIR\" > '{}'/workspace\nprintf artifact > \"$TMPDIR/artifact\"\n{body}\n", self.path.display());
             fs::write(&path, script).unwrap();
             fs::set_permissions(&path, fs::Permissions::from_mode(0o700)).unwrap();
+            // Prime macOS executable checks before measuring the supervisor's
+            // deadline. The production worker is an existing compiler binary.
+            #[cfg(target_os = "macos")]
+            assert!(Command::new(&path)
+                .arg("__rill-fixture-ready")
+                .status()
+                .unwrap()
+                .success());
             path
         }
         fn cleaned(&self) {
@@ -785,10 +1024,113 @@ mod tests {
         .unwrap();
         assert_eq!(
             String::from_utf8(response).unwrap().trim(),
-            fixture.path.to_str().unwrap()
+            fixture.path.canonicalize().unwrap().to_str().unwrap()
         );
         assert_eq!(std::env::current_dir().unwrap(), original);
         fixture.cleaned();
+    }
+
+    #[test]
+    fn automatic_protocol_preserves_raw_paths_and_rejects_wrong_declarations() {
+        let fixture = Fixture::new();
+        let header = fixture.path.join("api with spaces.h");
+        fs::write(&header, "header dependency").unwrap();
+        let inputs =
+            rill::c_import::inputs::InputState::capture(std::slice::from_ref(&header)).unwrap();
+        let request = Automatic {
+            native: selection().native,
+            names: vec!["selected".into(), "SELECTED_FLAG".into(), "missing".into()],
+            c_args: vec!["-I".into(), OsString::from_vec(b"include \xff".to_vec())],
+            resource_dir: None,
+        };
+        let encoded = encode_automatic_request(&request, OsStr::new("cc"), false).unwrap();
+        let (decoded, compiler, zig) = decode_automatic_request(&encoded).unwrap();
+        assert_eq!(decoded.native, request.native);
+        assert_eq!(decoded.names, request.names);
+        assert_eq!(decoded.c_args, request.c_args);
+        assert_eq!(compiler, "cc");
+        assert!(!zig);
+        for end in 0..encoded.len() {
+            assert!(decode_automatic_request(&encoded[..end]).is_err());
+        }
+        let generated = Generated {
+            module: "@include(\"api.h\");\nexport extern fn selected(arg0: i32) -> i32;\nexport extern const SELECTED_FLAG: u32;\n".into(),
+            dependencies: vec![header.clone()],
+            inputs: inputs.clone(),
+        };
+        let encoded = encode_automatic_response(&generated).unwrap();
+        let decoded = decode_automatic_response(&encoded, &request).unwrap();
+        assert_eq!(decoded.module, generated.module);
+        assert_eq!(decoded.dependencies, generated.dependencies);
+        assert_eq!(
+            decoded.inputs.to_wire().unwrap(),
+            generated.inputs.to_wire().unwrap()
+        );
+        let mut malformed_state = encoded.clone();
+        *malformed_state.last_mut().unwrap() = 0xff;
+        assert!(decode_automatic_response(&malformed_state, &request).is_err());
+        let mut unrelated_state =
+            Encoder(AUTOMATIC_RESPONSE_MAGIC.to_vec(), MAX_AUTOMATIC_RESPONSE);
+        unrelated_state.bytes(generated.module.as_bytes()).unwrap();
+        let other_header = fixture.path.join("uncovered.h");
+        unrelated_state
+            .list(std::iter::once(other_header.as_os_str()))
+            .unwrap();
+        unrelated_state.bytes(&inputs.to_wire().unwrap()).unwrap();
+        assert!(decode_automatic_response(&unrelated_state.0, &request).is_err());
+        for end in 0..encoded.len() {
+            assert!(decode_automatic_response(&encoded[..end], &request).is_err());
+        }
+        let mut trailing = encoded;
+        trailing.push(0);
+        assert!(decode_automatic_response(&trailing, &request).is_err());
+        for module in [
+            "@include(\"api.h\");\nexport extern fn unrequested() -> i32;\n",
+            "@include(\"other.h\");\nexport extern fn selected() -> i32;\n",
+            "@include(\"api.h\");\nexport extern fn selected(arg0: str) -> i32;\n",
+            "@include(\"api.h\");\nexport fn selected() { 42 }\n",
+            "@include(\"api.h\");\nexport extern fn selected() -> i32;\nexport extern const selected: i32;\n",
+        ] {
+            let invalid = Generated { module: module.into(), dependencies: vec![header.clone()], inputs: inputs.clone() };
+            assert!(decode_automatic_response(&encode_automatic_response(&invalid).unwrap(), &request).is_err(), "{module}");
+        }
+    }
+
+    #[test]
+    fn automatic_dependency_paths_and_response_frames_are_bounded() {
+        let fixture = Fixture::new();
+        let header = fixture.path.join("api.h");
+        fs::write(&header, "header dependency").unwrap();
+        let inputs =
+            rill::c_import::inputs::InputState::capture(std::slice::from_ref(&header)).unwrap();
+        let raw = OsString::from_vec(b"/headers/api \xfe.h".to_vec());
+        let mut encoded = Encoder(vec![], MAX_AUTOMATIC_RESPONSE);
+        encoded.list(std::iter::once(raw.as_os_str())).unwrap();
+        let mut decoded = Decoder(&encoded.0);
+        assert_eq!(decoded.list().unwrap(), vec![raw]);
+        decoded.done().unwrap();
+        for dependencies in [
+            vec![PathBuf::from("relative.h")],
+            vec![PathBuf::from("/same.h"), PathBuf::from("/same.h")],
+            vec![PathBuf::from(OsString::from_vec(b"/nul\0.h".to_vec()))],
+            vec![PathBuf::from(format!("/{}", "x".repeat(16 * 1024)))],
+            (0..MAX_ITEMS + 1)
+                .map(|index| PathBuf::from(format!("/header{index}.h")))
+                .collect(),
+        ] {
+            let generated = Generated {
+                module: "@include(\"api.h\");\n".into(),
+                dependencies,
+                inputs: inputs.clone(),
+            };
+            assert!(encode_automatic_response(&generated).is_err());
+        }
+        let invalid = Generated {
+            module: "x".repeat(MAX_MODULE + 1),
+            dependencies: vec![],
+            inputs,
+        };
+        assert!(encode_automatic_response(&invalid).is_err());
     }
 
     #[test]
