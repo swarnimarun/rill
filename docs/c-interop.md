@@ -1,10 +1,11 @@
 # C interoperability
 
-Rill emits C11 and uses the selected target C compiler to check explicit native
+Rill emits C11 and reads included headers through the C frontend before name
+resolution. The selected target C compiler validates imported native
 declarations. This experimental subset does not complete the P5 gate in
 [PLAN.md](../PLAN.md).
 
-## Declare dependencies and signatures
+## Include headers at build time
 
 Place dependency directives in the leading preamble, alongside imports:
 
@@ -12,12 +13,6 @@ Place dependency directives in the leading preamble, alongside imports:
 @include("SDL3/SDL.h");
 @link("SDL3");
 @pkg_config("sdl3");
-
-extern const SDL_INIT_VIDEO: u32;
-extern fn SDL_Init(flags: u32) -> bool;
-extern fn SDL_CreateWindow(title: cstr, w: i32, h: i32, flags: u64) -> ptr<SDL_Window>;
-extern fn SDL_DestroyWindow(window: ptr<SDL_Window>) -> unit;
-extern fn SDL_Quit() -> unit;
 
 fn main() {
     if SDL_Init(SDL_INIT_VIDEO) {
@@ -41,13 +36,34 @@ Headers, packages and libraries must exist for the selected target. Rill passes
 arguments directly to processes, without evaluating a shell. Header names and
 dependency names are restricted to prevent directive or option injection.
 
-Declare each selected function and constant explicitly, or generate a binding
-module with the optional selected-declaration importer below. Function compatibility checks
+No handwritten extern declarations are needed. The compiler finds referenced
+names in the included headers, including transitive declarations, and creates
+checked declarations in memory. It does not rewrite Rill source or require a
+manual list of C symbols. At most 256 referenced symbols are imported per header
+module. Unused unsupported APIs do not block an otherwise usable header; using
+one produces an error with its header location and unsupported ABI form.
+Names absent from the header remain ordinary unresolved names.
+
+Automatic import is enabled in the default compiler build and requires
+runtime-loadable libclang 12 or newer on a Unix host. `LIBCLANG_PATH` can select
+its installation. Pure Rill compilation does not load libclang. A
+`--no-default-features` compiler retains pure Rill and explicit-extern support.
+The separate `import-c` command below remains useful for an explicit binding
+file. Function compatibility checks
 compare C types against the actual header prototype, including widths,
 signedness, bool, pointer pointees and constness. Constants also require a
 compatible declared type. Merely matching size does not establish ABI
 compatibility. These checks currently require compiler extensions supported by
 Clang and GCC-compatible compilers, including Zig's C compiler.
+
+Rill controls C11 compilation mode and output. Native checks, C emission and
+builds reject compiler arguments that replace those operations, including
+preprocessing/dependency-only modes, alternate input languages, output paths,
+response/config files and frontend/preprocessor argument forwarding. Pass
+target, include, define, optimization, debug and warning options as ordinary
+`--c-arg` arguments. Warning options cannot disable the generated ABI assertions.
+Use `--link-arg` for additional linker inputs. Headers and the configured
+toolchain remain trusted inputs.
 
 | Rill foreign type | C representation |
 | --- | --- |
@@ -116,15 +132,12 @@ comparison evidence, not interpreter execution parity. See
 
 ## Reusable binding modules
 
-Put dependencies and declarations in a local binding module, then import it:
+Put header/library directives in a local module, then import it:
 
 ```rill
 // native.rill
 @include("SDL3/SDL.h");
 @pkg_config("sdl3");
-export extern const SDL_INIT_VIDEO: u32;
-export extern fn SDL_Init(flags: u32) -> bool;
-extern fn SDL_Quit() -> unit;
 export fn shutdown() { SDL_Quit(); }
 ```
 
@@ -138,10 +151,15 @@ fn main() {
 }
 ```
 
-Foreign declarations are private by default. `export extern fn` and
-`export extern const` expose qualified calls and constants through the normal
-module visibility rules. An exported Rill wrapper can call a private foreign
-function, as `shutdown` does above. Imported modules cannot define `main`.
+Generated header declarations are exported automatically, so the consumer's
+`native.SDL_Init` and `native.SDL_INIT_VIDEO` references select their declarations
+without an export list. Imported modules cannot define `main`.
+
+Explicit foreign declarations remain private by default. `export extern fn`
+and `export extern const` expose them through the normal visibility rules.
+An explicit declaration takes precedence over automatic import of that name,
+preserving its privacy and annotations; its ABI must still match the header.
+An exported Rill wrapper can use an explicitly private foreign declaration.
 
 The loader aggregates dependency directives transitively, so importing a native
 binding also selects native execution for `run`. Calls retain the original C
@@ -153,11 +171,11 @@ Conflicting signatures, pointer constness or function/constant kinds report
 
 The [direct SDL3 example](../examples/sdl3-direct/README.md) separates its game
 from [a reusable SDL binding](../examples/sdl3-direct/sdl.rill). Binding modules
-contain selected declarations and still require manual foreign resource cleanup.
+need only header/library directives and still require manual foreign resource cleanup.
 
 ## Import selected declarations
 
-Build the optional importer and install libclang 12 or newer:
+Install libclang 12 or newer. The importer is included in the default build:
 
 ```sh
 cargo build --locked --features c-import
@@ -166,12 +184,25 @@ cargo run --locked --features c-import -- import-c \
   --c-arg -I --c-arg /path/to/headers -o native.rill
 ```
 
-The default compiler build needs no libclang. `clang-sys` 1.8.1 discovers the
+The compiler loads libclang only when importing headers. `clang-sys` 1.8.1 discovers the
 shared library at runtime; set `LIBCLANG_PATH` when it is outside normal paths.
 If Clang's builtin headers are not found, pass
 `--clang-resource-dir /path/to/clang/resource-directory` (the result of
 `clang -print-resource-dir`, not its `include` subdirectory). This option affects
 only libclang's builtin headers; it does not select a target or sysroot.
+
+On macOS, libclang may also need the active SDK path to find Apple platform
+headers. Discover it with Xcode's tools before running the importer or its
+integration tests:
+
+```sh
+export SDKROOT="$(xcrun --show-sdk-path)"
+cargo test --locked --features c-import --test sdl3_direct -- --nocapture
+```
+
+Keep the selected SDK consistent with the C compiler used for later builds.
+`SDKROOT` selects system headers; `--clang-resource-dir` selects Clang's own
+builtin headers. Neither replaces the other.
 
 Repeat `--header`, `--function`, `--constant`, `--pkg-config` and `--link` as
 needed. Selection is explicit and limited to 256 unique symbols. `-o` publishes
@@ -216,6 +247,17 @@ accepted; strict saved profiles use only `--clang-resource-dir` below.
 Other flags are rejected rather than silently dropped. In particular `-E`,
 output flags, response files and extra C inputs cannot bypass semantic checks.
 Use structured arguments for paths with spaces, as in the example above.
+
+Import also preserves `-O0`, `-O1`, `-O2`, `-O3`, `-Os`, `-Oz`, `-Og`,
+`-Ofast`, `-g` and `-g0` through `-g3`. The accepted warning options are `-w`,
+`-Wall`, `-Wextra`, `-Wpedantic`, `-Werror`, `-Wno-error`, `-Wconversion`,
+`-Wsign-conversion`, `-Wshadow`, and the `-Wno-unused-parameter`,
+`-Wno-unused-function`, `-Wno-unused-variable`, `-Wno-unused-value` and
+`-Wno-missing-field-initializers` suppressions. This does not promise that every
+generated program is warning-free under arbitrary warning policies.
+Source builds accept an explicit Clang resource directory through
+`--c-arg -resource-dir --c-arg /path/to/resources`, or the joined
+`--c-arg -resource-dir=/path/to/resources` form; discovery preserves that choice.
 
 Generated modules do not store arbitrary compiler flags or freeze the header
 configuration. Use the **same target, sysroot, defines and include paths** for
@@ -283,9 +325,9 @@ cargo run -- run examples/sdl3-direct/main.rill
 With source dependency directives, `check` and `emit-c` also invoke the selected
 C compiler to validate the declarations against headers. They do not link a
 finished executable. `build` compiles and links; `run` automatically builds a
-temporary native executable and executes it. Pure programs use the interpreter
-unless `run --native` or compiler/link arguments are supplied. The interpreter rejects reached foreign
-calls. Manual externs without dependency directives need a native run.
+temporary optimized native executable and executes it. Pure programs also use
+native execution by default. `run --interpret` selects the checked evaluator
+and rejects native dependencies. `--native` remains accepted for compatibility.
 Without source directives, `check` performs Rill checks only, even when
 `--cc` or `--c-arg` is supplied.
 

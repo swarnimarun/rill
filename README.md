@@ -16,15 +16,14 @@ cargo run -- build examples/factorial.rill -o /tmp/factorial
 /tmp/factorial
 ```
 
-`run` uses the checked typed evaluator for supported pure Rill
-programs. Other supported Copy programs use the checked reference evaluator
-while their typed lowering is implemented. Source native dependency
-directives select a compiled native run automatically; `run --native` or
-compiler/link arguments also select native execution.
+`run` compiles and executes native C11 by default. `build` produces an
+executable through the same backend. Both default to `-O3`; `--opt-level 0`
+selects an unoptimized build and `--interpret` selects the checked evaluator.
+The evaluator uses the typed path where supported and the checked Copy
+reference path for remaining supported layouts. It rejects native dependencies.
 For differential testing, `backend::emit_reference` explicitly emits the checked
-Copy subset using the uniform C representation. It rejects owner programs and
-does not change the default backend or provide a new CLI mode.
-`build` invokes `cc` to compile C11 output.
+Copy subset using the compact uniform representation and rejects owners.
+See [native builds and optimization](docs/native-builds.md).
 Set `CC` or pass `--cc <executable>` to choose a C compiler; `--cc` takes
 precedence over `CC`. Use `--zig-cc` to invoke `zig cc`. The two compiler
 options cannot be combined. Pass compile flags with repeated `--c-arg` and
@@ -335,7 +334,8 @@ copied. The `std` root is reserved, and unknown names are errors. See
 Only exported declarations are visible across files. `export type` also
 exports its constructors. Imports are confined to the entry directory and
 cycles are rejected. Imported files cannot declare `main`. Binding modules can
-expose `export extern fn` and `export extern const`, or keep foreign declarations
+automatically export referenced declarations from `@include`. Explicit bindings
+can expose `export extern fn` and `export extern const`, or keep declarations
 private behind exported Rill wrappers. Their native dependency directives
 aggregate into the entry program, including automatic native `run` selection.
 This is an early module subset; see [module limitations](docs/blockers/modules.md).
@@ -397,8 +397,13 @@ Copy layouts retain the checked uniform fallback. The evaluator never invokes
 C: it rejects reached native work while preserving pure paths and the reference
 error order. See the [bounded raw-transport verification](docs/verification/2026-11-03-typed-native-transport.md).
 
-Selected declaration import is available with the optional `c-import` feature;
-see [the importer workflow](docs/c-interop.md#import-selected-declarations).
+`@include` reads headers at build time and generates referenced supported C
+functions and constants before resolution. Header modules export generated
+names automatically. No handwritten extern list is needed. The default build
+includes the `c-import` feature and loads libclang only when headers are imported.
+`--no-default-features` retains pure Rill and explicit extern support. The
+separate `import-c` command still produces explicit binding files; see
+[the importer workflow](docs/c-interop.md#import-selected-declarations).
 An experimental explicit `--config-out` / `--config` workflow can save a bounded
 recipe and materialize its binding module separately. `check`, `emit-c`, `build`
 and `run` accept `--native-config` plus an explicit compiler to freshly validate
@@ -455,3 +460,15 @@ are retained. Its [integrated verification](docs/verification/2026-11-04-discard
 passes 996 default and 1,044 importer-enabled tests, strict lint and Windows
 compile checks, plus independent proof/event/C cases. Used, mutable, projected
 or observed layoutless records remain unsupported.
+
+The [syntax tour](docs/syntax-tour.md) covers current statements, type constraints,
+closures, currying, application operators and native headers. The compiler-backed
+[LSP and editor packages](docs/editor-support.md) provide diagnostics, definitions,
+completion, signature help and inferred inlay hints. Helix is the primary tested
+editor; Tree-sitter, Neovim and VS Code integrations are also included.
+
+The [voxel sandbox](examples/sdl3-voxel/README.md) uses external Metal compute
+shaders for its GPU world, controller and rendering; `--cpu` runs the bounded
+Rill reference. Its external shaders do not implement Rill's proposed shader
+language. See the [integration evidence](docs/verification/2026-11-04-ernie-integration.md)
+for the port and its remaining verification limits.

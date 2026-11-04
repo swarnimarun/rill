@@ -129,3 +129,23 @@ The SDL binding module now contains only its include/link/pkg-config directives.
 All five direct, Zig, real-capture and lifecycle tests passed again after that
 change, using the default importer-enabled compiler and optimized ordinary
 execution path. The explicit manual binding fixture remains for minimal builds.
+
+## Frozen integrated gate
+
+Functional source `f105d7d` is checked in a separate immutable checkout.
+Formatting and strict all-target Clippy passed in default and minimal modes.
+The full suites use distinct Cargo target directories and two test threads to
+limit concurrent native compiler launches. On this macOS host, SDKROOT is set
+to the active SDK. Required GPU and 256-cubed checks are enabled in both runs.
+The full results remain pending.
+
+The independent reviewer found a joined `-isysroot/path` override bug. The fix
+recognizes encoded SDK/resource prefixes, preserves raw path bytes and input
+identities, and leaves saved-profile grammar unchanged. Its regression went
+red before the fix and green afterward. Ordinary automatic import now passes
+the exact requested argument without invoking host SDK discovery.
+
+The original isolated upstream run reproduced native launch timeouts and an
+invalid-byte filename filesystem failure. It was stopped after preserving
+those failures, rather than running duplicate C workloads beside the final
+acceptance runs. It is not reported as a completed or passing baseline.

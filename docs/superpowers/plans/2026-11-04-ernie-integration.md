@@ -27,17 +27,17 @@ language or complete a delivery phase in PLAN.md.
 - [x] Read the Principles section of the poteto-mode skill.
 - [x] Frame the work and compare both implementations before editing.
 - [x] Preserve the source snapshot and create isolated integration worktrees.
-- [ ] Capture the upstream baseline before integrating features.
-- [ ] Port boolean negation and unit-valued conditional statements.
-- [ ] Port callable syntax, inference, checked conversion and source evaluation.
-- [ ] Port library checking and immutable editor overlays.
-- [ ] Port native action validation, automatic headers and guarded interfaces.
-- [ ] Port ordinary optimized execution and reference runtime compaction.
-- [ ] Port grammar and shared queries, then individual editor clients.
-- [ ] Port the LSP and adapt explicit result annotation hints.
-- [ ] Port SDL lifecycle handling and portable capture, retaining the matrix.
-- [ ] Port the CPU voxel reference, then the cohesive GPU demo.
-- [ ] Reconcile current documentation without deleting upstream evidence.
+- [x] Capture the upstream baseline before integrating features.
+- [x] Port boolean negation and unit-valued conditional statements.
+- [x] Port callable syntax, inference, checked conversion and source evaluation.
+- [x] Port library checking and immutable editor overlays.
+- [x] Port native action validation, automatic headers and guarded interfaces.
+- [x] Port ordinary optimized execution and reference runtime compaction.
+- [x] Port grammar and shared queries, then individual editor clients.
+- [x] Port the LSP and adapt explicit result annotation hints.
+- [x] Port SDL lifecycle handling and portable capture, retaining the matrix.
+- [x] Port the CPU voxel reference, then the cohesive GPU demo.
+- [x] Reconcile current documentation without deleting upstream evidence.
 - [ ] Run the integrated verification gates and review all retained changes.
 - [ ] Audit the decision trail with a different model family.
 - [ ] Push the verified slices and update the working checkout safely.
@@ -61,3 +61,11 @@ The canonical decision trail is
 `docs/verification/2026-11-04-ernie-decisions.tsv`. Historical reports retain
 their checkpoint context. A fresh integration report records actual commands
 and outcomes for this stack.
+
+## Baseline outcome
+
+The isolated upstream run reproduced host launch-deadline and raw-filename
+capability failures. It was stopped with evidence retained while the complete
+integrated default/minimal suites run on frozen functional source `f105d7d`.
+A test-only handshake separates bounded macOS startup from existing execution
+deadlines. Full acceptance and final editor workflow checks remain pending.

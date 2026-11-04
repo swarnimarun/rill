@@ -86,8 +86,8 @@ not a replacement for those gates.
   plan. Explicit native dependency directives, exact scalar/raw-pointer
   declarations,
   target-header compatibility checks and a direct SDL3 game exercise part of
-  P5. Optional target-configured libclang import generates explicitly selected
-  scalar/raw-pointer functions and integer/bool constants as checked binding
+  P5. Default-enabled target-configured libclang import generates referenced or
+  explicitly selected scalar/raw-pointer functions and integer/bool constants as checked binding
   modules. The Unix import CLI now supervises a separate worker with bounded
   IPC, timeout/cancellation and process-group cleanup; the library API remains
   in-process, and neither is a memory/security sandbox. Aggregate ABI adapters,
@@ -217,3 +217,20 @@ This bounded projection task is complete. No layout, owner/native form or
 completed P1/P2/C02 phase gate is claimed. Owned records remain unsupported.
 Broader inference, kinds/skolems, unknown physical storage and optional provenance
 remain open.
+
+## Local compiler and editor integration
+
+The current work is being ported onto `v1-ernie` in small verified slices.
+The upstream typed-native, configuration, logical-layout, signature and
+projection checks remain the foundation. The port adds Copy callables,
+boolean negation, unit-valued omitted `else`, automatic referenced-header
+imports, native optimization defaults, guarded editor interfaces, the LSP
+and editor packages, plus SDL lifecycle and voxel demonstrations.
+
+The [integration plan](superpowers/plans/2026-11-04-ernie-integration.md),
+[decision trail](verification/2026-11-04-ernie-decisions.tsv) and
+[fresh verification](verification/2026-11-04-ernie-integration.md) record each
+slice. Historical counts above describe their own checkpoints. They are not
+a fresh aggregate result for this port. No P1, P4, P5 or later phase is marked
+complete. General effects, affine closures, foreign ownership and broader
+layout/provenance coverage retain their documented limits.

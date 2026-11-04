@@ -54,8 +54,8 @@ original `v1` remains unchanged. Do not treat it as an incremental patch on
 
 Use a recent stable Rust toolchain and a C11 compiler available as `cc`. This
 checkpoint was exercised with Rust/Cargo 1.99.1, Apple Clang 17, Zig 0.17.0 and
-SDL3 3.4.18 on AArch64 macOS. Other hosts need their own verification. The original checkpoint had no third-party crate dependencies; the optional
-`c-import` feature now uses a pinned runtime-loaded libclang binding. SDL3 development files and pkg-config
+SDL3 3.4.18 on AArch64 macOS. Other hosts need their own verification. The original checkpoint had no third-party crate dependencies; the default-enabled
+`c-import` feature uses a pinned runtime-loaded libclang binding. SDL3 development files and pkg-config
 are optional for ordinary examples, required for the real SDL3 integration.
 Zig is optional; writable Zig caches may need configuring in a cloud sandbox.
 
@@ -84,8 +84,8 @@ Source `@include`, `@link` and `@pkg_config` directives drive native checking,
 building and execution. Reusable binding modules export foreign functions and
 constants. The target C compiler verifies explicit signatures against headers;
 raw pointer lifetime, resource destruction and foreign effects remain the
-programmer's responsibility. An optional `c-import` feature now imports explicitly selected declarations
-through libclang; see the [current interop workflow](c-interop.md#import-selected-declarations)
+programmer's responsibility. `@include` now imports referenced supported declarations through libclang,
+with a separate explicit `import-c` command; see the [current interop workflow](c-interop.md#import-selected-declarations)
 and [cloud verification](verification/2026-11-03-selected-c-import.md).
 
 The [SDL3 game](../examples/sdl3-direct/README.md) imports its bindings from
@@ -369,3 +369,20 @@ This bounded projection task is complete. No layout, owner/native form or
 completed P1/P2/C02 phase gate is claimed. Owned records remain unsupported.
 Broader inference, kinds/skolems, unknown physical storage and optional provenance
 remain open.
+
+## Local compiler and editor integration
+
+The current work is being ported onto `v1-ernie` in small verified slices.
+The upstream typed-native, configuration, logical-layout, signature and
+projection checks remain the foundation. The port adds Copy callables,
+boolean negation, unit-valued omitted `else`, automatic referenced-header
+imports, native optimization defaults, guarded editor interfaces, the LSP
+and editor packages, plus SDL lifecycle and voxel demonstrations.
+
+The [integration plan](superpowers/plans/2026-11-04-ernie-integration.md),
+[decision trail](verification/2026-11-04-ernie-decisions.tsv) and
+[fresh verification](verification/2026-11-04-ernie-integration.md) record each
+slice. Historical counts above describe their own checkpoints. They are not
+a fresh aggregate result for this port. No P1, P4, P5 or later phase is marked
+complete. General effects, affine closures, foreign ownership and broader
+layout/provenance coverage retain their documented limits.

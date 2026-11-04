@@ -57,7 +57,7 @@ not manufacture an empty `ParsedModule` around a transformed `Program`.
 
 ## Source versus generated origins
 
-Seven `OriginKind`s describe actual parser behavior:
+Eight `OriginKind`s describe actual parser behavior:
 
 - `Source`: an ordinary source construct. Redundant parentheses and expression
   wrappers do not create AST nodes; the inner semantic construct retains its
@@ -70,17 +70,21 @@ Seven `OriginKind`s describe actual parser behavior:
   statement, with its own structural path and the same source anchor.
 - `ImplicitUnit`: a generated unit. Block fallthrough is a zero-width position
   at the closing brace; a statement-discard unit is anchored to its semicolon.
-  Written `()` is instead `Source`.
+  An omitted braced `else` has a zero-width anchor at the end of its `if`
+  expression. Written `()` is instead `Source`.
 - `UnaryNegation`: a unary expression lowered to subtraction and its introduced
   zero operand. The subtraction spans the unary source form; the zero is
   anchored to the minus token. The special `-2147483648` literal remains
   `Source` and introduces no zero. Explicit `0 - x` is also ordinary source.
+- `BooleanNegation`: `not value` or `!value` lowered to equality with false.
+  The equality spans the unary expression; its introduced false operand is
+  anchored to the negation token. The actual operand retains its source origin.
 - `RecordVariant`: a record type's synthetic single AST variant, anchored to
   the record declaration. Its field types still have their own source origins.
 
 An origin span is always inside its referenced grammar node, uses UTF-8 byte
-and one-based line/scalar positions, and never claims that a synthesized zero
-or unit was written in the source. Origin spans are **anchors**, not necessarily
+and one-based line/scalar positions, and never claims that a synthesized zero,
+false or unit was written in the source. Origin spans are **anchors**, not necessarily
 whole semantic-subtree ranges: a block binding's later body can have an origin
 outside that binding's anchor. This is intentionally different from the CST's
 strict child-span partition invariant.
@@ -90,7 +94,8 @@ strict child-span partition invariant.
 This mapping covers the current parser's structural AST, not resolved symbols,
 inferred types, typed HIR/MIR, lowered cleanup operations, generated C or source
 file identity across imported modules. The standard semantic checks remain
-required. Finer parser recovery, incremental updates and an LSP remain open.
+required. The [LSP](editor-support.md) uses these structural origins. Finer parser
+recovery and incremental semantic updates remain open.
 The implementation is bounded by existing parser depth limits but has no separate
 whole-file memory budget. P1 is not complete.
 

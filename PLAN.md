@@ -5,7 +5,7 @@
 **Baseline:** The user-provided *Rill rebuild plan* (`markdown.md`).  
 **Scope:** A native-first ML-family language for graphics, games, tools, and systems software. All Rill code below is proposed surface syntax or explicitly identified core notation, not code accepted by the current compiler.
 
-## Implementation amendments, 3 November 2026
+## Implementation amendments, 3–4 November 2026
 
 The implementation uses Rust and targets C11 first. The current supported
 subset and open phase gates are recorded in [phase status](docs/phase-status.md).
@@ -18,10 +18,15 @@ where they differ:
 - Native dependencies can be declared in source with `@include("header.h");`,
   `@link("library");`, and `@pkg_config("package");`. The CLI uses the selected
   C compiler and structured arguments for header checks, building and running.
-- The first direct-C milestone checks explicit `extern` declarations against
-  included headers. Automatic header import, aggregate ABI shims, callbacks
-  and checked foreign ownership/effect contracts remain later P5 work. A header
-  signature check does not establish those contracts.
+- `@include` automatically imports referenced supported C functions and
+  constants before module resolution, using the configured C frontend and
+  target compiler. Header modules automatically export generated declarations.
+  Explicit `extern` declarations remain accepted. Aggregate ABI shims,
+  callbacks and checked foreign ownership/effect contracts remain later P5
+  work. A header signature check does not establish those contracts.
+- Native `build` and `run` use `-O3` by default, with explicit optimization
+  overrides. `run --interpret` selects the checked evaluator. Optimizations
+  retain arithmetic traps, allocation and cleanup behavior.
 
 See the [current syntax and commands](README.md) and the
 [direct SDL3 example](examples/sdl3-direct/README.md). These amendments do not

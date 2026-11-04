@@ -47,8 +47,9 @@ The formatter changes whitespace, not syntax:
   LF in a CRLF comment. Ordinary whitespace line breaks are emitted as LF.
 - Identifier-to-parenthesis adjacency is retained, including separated legacy
   calls, constructors and parameter forms. Adjacent unary-minus spelling is
-  retained. The current parser uses token positions only for diagnostics,
-  not semantic decisions; this is not permission to erase legacy boundaries.
+  retained. Parenthesis adjacency distinguishes `f x(y)` from `f x (y)` in
+  whitespace application. The formatter also preserves adjacent `>>`/`<<`
+  composition operators and nested generic delimiters.
 - Malformed or unsupported syntax is rejected, with no partial formatted
   output. Rill currently supports line comments, not `/* block comments */`.
 
@@ -80,7 +81,8 @@ significant tokens from this scanner. No AST, typed or backend representation
 has changed.
 
 The flat lexical representation is also the leaf representation of the grammar
-tree below. Full semantic source mapping and editor/LSP integration remain open.
+tree below. The [language server](editor-support.md) uses these compiler APIs
+for editing and formatting. Complete semantic source mapping remains open.
 
 ## Shared-parser grammar trees
 
@@ -111,6 +113,7 @@ Lexical failure retains the whole file as an `UnlexedSource` leaf with the first
 scanner diagnostic. It does not resume lexing or invent compiler tokens. Strict
 lexer/parser/compiler APIs and the formatter still reject malformed input.
 The opt-in [module loader](module-source-origins.md) preserves resolved AST
-origins. Typed/backend origins, finer recovery, incremental editing and LSP remain
-open. This increment does not complete P1. Fresh reconstruction evidence is in
+origins. The [language server and Tree-sitter package](editor-support.md) now
+provide editor integration. The separate optional typed-origin APIs have their documented coverage;
+generated-C mapping, finer recovery and incremental semantic analysis remain open. This increment does not complete P1. Fresh reconstruction evidence is in
 [the grammar verification record](verification/2026-11-03-grammar-source-tree.md).
