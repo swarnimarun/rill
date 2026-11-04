@@ -232,7 +232,7 @@ fn lower_traced(
         parsed.insert(module.clone(), unit);
     }
     let resolver = Resolver::new(graph, &catalogue)?;
-    preflight_resolved_results(
+    preflight_resolved_annotations(
         &parsed,
         &resolver,
         &mut crate::check::annotations::Budget::default(),
@@ -511,7 +511,7 @@ fn lower_traced(
 }
 // Compute exact final annotation name lengths without allocating rewritten
 // names or cloning trees. The same allowance spans every parsed module.
-fn preflight_resolved_results(
+fn preflight_resolved_annotations(
     parsed: &BTreeMap<String, ParsedModule>,
     resolver: &Resolver,
     budget: &mut crate::check::annotations::Budget,
@@ -538,9 +538,10 @@ fn preflight_resolved_results(
     Ok(())
 }
 fn annotation_limit() -> ModuleError {
+    // Parameter and result annotations share this admission diagnostic.
     err(
         "E-MODULE-CHECK",
-        "E-TYPE-COMPLEXITY: result annotation input budget exceeded",
+        "E-TYPE-COMPLEXITY: signature annotation input budget exceeded",
     )
 }
 
@@ -778,16 +779,14 @@ impl Rewrite<'_> {
 #[cfg(test)]
 mod result_annotation_budget_tests {
     use super::*;
-    #[test]
-    fn graph_wide_resolved_annotation_weight_precedes_cloning() {
+    fn fixture(source: &str, modules: &[&str]) -> (BTreeMap<String, ParsedModule>, Resolver) {
         let mut graph = ModuleGraph {
             root: ".".into(),
             modules: BTreeMap::new(),
         };
         let mut parsed = BTreeMap::<String, ParsedModule>::new();
         let mut catalogue = BTreeMap::new();
-        for module in ["@entry", "other"] {
-            let source = "type T = Tag\nfn value() -> T {Tag}";
+        for &module in modules {
             graph.modules.insert(
                 module.into(),
                 super::super::Module {
@@ -820,6 +819,13 @@ mod result_annotation_budget_tests {
             );
         }
         let resolver = Resolver::new(&graph, &catalogue).unwrap();
+        (parsed, resolver)
+    }
+
+    #[test]
+    fn graph_wide_resolved_annotation_weight_precedes_cloning() {
+        let (parsed, resolver) =
+            fixture("type T = Tag\nfn value() -> T {Tag}", &["@entry", "other"]);
         let cost: usize = parsed
             .keys()
             .map(|module| {
@@ -832,20 +838,122 @@ mod result_annotation_budget_tests {
             })
             .sum();
         let mut exact = crate::check::annotations::Budget::with_limits(cost, 2);
-        preflight_resolved_results(&parsed, &resolver, &mut exact).unwrap();
+        preflight_resolved_annotations(&parsed, &resolver, &mut exact).unwrap();
         let mut short = crate::check::annotations::Budget::with_limits(cost - 1, 2);
-        assert!(preflight_resolved_results(&parsed, &resolver, &mut short)
-            .unwrap_err()
-            .message
-            .starts_with("E-TYPE-COMPLEXITY"));
+        assert!(
+            preflight_resolved_annotations(&parsed, &resolver, &mut short)
+                .unwrap_err()
+                .message
+                .starts_with("E-TYPE-COMPLEXITY")
+        );
         let mut original = crate::check::annotations::Budget::with_limits(2 * 65, 2);
         for unit in parsed.values() {
             original.program(&unit.program).unwrap();
         }
         let mut rewritten = crate::check::annotations::Budget::with_limits(2 * 65, 2);
         assert!(
-            preflight_resolved_results(&parsed, &resolver, &mut rewritten).is_err(),
+            preflight_resolved_annotations(&parsed, &resolver, &mut rewritten).is_err(),
             "renaming growth must be budgeted before cloning"
         );
+    }
+
+    #[test]
+    fn parameter_and_mixed_graph_passes_charge_exact_resolved_names_and_work() {
+        for source in [
+            "type T = Tag\nlet value (x: T) = x",
+            "type T = Tag\nfn value(x: T) -> T {x}",
+        ] {
+            // Enough declarations to cross a symbol-ID decimal digit boundary.
+            let (parsed, resolver) = fixture(source, &["@entry", "a", "b", "c", "d"]);
+            let mut cost = 0;
+            let mut original_cost = 0;
+            let mut nodes = 0;
+            for (module, unit) in &parsed {
+                let function = &unit.program.functions[0];
+                let count = 1 + usize::from(function.result_annotation.is_some());
+                let symbol = resolver
+                    .resolve(module, None, "T", Namespace::Type)
+                    .unwrap();
+                cost += count * (64 + internal(symbol).len());
+                original_cost += count * 65;
+                nodes += count;
+            }
+            assert!(cost > original_cost);
+            let mut original = crate::check::annotations::Budget::with_limits(original_cost, nodes);
+            for unit in parsed.values() {
+                original.program(&unit.program).unwrap();
+            }
+            // Independent complete allowances, each shared across the graph.
+            let mut exact = crate::check::annotations::Budget::with_limits(cost, nodes);
+            preflight_resolved_annotations(&parsed, &resolver, &mut exact).unwrap();
+            for (weight, work) in [(cost - 1, nodes), (cost, nodes - 1), (original_cost, nodes)] {
+                let mut short = crate::check::annotations::Budget::with_limits(weight, work);
+                let error =
+                    preflight_resolved_annotations(&parsed, &resolver, &mut short).unwrap_err();
+                assert_eq!(error.code, "E-MODULE-CHECK");
+                assert_eq!(
+                    error.message,
+                    "E-TYPE-COMPLEXITY: signature annotation input budget exceeded"
+                );
+            }
+            for (weight, work) in [(original_cost - 1, nodes), (original_cost, nodes - 1)] {
+                let mut short = crate::check::annotations::Budget::with_limits(weight, work);
+                let error = parsed
+                    .values()
+                    .try_for_each(|unit| short.program(&unit.program))
+                    .unwrap_err();
+                assert_eq!(
+                    error,
+                    "E-TYPE-COMPLEXITY: signature annotation input budget exceeded"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn resolved_parameter_pass_counts_malformed_raw_trees_without_rewriting() {
+        let (mut parsed, resolver) = fixture(
+            "type T = Tag\nfn value(x: T) -> T {x}",
+            &["@entry", "other"],
+        );
+        let mut cost = 0;
+        for (module, unit) in &mut parsed {
+            let raw = TypeExpr {
+                name: "const_ptr".into(),
+                args: vec![
+                    TypeExpr {
+                        name: "not_a_module.Missing".into(),
+                        args: vec![TypeExpr {
+                            name: "T".into(),
+                            args: vec![],
+                        }],
+                    },
+                    TypeExpr {
+                        name: "éλ".into(),
+                        args: vec![],
+                    },
+                ],
+            };
+            cost += 4 * 64 + "const_ptr".len() + "not_a_module.Missing".len() + 1 + 4;
+            cost += 64
+                + internal(
+                    resolver
+                        .resolve(module, None, "T", Namespace::Type)
+                        .unwrap(),
+                )
+                .len();
+            unit.program.functions[0].params[0].annotation = Some(raw);
+        }
+        let mut exact = crate::check::annotations::Budget::with_limits(cost, 10);
+        preflight_resolved_annotations(&parsed, &resolver, &mut exact).unwrap();
+        for (weight, work) in [(cost - 1, 10), (cost, 9)] {
+            let mut short = crate::check::annotations::Budget::with_limits(weight, work);
+            assert_eq!(
+                preflight_resolved_annotations(&parsed, &resolver, &mut short)
+                    .unwrap_err()
+                    .message,
+                "E-TYPE-COMPLEXITY: signature annotation input budget exceeded"
+            );
+        }
     }
 }

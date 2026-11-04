@@ -218,8 +218,30 @@ Closed result annotations on braced functions now have
 default and 1,082 importer-enabled tests, both strict lint modes and both Windows
 GNU compile-only modes pass. Independent review and GCC/Clang O0/O2 execution
 cover SCC constraints, resource bounds, native/owner obligations, module privacy
-and complete source/origin roles. The bounded annotation task is complete; P1,
+and complete source/origin roles. The bounded result-annotation task is complete; P1,
 C02, kinds/skolems and general annotated interfaces are not. Keep used or mutable
 layoutless bindings, observable unknown payloads, local-shape mixing and broader
 owner/native/provenance forms outside these contracts until their representation
 and checking rules are established.
+
+
+## Closed recursive-signature acceptance
+
+The bounded [recursive-signature increment](recursive-signatures.md) now has
+[integrated acceptance](verification/2026-11-04-recursive-signatures.md) on source
+`31cac927`: 1,065 default and 1,113 importer-enabled tests, both strict lint modes,
+formatting and both Windows GNU all-target compile-only modes pass. Results are
+constrained first, then every closed parameter, before source-order bodies and
+ordinary generalization. Borrowed admission now charges all parameter/result
+trees together, including unused and legacy declarations, before recursive
+consumers or module cloning. Combined totals can newly reject; the generic
+signature-annotation budget diagnostic is an intentional compatibility change.
+
+The author and independent reports retain their separate selected-test and C-run
+counts. The bounded parameter-timing task is complete, but deferred projection
+constraints, unannotated callee-result projection and propagation through
+unconstrained intermediate parameters remain separate work. Preserve modes, loans,
+value restriction, nominal/pointer identity, privacy and exact annotation source
+roles. Owner-record support is unchanged; P1, C02 and general annotated interfaces
+remain open. Do not infer Windows execution or new framebuffer, Zig, AArch64, GPU
+or physical-input evidence from these checks.

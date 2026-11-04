@@ -1525,7 +1525,7 @@ pub fn check(program: &Program) -> Result<(), String> {
 
 /// Analyze a program and retain inferred types for a lowering pass.
 pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
-    annotations::preflight_results(program)?;
+    annotations::preflight_signatures(program)?;
     alloc::validate(program)?;
     let mut checker = Checker {
         allocation_types: program.allocation_types.clone(),
@@ -1815,15 +1815,22 @@ pub fn analyze(program: &Program) -> Result<CheckedProgram<'_>, String> {
                 checker.unify(result, declared)?;
             }
         }
+        // Install existing closed parameter constraints across the complete
+        // component too. A caller's field projection may depend on an annotated
+        // callee even when that callee's body follows it in source order.
+        for &i in &group {
+            let f = &program.functions[i];
+            for (index, param) in f.params.iter().enumerate() {
+                if let Some(annotation) = &param.annotation {
+                    let declared = checker.declared_type(annotation, &HashMap::new())?;
+                    let ty = checker.copy_type(&checker.functions[&f.name].params[index])?;
+                    checker.unify(ty, declared)?;
+                }
+            }
+        }
         for &i in &group {
             let f = &program.functions[i];
             let signature = checker.copy_function(&checker.functions[&f.name])?;
-            for (param, ty) in f.params.iter().zip(&signature.params) {
-                if let Some(annotation) = &param.annotation {
-                    let declared = checker.declared_type(annotation, &HashMap::new())?;
-                    checker.unify(checker.copy_type(ty)?, declared)?;
-                }
-            }
             let mut locals = HashMap::new();
             for (param, ty) in f.params.iter().zip(signature.params) {
                 let local_id = checker.local_id();

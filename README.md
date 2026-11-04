@@ -86,10 +86,16 @@ Braced functions can optionally constrain their result with a closed type:
 The annotation is an equality constraint, not a cast or a default type. It uses
 exactly the existing parameter-type vocabulary; named type variables, holes,
 function types, effects and local annotations remain unsupported. Unannotated
-functions and legacy `let` functions keep their existing inference and grammar.
+functions and legacy `let` functions retain their existing grammar.
 This bounded addition has [independent and integrated acceptance](docs/verification/2026-11-04-result-annotations.md).
 It does not complete P1, C02 or general annotated interfaces. See the
 [runnable example](examples/result-annotations).
+Existing closed parameter annotations now constrain a complete recursive group
+before any of its bodies. This bounded [signature-order improvement](docs/recursive-signatures.md)
+also checks all parameter/result trees through shared input budgets and has
+[bounded integrated acceptance](docs/verification/2026-11-04-recursive-signatures.md).
+Combined annotation totals can newly exceed the shared budget. Broader projection
+inference remains open; see the [example](examples/recursive-signatures).
 Local type annotations and `if` without `else`
 are not supported yet. Legacy `let name arg = expression`, `let ... in`,
 `if ... then ... else ...` and `while ... do ...` remain accepted for compatibility.

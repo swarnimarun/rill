@@ -295,8 +295,9 @@ There are no failures, ignored tests or SKIP notices. Windows binaries were not
 executed. Fresh independent and author annotation harnesses separately execute
 68 and 280 GCC/Clang C11 O0/O2 cases.
 
-Results are closed equality constraints installed across each recursive group
-before its bodies; existing parameter timing and unannotated inference remain.
+At that result-only checkpoint, closed equality constraints were installed across
+each recursive group before its bodies; parameters retained their then-existing
+per-function timing. The recursive-signature increment below changes that timing.
 Complete source/origin roles, module privacy, exact logical result identity and
 borrowed graph-wide input/resolved-name budgets are checked. The
 [independent record](verification/2026-11-04-result-annotations-independent.md)
@@ -310,3 +311,29 @@ search is not assumed. No new Zig, AArch64, GPU or physical-input evidence is
 claimed. Kinds/skolems, genuinely unknown stored layouts, broader owner/native
 support and broader optional provenance remain open. This does not complete P1
 or C02.
+
+
+## Closed recursive signatures
+
+The bounded [recursive-signature increment](recursive-signatures.md) has
+[integrated acceptance](verification/2026-11-04-recursive-signatures.md) on source
+`31cac927`: 1,065 default and 1,113 importer-enabled tests, formatting, both strict
+lint modes and both Windows GNU all-target compile checks pass. Neither test run
+reports failures, ignored tests, SKIP notices or warnings. Windows checks are
+compile-only. Real direct SDL3 runs in both test modes; generated SDL3 bindings
+run in importer mode. No new framebuffer capture or physical-input claim is added.
+
+The checker installs all closed results, then all closed parameters, before any
+body in each recursive group; body order and ordinary generalization remain.
+Parameter/result input trees share the bounded allowance, with a separate exact
+resolved-name pass before module cloning. Combined totals can newly reject, and
+the diagnostic is now `E-TYPE-COMPLEXITY: signature annotation input budget exceeded`.
+Source roles, modes, loans, snapshots, nominal identity and privacy remain intact.
+
+The [author record](verification/2026-11-04-recursive-signatures-author.md) retains
+708 selected tests and 176 GCC/Clang C11 O0/O2 executions; the separate
+[independent record](verification/2026-11-04-recursive-signatures-independent.md)
+retains 715 selected tests and 112 C executions. Those overlapping selected suites
+and repeated runs are not added to the aggregate totals. Unannotated callee-result
+projection and unconstrained intermediate parameters remain limited. Owner-record
+support is unchanged. This does not close P1, C02 or broader annotated interfaces.

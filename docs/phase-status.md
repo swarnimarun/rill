@@ -163,8 +163,25 @@ Closed result annotations on braced `fn` and `export fn` now have bounded
 lint modes and both Windows GNU compile-only checks pass, with no test failures,
 ignored tests or SKIP notices. Independent checks add 68 GCC/Clang C11 O0/O2
 executions; the freshly repeated author matrix contributes 280 separately counted
-executions. SCC-wide result constraints preserve existing parameter timing,
-module privacy, full logical identity and exact source/origin roles. Graph-wide
-source/resolved annotation budgets precede cloning. This adds no unknown storage,
+executions. At that result-only checkpoint, SCC-wide result constraints preserved
+the then-existing per-function parameter timing, module privacy, full logical
+identity and exact source/origin roles. Graph-wide source/resolved annotation
+budgets precede cloning. This adds no unknown storage,
 kinds, skolems, owner/native combinations or broader optional provenance. P1 and
 C02 remain open; Windows execution and other untested targets are not claimed.
+
+
+The bounded [recursive-signature increment](recursive-signatures.md) has
+[integrated acceptance](verification/2026-11-04-recursive-signatures.md) on source
+`31cac927`: 1,065 default and 1,113 importer-enabled tests, formatting, both strict
+lint modes and both Windows GNU compile-only checks pass. The test runs report
+zero failures, ignored tests, SKIP notices or warnings. Results constrain
+monomorphic placeholders first, then all closed parameters, then source-order
+bodies and ordinary generalization. Borrowed annotation budgets now cover
+parameters and results together before recursive consumers and module cloning.
+This intentionally changes parameter timing and combined admission totals.
+The author record retains 708 selected tests and 176 C executions; the separate
+independent record retains 715 selected tests and 112 C executions. Overlapping
+and repeated runs are not added. Broader projection inference remains limited,
+owner-record support is unchanged, and P1/C02 remain open. Windows execution is
+not claimed.

@@ -1,16 +1,17 @@
-//! Bound newly accepted result annotation trees before recursive declaration
+//! Bound all closed parameter and result annotations before recursive declaration
 //! resolution, cloning or owner classification. Public AST inputs bypass the
 //! parser's independent nesting guard, so inspect the actual borrowed tree.
 use crate::ast::{Program, TypeExpr};
 
-const ERROR: &str = "E-TYPE-COMPLEXITY: result annotation input budget exceeded";
+// Parameter and result annotations share this admission diagnostic.
+const ERROR: &str = "E-TYPE-COMPLEXITY: signature annotation input budget exceeded";
 const MAX_DEPTH: usize = 128;
 const NODE_WEIGHT: usize = 64;
 const TREE_WEIGHT: usize = 16 * 1024 * 1024;
 const TOTAL_WEIGHT: usize = 64 * 1024 * 1024;
 const WORK: usize = 4_000_000;
 
-pub(crate) fn preflight_results(program: &Program) -> Result<(), String> {
+pub(crate) fn preflight_signatures(program: &Program) -> Result<(), String> {
     Budget::default().program(program)
 }
 
@@ -41,7 +42,12 @@ impl Budget {
         error: impl Fn() -> E,
     ) -> Result<(), E> {
         for function in &program.functions {
-            if let Some(annotation) = &function.result_annotation {
+            for annotation in function
+                .params
+                .iter()
+                .filter_map(|parameter| parameter.annotation.as_ref())
+                .chain(function.result_annotation.iter())
+            {
                 self.tree_named(annotation, MAX_DEPTH, TREE_WEIGHT, &mut name_len, &error)?;
             }
         }
@@ -225,5 +231,219 @@ mod tests {
         assert!(Budget::default()
             .tree(&exactly, MAX_DEPTH, TREE_WEIGHT - 1)
             .is_err());
+    }
+
+    fn signature(parameter: TypeExpr, result: Option<TypeExpr>) -> Program {
+        let mut program = crate::parser::parse("fn unused(x) {()} fn main() {()}").unwrap();
+        program.functions[0].params[0].annotation = Some(parameter);
+        program.functions[0].result_annotation = result;
+        program
+    }
+
+    fn nested(depth: usize) -> TypeExpr {
+        let mut ty = atom();
+        for _ in 1..depth {
+            ty = TypeExpr {
+                name: "W".into(),
+                args: vec![ty],
+            };
+        }
+        ty
+    }
+
+    fn dismantle(program: Program) {
+        let mut pending = Vec::new();
+        for function in program.functions {
+            pending.extend(function.params.into_iter().filter_map(|p| p.annotation));
+            pending.extend(function.result_annotation);
+        }
+        while let Some(mut ty) = pending.pop() {
+            pending.append(&mut ty.args);
+        }
+    }
+
+    #[test]
+    fn unused_parameter_and_mixed_signature_depth_boundaries_are_exact() {
+        for mixed in [false, true] {
+            for depth in [128, 129, 20_000] {
+                let program = signature(nested(depth), mixed.then(atom));
+                let result = preflight_signatures(&program);
+                // A rejected caller-owned tree still belongs to the caller;
+                // dismantle it without recursive Drop, even on test failure.
+                dismantle(program);
+                if depth == 128 {
+                    result.unwrap();
+                } else {
+                    assert_eq!(result.unwrap_err(), ERROR);
+                }
+            }
+        }
+        let program = signature(atom(), Some(nested(129)));
+        let result = preflight_signatures(&program);
+        dismantle(program);
+        assert_eq!(result.unwrap_err(), ERROR);
+    }
+
+    #[test]
+    fn every_parameter_precedes_its_result_in_every_function() {
+        let program = crate::parser::parse(
+            "fn unused(a: i32, inferred, b: bool) -> unit {()}\nlet legacy (x: str) = ()\nfn main() {()}",
+        ).unwrap();
+        let mut names = Vec::new();
+        Budget::with_limits(4 * NODE_WEIGHT + 14, 4)
+            .program_named(
+                &program,
+                |name| {
+                    names.push(name.to_owned());
+                    Ok(name.len())
+                },
+                || ERROR.to_owned(),
+            )
+            .unwrap();
+        assert_eq!(names, ["i32", "bool", "unit", "str"]);
+    }
+
+    #[test]
+    fn malformed_raw_parameter_depth_is_not_exempt() {
+        for depth in [128, 129, 20_000] {
+            let program = signature(
+                TypeExpr {
+                    name: "ptr".into(),
+                    args: vec![nested(depth - 1)],
+                },
+                None,
+            );
+            let result = Budget::default().program_named(
+                &program,
+                |_| -> Result<usize, String> { panic!("raw subtree must not resolve") },
+                || ERROR.to_owned(),
+            );
+            dismantle(program);
+            if depth == 128 {
+                result.unwrap();
+            } else {
+                assert_eq!(result.unwrap_err(), ERROR);
+            }
+        }
+    }
+
+    #[test]
+    fn parameter_and_result_share_exact_utf8_wide_weight_and_work() {
+        for mixed in [false, true] {
+            let wide = TypeExpr {
+                name: "éλ".into(),
+                args: vec![atom(); 1024],
+            };
+            let nodes = 1025 + usize::from(mixed);
+            let cost = nodes * (NODE_WEIGHT + 4);
+            let program = signature(wide, mixed.then(atom));
+            let mut exact = Budget::with_limits(cost, nodes);
+            exact.program(&program).unwrap();
+            assert_eq!((exact.remaining, exact.work), (0, 0));
+            for (weight, work) in [(cost - 1, nodes), (cost, nodes - 1)] {
+                assert_eq!(
+                    Budget::with_limits(weight, work)
+                        .program(&program)
+                        .unwrap_err(),
+                    ERROR
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn per_tree_limit_resets_but_graph_weight_and_work_do_not() {
+        let program = signature(atom(), Some(atom()));
+        // Inject logical resolved-name lengths rather than allocate giant names.
+        let run = |name_bytes| {
+            Budget::with_limits(2 * TREE_WEIGHT + 2, 2).program_named(
+                &program,
+                |_| Ok(name_bytes),
+                || ERROR.to_owned(),
+            )
+        };
+        run(TREE_WEIGHT - NODE_WEIGHT).unwrap();
+        assert_eq!(run(TREE_WEIGHT - NODE_WEIGHT + 1).unwrap_err(), ERROR);
+        let parameter_only = signature(atom(), None);
+        Budget::default()
+            .program_named(
+                &parameter_only,
+                |_| Ok(TREE_WEIGHT - NODE_WEIGHT),
+                || ERROR.to_owned(),
+            )
+            .unwrap();
+        assert_eq!(
+            Budget::default()
+                .program_named(
+                    &parameter_only,
+                    |_| Ok(TREE_WEIGHT - NODE_WEIGHT + 1),
+                    || ERROR.to_owned()
+                )
+                .unwrap_err(),
+            ERROR
+        );
+
+        // Legacy and unused declarations participate, not only reachable fn bodies.
+        let legacy = crate::parser::parse("let unused (x: unit) = ()\nlet main = ()").unwrap();
+        let cost = 3 * (NODE_WEIGHT + 4);
+        for (weight, work, passes) in [(cost, 3, true), (cost - 1, 3, false), (cost, 2, false)] {
+            let mut shared = Budget::with_limits(weight, work);
+            shared.program(&program).unwrap();
+            let result = shared.program(&legacy);
+            if passes {
+                result.unwrap();
+                assert_eq!((shared.remaining, shared.work), (0, 0));
+            } else {
+                assert_eq!(result.unwrap_err(), ERROR);
+            }
+        }
+    }
+
+    #[test]
+    fn malformed_raw_parameter_subtrees_remain_unresolved_but_fully_charged() {
+        for name in ["ptr", "const_ptr"] {
+            let parameter = TypeExpr {
+                name: name.into(),
+                // Malformed arity and nested unknown names must still be charged.
+                args: vec![
+                    TypeExpr {
+                        name: "missing.Type".into(),
+                        args: vec![atom()],
+                    },
+                    TypeExpr {
+                        name: "éλ".into(),
+                        args: vec![],
+                    },
+                ],
+            };
+            let raw_cost = 4 * NODE_WEIGHT + name.len() + "missing.Type".len() + 8;
+            for mixed in [false, true] {
+                let program = signature(parameter.clone(), mixed.then(atom));
+                let cost = raw_cost + usize::from(mixed) * (NODE_WEIGHT + 4);
+                let nodes = 4 + usize::from(mixed);
+                for (weight, work, passes) in [
+                    (cost, nodes, true),
+                    (cost - 1, nodes, false),
+                    (cost, nodes - 1, false),
+                ] {
+                    let mut visits = 0;
+                    let result = Budget::with_limits(weight, work).program_named(
+                        &program,
+                        |spelling| {
+                            visits += 1;
+                            assert_eq!(spelling, "unit", "raw subtree reached name resolution");
+                            Ok(spelling.len())
+                        },
+                        || ERROR.to_owned(),
+                    );
+                    if passes {
+                        result.unwrap();
+                        assert_eq!(visits, usize::from(mixed));
+                    } else {
+                        assert_eq!(result.unwrap_err(), ERROR);
+                    }
+                }
+            }
+        }
     }
 }

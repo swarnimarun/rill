@@ -192,7 +192,7 @@ fn independent_result_public_ast_preflight_covers_every_consumer() {
             if depth > 128 {
                 assert_eq!(
                     result.unwrap_err(),
-                    "E-TYPE-COMPLEXITY: result annotation input budget exceeded"
+                    "E-TYPE-COMPLEXITY: signature annotation input budget exceeded"
                 );
             } else {
                 assert!(result.is_ok(), "depth {depth}: {result:?}");
