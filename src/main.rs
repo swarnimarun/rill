@@ -320,6 +320,7 @@ fn build_c_in(
     output: &Path,
     directory: Option<&Path>,
 ) -> Result<(), String> {
+    rill::c_import::validate_compile_args(cflags)?;
     let mut command = Command::new(compiler);
     if let Some(directory) = directory {
         command.current_dir(directory);

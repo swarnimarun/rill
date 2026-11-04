@@ -218,6 +218,146 @@ fn split_flags(input: &str) -> Result<Vec<String>, String> {
     Ok(words)
 }
 
+/// Preserve compile/target options without allowing them to replace the C11
+/// compilation action. Linker arguments are passed separately by the CLI.
+pub fn validate_compile_args(cflags: &[OsString]) -> Result<(), String> {
+    let mut arguments = cflags.iter();
+    while let Some(argument) = arguments.next() {
+        let Some(text) = argument.to_str() else {
+            if [
+                "-I",
+                "-D",
+                "-U",
+                "-isystem",
+                "-iquote",
+                "-idirafter",
+                "-include",
+                "-imacros",
+                "-isysroot",
+                "--sysroot=",
+                "-B",
+                "-F",
+                "-iframework",
+                "--gcc-toolchain=",
+                "-resource-dir=",
+                "-MF",
+                "-MT",
+                "-MQ",
+                "-MJ",
+            ]
+            .iter()
+            .any(|prefix| argument.as_encoded_bytes().starts_with(prefix.as_bytes()))
+            {
+                continue;
+            }
+            return Err(format!(
+                "E-C-IMPORT: unsupported validation C argument {argument:?}"
+            ));
+        };
+        if [
+            "-I",
+            "-D",
+            "-U",
+            "-isystem",
+            "-iquote",
+            "-idirafter",
+            "-include",
+            "-imacros",
+            "-isysroot",
+            "--sysroot",
+            "-target",
+            "--target",
+            "-arch",
+            "-B",
+            "-F",
+            "-iframework",
+            "-iframeworkwithsysroot",
+            "-iwithsysroot",
+            "-isystem-after",
+            "-iprefix",
+            "-iwithprefix",
+            "-iwithprefixbefore",
+            "-imultilib",
+            "--gcc-toolchain",
+            "-resource-dir",
+            "-MF",
+            "-MT",
+            "-MQ",
+            "-MJ",
+        ]
+        .contains(&text)
+        {
+            let operand = arguments
+                .next()
+                .ok_or_else(|| format!("E-C-IMPORT: missing operand for {text}"))?;
+            if operand.is_empty() {
+                return Err(format!("E-C-IMPORT: empty operand for {text}"));
+            }
+        } else if !text.starts_with('-')
+            || [
+                "-",
+                "--",
+                "-E",
+                "-M",
+                "-MM",
+                "-S",
+                "-c",
+                "-ansi",
+                "-fsyntax-only",
+                "-fdriver-only",
+                "-###",
+                "-cc1",
+                "-cc1as",
+                "-r",
+                "-shared",
+                "--shared",
+                "-dynamiclib",
+                "-bundle",
+                "-emit-llvm",
+                "-emit-ast",
+                "--analyze",
+                "-analyze",
+                "-extract-api",
+                "-rewrite-objc",
+                "--preprocess",
+                "--assemble",
+                "--compile",
+                "--dependencies",
+                "--user-dependencies",
+                "--syntax-only",
+                "--target-help",
+                "--precompile",
+                "-precompile",
+                "-version",
+            ]
+            .contains(&text)
+            || text.starts_with("-o")
+            || text.starts_with("-x")
+            || text.starts_with("-X")
+            || text.starts_with("-Wp,")
+            || text.starts_with("--output")
+            || text.starts_with("--language")
+            || text.starts_with("--driver-mode")
+            || text.starts_with("--config")
+            || text.starts_with("--help")
+            || text.starts_with("-help")
+            || text.starts_with("--version")
+            || text.starts_with("-ccc-")
+            || text.starts_with("--autocomplete")
+            || text.starts_with("-dump")
+            || text.starts_with("-print-")
+            || text.starts_with("--print-")
+            || (text.starts_with("-std=") && text != "-std=c11")
+            || (text.starts_with("--std=") && text != "--std=c11")
+        {
+            return Err(format!(
+                "E-C-IMPORT: unsupported validation C argument {argument:?}; C11 compilation mode and output are controlled by Rill"
+            ));
+        }
+    }
+    Ok(())
+}
+
 /// Ask the selected target C compiler to check headers and ABI assertions.
 /// The same target/sysroot flags must also be used for the final build.
 pub fn validate_c(
@@ -237,6 +377,7 @@ pub fn validate_c_in(
     cflags: &[OsString],
     directory: Option<&std::path::Path>,
 ) -> Result<(), String> {
+    validate_compile_args(cflags)?;
     let mut command = Command::new(compiler);
     if let Some(directory) = directory {
         command.current_dir(directory);
@@ -255,8 +396,8 @@ pub fn validate_c_in(
         check_directory = None;
         command.arg("-fsyntax-only");
     }
-    command.args(["-std=c11", "-x", "c"]);
     command.args(cflags);
+    command.args(["-std=c11", "-x", "c"]);
     command.arg("-");
     let mut child = command
         .stdin(Stdio::piped())
