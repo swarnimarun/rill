@@ -1,12 +1,10 @@
-/* Linux/GNU-linker capture harness, not part of either game's drawing logic. */
+/* Capture builds redirect game calls here; this file calls the real SDL. */
 #include <SDL3/SDL.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 
-extern bool __real_SDL_RenderPresent(SDL_Renderer *renderer);
-
-bool __wrap_SDL_RenderPresent(SDL_Renderer *renderer) {
+bool rill_capture_present(SDL_Renderer *renderer) {
     static unsigned frame;
     static unsigned capture_frame;
     if (capture_frame == 0) {
@@ -36,7 +34,7 @@ bool __wrap_SDL_RenderPresent(SDL_Renderer *renderer) {
                 SDL_GetRendererName(renderer), SDL_GetCurrentVideoDriver());
         SDL_DestroySurface(surface);
     }
-    bool result = __real_SDL_RenderPresent(renderer);
+    bool result = SDL_RenderPresent(renderer);
     if (frame == capture_frame) {
         /* Both original game loops handle this ordinary SDL quit event. */
         SDL_Event event = {0};

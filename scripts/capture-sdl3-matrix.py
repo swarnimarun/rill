@@ -2,7 +2,7 @@
 """Opt-in F3 gate: capture real SDL3 pixels with an already-built Rill compiler.
 
 No Cargo invocation, installation, synthetic drawing, or existing-output reuse.
-This is a Linux/GNU-linker harness, not a portable screenshot utility.
+Capture builds redirect presentation calls on macOS and Linux.
 """
 
 import argparse
@@ -68,8 +68,10 @@ def generated_source(source):
     # The importer keeps the C enum constant's i32 type. Fail closed if this
     # narrow, documented adaptation no longer matches the actual game.
     old = "sdl.SDL_HasEvent(sdl.SDL_EVENT_QUIT)"
-    require(source.count(old) == 1, "Expected exactly one direct quit-event call")
-    return source.replace(old, "sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT))", 1)
+    normalized = "sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT))"
+    require(source.count(old) + source.count(normalized) == 1,
+            "Expected exactly one direct quit-event call")
+    return source.replace(old, normalized, 1)
 
 
 def require_typed(c_source):
@@ -257,6 +259,8 @@ def capture(args, root, output, manifest, run, rill, cc, clang, pkg_config, git)
     cflags = shlex.split(run.run([pkg_config, "--cflags", "sdl3"])[0].decode())
     libs = shlex.split(run.run([pkg_config, "--libs", "sdl3"])[0].decode())
     manifest["pkg_config"] = {"cflags": cflags, "libs": libs}
+    cflags.extend(args.c_arg)
+    manifest["c_arguments"] = args.c_arg
     resource = args.clang_resource_dir
     if not resource:
         resource = run.run([clang, "-print-resource-dir"])[0].decode().strip()
@@ -284,9 +288,11 @@ def capture(args, root, output, manifest, run, rill, cc, clang, pkg_config, git)
         manifest["inputs"][source] = hashlib.sha256(data).hexdigest()
     original = (sources / "direct/main.rill").read_text()
     (sources / "generated/main.rill").write_text(generated_source(original))
-    manifest["generated_adaptation"] = "Only SDL_HasEvent's SDL_EVENT_QUIT argument gains u32(...)."
+    manifest["generated_adaptation"] = "SDL_HasEvent's SDL_EVENT_QUIT argument is normalized to u32(...)."
     command = [rill, "import-c", "--header", "SDL3/SDL.h", "--pkg-config", "sdl3",
                "--link", "SDL3", "--cc", cc, "--clang-resource-dir", resource]
+    for argument in args.c_arg:
+        command.extend(("--c-arg", argument))
     for name in CONSTANTS:
         command.extend(("--constant", name))
     for name in FUNCTIONS:
@@ -303,23 +309,28 @@ def capture(args, root, output, manifest, run, rill, cc, clang, pkg_config, git)
         for name, source in (("capture", sources / "capture.c"),
                              ("collector", sources / "collector/shim.c")):
             objects[name] = opt_dir / f"{name}.o"
-            run.run([cc, *flags, "-Wall", "-Wextra", "-Werror", "-MD", "-MF",
+            redirect = ["-DSDL_RenderPresent=rill_capture_present"] if name == "collector" else []
+            run.run([cc, *flags, *redirect, "-Wall", "-Wextra", "-Werror", "-MD", "-MF",
                      opt_dir / f"{name}.d", "-c", source, "-o", objects[name]])
         for game in ("direct", "generated", "collector"):
             cell = opt_dir / game
             cell.mkdir()
             c_source = cell / "program.c"
-            run.run([rill, "emit-c", sources / game / "main.rill", "--cc", cc,
-                     "--c-arg", f"-O{opt}"], stdout=c_source)
+            emission = [rill, "emit-c", sources / game / "main.rill", "--cc", cc,
+                        "--c-arg", f"-O{opt}"]
+            for argument in args.c_arg:
+                emission.extend(("--c-arg", argument))
+            run.run(emission, stdout=c_source)
             require_typed(c_source.read_text())
             # Compile the exact retained C whose representation was inspected.
             # This is not a substitute for separate Rill build/run CLI tests.
-            command = [cc, *flags, "-Werror=incompatible-pointer-types",
+            command = [cc, *flags, "-DSDL_RenderPresent=rill_capture_present",
+                       "-Werror=incompatible-pointer-types",
                        "-Werror=implicit-function-declaration", "-MD", "-MF", cell / "program.d",
                        c_source, objects["capture"]]
             if game == "collector":
                 command.append(objects["collector"])
-            command.extend(("-Wl,--wrap=SDL_RenderPresent", *libs, "-o", cell / "game"))
+            command.extend((*libs, "-o", cell / "game"))
             run.run(command)
             bmp = cell / "frame.bmp"
             stdout, stderr = run.run([cell / "game"], seconds=30, env={
@@ -364,11 +375,14 @@ def main():
     parser.add_argument("--cc", default=os.environ.get("CC", "cc"), help="one C compiler executable")
     parser.add_argument("--clang", default=os.environ.get("CLANG_PATH", "clang"))
     parser.add_argument("--clang-resource-dir", default=os.environ.get("RILL_TEST_CLANG_RESOURCE_DIR"))
+    parser.add_argument("--c-arg", action="append", default=[],
+                        help="shared target/header argument; repeat as --c-arg=VALUE")
     parser.add_argument("--frame", type=int, default=os.environ.get("RILL_CAPTURE_FRAME", "40"))
     args = parser.parse_args()
     require(args.rill, "Supply --rill or RILL_BIN; this script never builds a compiler")
     require(1 <= args.frame <= 900, "Capture frame must be from 1 to 900")
-    require(sys.platform.startswith("linux"), "This harness requires Linux/GNU linker --wrap")
+    require(sys.platform.startswith("linux") or sys.platform == "darwin",
+            "This harness requires macOS or Linux")
     root = Path(__file__).resolve().parent.parent
     rill, cc, clang = (executable(value) for value in (args.rill, args.cc, args.clang))
     timeout = executable("timeout")

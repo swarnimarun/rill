@@ -124,12 +124,18 @@ class SourceTests(unittest.TestCase):
         root = Path(__file__).resolve().parent.parent
         original = (root / "examples/sdl3-direct/main.rill").read_text()
         generated = matrix.generated_source(original)
-        self.assertEqual(generated.replace("u32(sdl.SDL_EVENT_QUIT)", "sdl.SDL_EVENT_QUIT"), original)
+        normalized = "sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT))"
+        legacy = "sdl.SDL_HasEvent(sdl.SDL_EVENT_QUIT)"
+        self.assertEqual(generated, original.replace(legacy, normalized))
+        self.assertEqual(matrix.generated_source(generated), generated)
         self.assertIn("frame < 900", generated)
         self.assertIn("SDL_Delay(u32(16))", generated)
 
     def test_adaptation_fails_closed_on_source_drift(self):
-        for source in ("", "sdl.SDL_HasEvent(sdl.SDL_EVENT_QUIT)" * 2):
+        for source in ("", "sdl.SDL_HasEvent(sdl.SDL_EVENT_QUIT)" * 2,
+                       "sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT))" * 2,
+                       "sdl.SDL_HasEvent(sdl.SDL_EVENT_QUIT)"
+                       "sdl.SDL_HasEvent(u32(sdl.SDL_EVENT_QUIT))"):
             with self.assertRaises(ValueError):
                 matrix.generated_source(source)
 
