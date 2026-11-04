@@ -1,0 +1,150 @@
+{
+  "$schema": "https://raw.githubusercontent.com/martinring/tmlanguage/master/tmlanguage.json",
+  "name": "Rill",
+  "scopeName": "source.rill",
+  "patterns": [
+    {"include": "#comments"},
+    {"include": "#cStrings"},
+    {"include": "#strings"},
+    {"include": "#attributes"},
+    {"include": "#declarations"},
+    {"include": "#keywords"},
+    {"include": "#types"},
+    {"include": "#numbers"},
+    {"include": "#operators"},
+    {"include": "#calls"},
+    {"include": "#names"}
+  ],
+  "repository": {
+    "comments": {"name": "comment.line.double-slash.rill", "begin": "//", "end": "$"},
+    "cStrings": {
+      "name": "string.quoted.double.c.rill",
+      "begin": "\\bc\"",
+      "end": "\"|$",
+      "patterns": [
+        {"name": "constant.character.escape.rill", "match": "\\\\[nrt\"\\\\]"},
+        {"name": "invalid.illegal.escape.rill", "match": "\\\\."}
+      ]
+    },
+    "strings": {
+      "name": "string.quoted.double.rill",
+      "begin": "\"",
+      "end": "\"|$",
+      "patterns": [
+        {"name": "constant.character.escape.rill", "match": "\\\\[nrt0\"\\\\]"},
+        {"name": "invalid.illegal.escape.rill", "match": "\\\\."}
+      ]
+    },
+    "attributes": {"name": "storage.type.annotation.rill", "match": "@(?:include|link|pkg_config)\\b"},
+    "declarations": {
+      "patterns": [
+        {
+          "match": "\\b(let)\\s+(?:(mut)\\s+)?([A-Za-z_][A-Za-z_0-9]*)(?=\\s*=\\s*fn\\s*\\()",
+          "captures": {
+            "1": {"name": "keyword.other.rill"},
+            "2": {"name": "keyword.other.rill"},
+            "3": {"name": "entity.name.function.rill"}
+          }
+        },
+        {
+          "begin": "\\b(fn)\\s+([A-Za-z_][A-Za-z_0-9]*)\\s*(\\()",
+          "beginCaptures": {
+            "1": {"name": "storage.type.function.rill"},
+            "2": {"name": "entity.name.function.rill"}
+          },
+          "end": "\\)",
+          "patterns": [
+            {"include": "#parameters"}
+          ]
+        },
+        {
+          "begin": "\\b(fn)\\s*(\\()",
+          "beginCaptures": {
+            "1": {"name": "storage.type.function.rill"}
+          },
+          "end": "\\)",
+          "patterns": [
+            {"include": "#parameters"}
+          ]
+        },
+        {
+          "match": "\\b(fn)\\s+([A-Za-z_][A-Za-z_0-9]*)",
+          "captures": {
+            "1": {"name": "storage.type.function.rill"},
+            "2": {"name": "entity.name.function.rill"}
+          }
+        },
+        {
+          "match": "\\b(type)\\s+([A-Za-z_][A-Za-z_0-9]*)",
+          "captures": {
+            "1": {"name": "storage.type.rill"},
+            "2": {"name": "entity.name.type.rill"}
+          }
+        }
+      ]
+    },
+    "keywords": {
+      "patterns": [
+        {"name": "storage.type.function.rill", "match": "\\bfn\\b"},
+        {"name": "keyword.control.rill", "match": "\\b(?:if|then|else|while|do|match|in)\\b"},
+        {"name": "keyword.other.rill", "match": "\\b(?:import|as|export|extern|const|let|mut|move|read|inout|record)\\b"},
+        {"name": "constant.language.boolean.rill", "match": "\\b(?:true|false)\\b"}
+      ]
+    },
+    "types": {"name": "storage.type.rill", "match": "\\b(?:i32|bool|unit|str|u8|u32|u64|f32|u8x16|SystemBoxI32|SystemBytes|ptr|const_ptr)\\b"},
+    "numbers": {"name": "constant.numeric.integer.rill", "match": "\\b[0-9]+\\b"},
+    "operators": {"name": "keyword.operator.rill", "match": "\\bnot\\b|\\|>|<\\||>>|<<|<-|=>|->|==|!=|<=|>=|&&|\\|\\||[+*/%<>=!|\\-]"},
+    "calls": {
+      "patterns": [
+        {"name": "entity.name.function.rill", "match": "\\b[A-Za-z_][A-Za-z_0-9]*(?=\\s*\\(|[ \\t]+(?!(?:let|mut|inout|read|extern|const|type|match|while|do|in|if|then|else|not)\\b)(?:[A-Za-z_0-9]|c?\"))"},
+        {
+          "match": "(?<=\\()[ \\t]*([A-Za-z_][A-Za-z_0-9]*)(?=[ \\t]*\\)[ \\t]*\\()",
+          "captures": {
+            "1": {"name": "entity.name.function.rill"}
+          }
+        },
+        {"name": "entity.name.function.rill", "match": "\\b[A-Za-z_][A-Za-z_0-9]*(?=[ \\t]*(?:<\\||>>|<<))"},
+        {
+          "match": "(?:(?<=\\|>)|(?<=>>)|(?<=<<))[ \\t]*([A-Za-z_][A-Za-z_0-9]*)",
+          "captures": {
+            "1": {"name": "entity.name.function.rill"}
+          }
+        }
+      ]
+    },
+    "names": {
+      "patterns": [
+        {"name": "entity.name.type.rill", "match": "\\b[A-Z][A-Za-z_0-9]*\\b"},
+        {"name": "variable.other.rill", "match": "\\b[A-Za-z_][A-Za-z_0-9]*\\b"}
+      ]
+    },
+    "parameters": {
+      "patterns": [
+        {"include": "#comments"},
+        {"name": "keyword.other.rill", "match": "\\b(?:read|inout)\\b"},
+        {
+          "begin": ":",
+          "end": "(?=,|\\))",
+          "patterns": [
+            {"include": "#comments"},
+            {"include": "#parameterTypeArguments"},
+            {"include": "#types"},
+            {"name": "entity.name.type.rill", "match": "\\b[A-Za-z_][A-Za-z_0-9]*\\b"},
+            {"include": "#operators"}
+          ]
+        },
+        {"name": "variable.parameter.rill", "match": "\\b[A-Za-z_][A-Za-z_0-9]*\\b"}
+      ]
+    },
+    "parameterTypeArguments": {
+      "begin": "<",
+      "end": ">",
+      "patterns": [
+        {"include": "#comments"},
+        {"include": "#parameterTypeArguments"},
+        {"include": "#types"},
+        {"name": "entity.name.type.rill", "match": "\\b[A-Za-z_][A-Za-z_0-9]*\\b"}
+      ]
+    }
+  }
+}
