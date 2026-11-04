@@ -103,8 +103,10 @@ group, retaining ordinary polymorphism and source loan checks. Its
 1,103 default and 1,151 importer-enabled tests, both strict lint and Windows
 compile-only modes. Unresolved nominal identities still reject at the component
 boundary; broader inference, layouts and P1/C02 completion remain open.
-Local type annotations and `if` without `else`
-are not supported yet. Legacy `let name arg = expression`, `let ... in`,
+Local type annotations are not supported yet. A braced `if` may omit `else` when its body returns unit, as in
+`if ready { draw(); };`. The omitted branch returns `()`.
+Value-producing branches still need `else`, as does the legacy `then` form.
+Legacy `let name arg = expression`, `let ... in`,
 `if ... then ... else ...` and `while ... do ...` remain accepted for compatibility.
 
 Rank-one inference uses a private union-find equality solver with levels and an
@@ -143,8 +145,8 @@ passed 892 default and 940 importer-enabled tests, both strict lint and Windows
 compile modes, plus independent source/proof/event checks.
 
 The subset includes signed 32-bit integers, booleans, unit, arithmetic,
-comparisons, short-circuit `&&` and `||`, generic algebraic types and exhaustive
-pattern matching. `//` starts a comment. Evaluation is left-to-right; integer
+comparisons, boolean negation (`not value` or `!value`), short-circuit `&&` and
+`||`, generic algebraic types and exhaustive pattern matching. `//` starts a comment. Evaluation is left-to-right; integer
 overflow and division by zero trap. Calls currently trap above 32 active Rill
 function calls, including `main`. This temporary guard does not prevent every
 possible host stack exhaustion. Names and types are checked before execution

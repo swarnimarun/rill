@@ -226,6 +226,8 @@ pub enum OriginKind {
     ImplicitUnit,
     /// A unary subtraction rewrite, including its introduced zero operand.
     UnaryNegation,
+    /// A boolean negation rewrite, including its introduced false operand.
+    BooleanNegation,
     /// A nominal record's synthetic single AST variant.
     RecordVariant,
 }
@@ -616,10 +618,14 @@ impl Mapper<'_, '_> {
         self.insert(
             &path,
             node,
-            if kind == SyntaxKind::UnaryExpression && !matches!(expr, Expr::Int(_)) {
-                OriginKind::UnaryNegation
-            } else {
-                OriginKind::Source
+            match (kind, expr) {
+                (SyntaxKind::UnaryExpression, Expr::Binary(BinaryOp::Sub, ..)) => {
+                    OriginKind::UnaryNegation
+                }
+                (SyntaxKind::UnaryExpression, Expr::Binary(BinaryOp::Eq, ..)) => {
+                    OriginKind::BooleanNegation
+                }
+                _ => OriginKind::Source,
             },
             None,
         )?;
@@ -641,6 +647,22 @@ impl Mapper<'_, '_> {
             }
             (SyntaxKind::UnaryExpression, Expr::Int(n))
                 if *n == i32::MIN && children.is_empty() => {}
+            (SyntaxKind::UnaryExpression, Expr::Binary(BinaryOp::Eq, a, b))
+                if **b == Expr::Bool(false) =>
+            {
+                self.expr(
+                    path.child(AstStep::BinaryLeft),
+                    a,
+                    self.one(&path, children)?,
+                )?;
+                let span = self.first_or_last_token(node, false).unwrap().span();
+                self.insert(
+                    &path.child(AstStep::BinaryRight),
+                    node,
+                    OriginKind::BooleanNegation,
+                    Some(span),
+                )?;
+            }
             (SyntaxKind::UnaryExpression, Expr::Binary(BinaryOp::Sub, a, b))
                 if **a == Expr::Int(0) =>
             {
@@ -664,15 +686,26 @@ impl Mapper<'_, '_> {
                 self.expr(path.child(AstStep::AssignValue), v, children[1])?;
             }
             (SyntaxKind::IfExpression, Expr::If(c, a, b)) => {
-                if children.len() != 3 {
+                if children.len() == 2 && **b == Expr::Unit {
+                    self.expr(path.child(AstStep::Condition), c, children[0])?;
+                    self.expr(path.child(AstStep::Then), a, children[1])?;
+                    let end = self.tree.node(node).unwrap().span().end;
+                    self.insert(
+                        &path.child(AstStep::Else),
+                        node,
+                        OriginKind::ImplicitUnit,
+                        Some(Span { start: end, end }),
+                    )?;
+                } else if children.len() == 3 {
+                    for (step, e, n) in [
+                        (AstStep::Condition, c, children[0]),
+                        (AstStep::Then, a, children[1]),
+                        (AstStep::Else, b, children[2]),
+                    ] {
+                        self.expr(path.child(step), e, n)?;
+                    }
+                } else {
                     return Err(fail(&path, "if child count differs"));
-                }
-                for (step, e, n) in [
-                    (AstStep::Condition, c, children[0]),
-                    (AstStep::Then, a, children[1]),
-                    (AstStep::Else, b, children[2]),
-                ] {
-                    self.expr(path.child(step), e, n)?;
                 }
             }
             (SyntaxKind::WhileExpression, Expr::While(c, b)) => {

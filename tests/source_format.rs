@@ -76,7 +76,7 @@ fn source_round_trip_retains_unicode_crlf_tabs_escapes_and_comments() {
 #[test]
 fn lossless_lexer_keeps_original_error_positions() {
     for (source, message) in [
-        ("// λ\r\n\t!", "2:2: unexpected character '!'"),
+        ("// λ\r\n\t?", "2:2: unexpected character '?'"),
         ("\"é\" λ", "1:5: unexpected character 'λ'"),
         ("fn main() { \"\\q\" }", "1:13: unsupported string escape"),
         ("c\"\\0\"", "1:1: unsupported string escape"),
@@ -195,7 +195,7 @@ fn rejects_malformed_unsupported_and_too_deep_source() {
     for source in [
         "fn main(){1 2}",
         "fn main(){",
-        "fn main(){if true {1}}",
+        "fn main(){if true {1} else }",
         "fn main(){/* no block comments */42}",
         "fn main(){\"unterminated}",
         "fn main(){c\"\\0\"}",

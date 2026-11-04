@@ -27,6 +27,7 @@ pub enum Kind {
     Else,
     True,
     False,
+    Not,
     LBrace,
     RBrace,
     Pipe,
@@ -203,6 +204,7 @@ pub(crate) fn lex_diagnostic(source: &str) -> Result<SourceFile<'_>, LexError> {
                 "else" => Kind::Else,
                 "true" => Kind::True,
                 "false" => Kind::False,
+                "not" => Kind::Not,
                 _ => Kind::Ident(s),
             }
         } else if c.is_ascii_digit() {
@@ -245,6 +247,7 @@ pub(crate) fn lex_diagnostic(source: &str) -> Result<SourceFile<'_>, LexError> {
                 '=' if paired('=') => Kind::EqEq,
                 '=' => Kind::Equal,
                 '!' if paired('=') => Kind::Ne,
+                '!' => Kind::Not,
                 '<' if paired('-') => Kind::Assign,
                 '<' if paired('=') => Kind::Le,
                 '<' => Kind::Lt,

@@ -868,8 +868,16 @@ impl Parser {
                     self.expect(Kind::Then)?;
                     self.expr()?
                 };
-                self.expect(Kind::Else)?;
-                let no = if braced { self.block()? } else { self.expr()? };
+                let no = if braced && *self.peek() != Kind::Else {
+                    Expr::Unit
+                } else {
+                    self.expect(Kind::Else)?;
+                    if braced {
+                        self.block()?
+                    } else {
+                        self.expr()?
+                    }
+                };
                 Ok(Expr::If(Box::new(cond), Box::new(yes), Box::new(no)))
             }
             _ => {
@@ -994,7 +1002,7 @@ impl Parser {
             (Kind::LBrace, _) => return result,
             (Kind::LParen, _) if unit => SyntaxKind::UnitExpression,
             (Kind::LParen, _) => SyntaxKind::ParenthesizedExpression,
-            (Kind::Minus, _) => SyntaxKind::UnaryExpression,
+            (Kind::Minus | Kind::Not, _) => SyntaxKind::UnaryExpression,
             (_, Ok(Expr::Call(..))) => SyntaxKind::CallExpression,
             (_, Ok(Expr::Field(..))) => SyntaxKind::FieldExpression,
             (_, Ok(Expr::Var(..))) => SyntaxKind::NameExpression,
@@ -1039,6 +1047,11 @@ impl Parser {
                 .map_err(|_| self.error("integer literal out of i32 range")),
             Kind::True => Ok(Expr::Bool(true)),
             Kind::False => Ok(Expr::Bool(false)),
+            Kind::Not => Ok(Expr::Binary(
+                BinaryOp::Eq,
+                Box::new(self.atom()?),
+                Box::new(Expr::Bool(false)),
+            )),
             Kind::Minus => {
                 if *self.peek() == Kind::Int(2147483648) {
                     self.take();
