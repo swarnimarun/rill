@@ -1,6 +1,8 @@
 #![cfg(all(feature = "c-import", unix))]
 
+use rill::lsp::{analysis, text};
 use std::{
+    collections::BTreeMap,
     fs,
     path::PathBuf,
     process::{Command, Output},
@@ -112,6 +114,45 @@ fn unsupported_referenced_apis_fail_and_unknown_names_are_not_fabricated() {
 }
 
 #[test]
+fn build_snapshots_support_editor_types_and_never_navigate_past_source_end() {
+    let fixture = Fixture::new("editor");
+    let source = "@include(\"api.h\"); fn main() { let answer = api_add(20, 22); answer }";
+    let entry = fixture.0.join("main.rill");
+    fs::write(&entry, source).unwrap();
+    succeeds(&fixture.command("check").output().unwrap());
+    let uri = text::path_to_uri(&entry).unwrap();
+    let overlays = BTreeMap::new();
+    assert!(analysis::diagnostics(&uri, source, &overlays).is_empty());
+    let at = source.find("api_add").unwrap();
+    assert!(analysis::definition(&uri, source, at, &overlays).is_none());
+    let hover = analysis::hover(&uri, source, at, &overlays).unwrap();
+    assert!(hover.to_string().contains("i32"), "{hover}");
+    let completions = analysis::completion(&uri, source, at, &overlays);
+    assert!(
+        completions.iter().any(|item| item["label"] == "api_add"
+            && item["detail"].as_str().is_some_and(|d| d.contains("i32"))),
+        "{completions:?}"
+    );
+    let hints = analysis::inlay_hints(&uri, source, 0..source.len(), &overlays);
+    assert!(
+        hints.iter().any(|hint| hint["label"] == ": i32"),
+        "{hints:?}"
+    );
+    assert!(hints
+        .iter()
+        .all(|hint| hint["position"]["character"].as_u64().unwrap() <= source.len() as u64));
+    fs::write(
+        fixture.0.join("child.h"),
+        "#define API_FLAG ((uint32_t)8)\n",
+    )
+    .unwrap();
+    assert!(
+        !analysis::diagnostics(&uri, source, &overlays).is_empty(),
+        "transitive header change must invalidate snapshot"
+    );
+}
+
+#[test]
 fn running_native_code_cannot_bless_stale_bindings_with_changed_header_contents() {
     let fixture = Fixture::new("header-mutation");
     let header = fixture.0.join("api.h");
@@ -138,6 +179,11 @@ fn running_native_code_cannot_bless_stale_bindings_with_changed_header_contents(
             .unwrap()
             .is_empty(),
         "a pre-run i32 interface must not be paired with post-run u32 header fingerprints"
+    );
+    let uri = text::path_to_uri(&entry).unwrap();
+    assert!(
+        !analysis::diagnostics(&uri, source, &BTreeMap::new()).is_empty(),
+        "editor analysis must reject the stale pre-run interface"
     );
 }
 
