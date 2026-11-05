@@ -94,6 +94,17 @@ def licenses(source, destination):
         raise ValueError(f"no license notices found in {source}")
 
 
+def relocate_sdl_metadata(prefix):
+    # SDL's CMake install writes an absolute staging prefix into pkg-config.
+    # Its other paths already reference this variable; anchor it at the .pc file.
+    path = prefix / "lib/pkgconfig/sdl3.pc"
+    lines = path.read_text().splitlines(keepends=True)
+    if sum(line.startswith("prefix=") for line in lines) != 1:
+        raise ValueError("unexpected SDL pkg-config prefix metadata")
+    path.write_text("".join("prefix=${pcfiledir}/../..\n" if line.startswith("prefix=") else line
+                            for line in lines))
+
+
 def build(work, output, jobs, binary=None):
     target = host_target()
     name = f"rill-{VERSION}-{target}"
@@ -122,6 +133,7 @@ def build(work, output, jobs, binary=None):
             "-DSDL_TEST_LIBRARY=OFF", "-DSDL_EXAMPLES=OFF", "-DSDL_FRAMEWORK=OFF",
             "-DCMAKE_INSTALL_LIBDIR=lib", "-DCMAKE_INSTALL_NAME_DIR=@rpath",
             f"-DCMAKE_INSTALL_RPATH={rpath}"])
+        relocate_sdl_metadata(sdk / "sdl3")
         # Only the validator and its static implementation are needed. Building
         # upstream tests/optimizers would pull unrelated source dependencies.
         spirv_build = stage / "spirv-build"

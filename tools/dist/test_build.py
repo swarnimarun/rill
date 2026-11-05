@@ -1,6 +1,5 @@
 """Offline checks for package input integrity and archive confinement."""
 import io
-import json
 from pathlib import Path
 import tarfile
 import tempfile
@@ -11,6 +10,15 @@ import build
 
 
 class PackagingTests(unittest.TestCase):
+    def test_sdl_pkgconfig_uses_its_installed_location(self):
+        with tempfile.TemporaryDirectory() as temporary:
+            root = Path(temporary)
+            path = root / "lib/pkgconfig/sdl3.pc"
+            path.parent.mkdir(parents=True)
+            path.write_text("prefix=/deleted/staging\nlibdir=${prefix}/lib\nVersion: 3.4.20\n")
+            build.relocate_sdl_metadata(root)
+            self.assertEqual(path.read_text(), "prefix=${pcfiledir}/../..\nlibdir=${prefix}/lib\nVersion: 3.4.20\n")
+
     def test_every_dependency_is_https_and_sha256_pinned(self):
         specs = list(build.LOCK["slang"]["assets"].values())
         specs += [build.LOCK[key] for key in ("sdl3", "spirv-tools", "spirv-headers")]
