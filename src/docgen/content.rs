@@ -35,6 +35,12 @@ macro_rules! chapter {
 const LANGUAGE: &[(&str, &str, &str, &str)] = &[
     chapter!("index", "Rill", "README.md"),
     chapter!("syntax-tour", "Syntax tour", "docs/syntax-tour.md"),
+    chapter!("rust-to-rill", "Moving from Rust", "docs/rust-to-rill.md"),
+    chapter!(
+        "rust-migration-proposals",
+        "Rust migration proposals",
+        "docs/proposals/rust-migration.md"
+    ),
     chapter!(
         "language-features",
         "Language features",

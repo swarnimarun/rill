@@ -1,0 +1,18 @@
+import std.result as result;
+
+type ArithmeticError = DivisionByZero
+
+fn divide(value: i32, divisor: i32) -> result.Result<i32, ArithmeticError> {
+    if divisor == 0 {
+        result.Err(DivisionByZero)
+    } else {
+        result.Ok(value / divisor)
+    }
+}
+
+fn main() {
+    match divide(84, 2) {
+        result.Ok(answer) => answer
+        | result.Err(DivisionByZero) => 0
+    }
+}

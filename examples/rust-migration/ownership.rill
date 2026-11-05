@@ -1,0 +1,14 @@
+import std.alloc as alloc;
+import std.result as result;
+
+fn main() {
+    let outcome = alloc.box_i32(42);
+    match move outcome {
+        result.Ok(owner) => box_read(owner)
+        | result.Err(error) => match error {
+            alloc.InvalidLength => 1
+            | alloc.SizeOverflow => 2
+            | alloc.OutOfMemory => 3
+        }
+    }
+}

@@ -7,6 +7,10 @@ requested systems programming, polymorphism and metaprogramming features.
 It does not establish feature parity with another language. Completion still
 uses the gates in [PLAN.md section 19](../PLAN.md#19-dependency-ordered-delivery-plan).
 
+The [Rust migration guide](rust-to-rill.md) maps common forms to supported
+Rill syntax. [Feature proposals](proposals/rust-migration.md) record the value,
+prerequisites and acceptance cases for missing control flow and other additions.
+
 ## Current feature boundary
 
 | Area | Available | Remaining work |

@@ -4,6 +4,9 @@ Rill is an experimental compiler for the language described in [PLAN.md](PLAN.md
 It currently implements a small sequential subset. It is not yet a stable
 language; see [phase status](docs/phase-status.md) and [remaining work](docs/blockers/remaining-phases.md).
 
+Coming from Rust? Start with the [migration guide](docs/rust-to-rill.md),
+including control-flow alternatives, checked examples and library boundaries.
+
 The `v1` checkpoint includes a [cloud handoff](docs/CLOUD_HANDOFF.md) and
 [continuation plan](docs/CONTINUATION_PLAN.md).
 

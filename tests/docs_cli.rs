@@ -108,6 +108,8 @@ fn language_docs_are_bundled_and_work_without_a_project_or_external_tools() {
         "search.html",
         "language/index.html",
         "language/syntax-tour.html",
+        "language/rust-to-rill.html",
+        "language/rust-migration-proposals.html",
         "assets/style.css",
         "assets/site.js",
         "assets/search-index.js",
@@ -115,6 +117,10 @@ fn language_docs_are_bundled_and_work_without_a_project_or_external_tools() {
         assert!(site.join(file).is_file(), "missing {file}");
     }
     assert!(page(&site, "language/index.html").contains("experimental"));
+    let migration = page(&site, "language/rust-to-rill.html");
+    assert!(migration.contains("id=\"control-flow\""));
+    assert!(migration.contains("rust-migration-proposals.html#control-flow"));
+    assert!(page(&site, "assets/search-index.js").contains("Moving from Rust"));
     assert!(!page(&site, "assets/search-index.js").contains("UNRELATED_PRIVATE_README"));
     assert!(!site.join("project/README.html").exists());
 

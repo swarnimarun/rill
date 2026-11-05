@@ -1,0 +1,12 @@
+type Counter = { value: i32 }
+
+fn advance(inout counter: Counter) {
+    counter.value <- counter.value + 1;
+}
+
+fn main() {
+    let mut counter = record Counter { value = 40 };
+    advance(inout counter);
+    advance(inout counter);
+    counter.value
+}
