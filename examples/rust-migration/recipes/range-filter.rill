@@ -1,0 +1,22 @@
+import std.range as range;
+import std.option as option;
+
+fn sum_odd_between(start: i32, end: i32) -> i32 {
+    let mut cursor = range.new(start, end);
+    let mut sum = 0;
+    while !range.is_empty(cursor) {
+        match range.next(inout cursor) {
+            option.Some(value) => {
+                if value % 2 != 0 {
+                    sum <- sum + value;
+                };
+            }
+            | option.None => ()
+        };
+    };
+    sum
+}
+
+fn main() {
+    sum_odd_between(0, 10)
+}

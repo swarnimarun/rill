@@ -1,0 +1,12 @@
+fn apply_twice(transform, value) {
+    transform(transform(value))
+}
+
+fn make_offset(offset: i32) {
+    fn(value) { value + offset }
+}
+
+fn main() {
+    let add_three = make_offset(3);
+    apply_twice(add_three, 36)
+}

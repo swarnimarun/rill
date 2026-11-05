@@ -8,6 +8,10 @@ ecosystem, general `Vec`/`String`, iterator protocol, async runtime or trait sys
 
 This guide uses implemented syntax. Possible future additions are collected in
 the [migration feature proposals](proposals/rust-migration.md) for discussion.
+Continue with [practical recipes](rust-migration-recipes.md) for range traversal,
+concrete callbacks and supplied-token parsing. The
+[ranked increment queue](proposals/next-language-increments.md) separates useful
+future additions from current working alternatives.
 
 ## Build and run
 
@@ -261,7 +265,27 @@ Run `rill check` on the smallest example first. Parser errors include a line
 and column; semantic errors carry category codes such as `E-TYPE`, `E-NAME`,
 `E-LOAN` and `E-MODULE-PRIVATE`. Full source-span coverage is still incomplete.
 Contextual help is advisory. A hint does not relax the checker or convert
-source automatically.
+source automatically. For example, a local `answer` misspelled as `asnwer`
+through the file loader reports:
+
+```text
+E-MODULE-NAME: @entry: unknown symbol asnwer
+help: did you mean 'answer'?
+```
+
+Suggestions use the actual visible namespace. Private imported names and
+compiler-generated identities are excluded. Tied near matches, short names and
+scopes beyond the bounded suggestion budget produce no arbitrary choice.
+Missing qualified members remain ordinary name errors, even when their names
+are `break`, `continue` or `return`.
+
+Unsupported Rust declaration forms suggest `type`, `record`, `export` or
+`import` where appropriate. Local `: Type` bindings point to function annotations
+and inference; Rust-style `=` mutation points to `<-` and `==`. Unsupported
+`?` and `&` forms explain explicit matching and call-scoped parameter modes.
+Rejected `loop`/`for` syntax and undefined control-flow words link to current
+loop alternatives. These hints preserve strict rejection and source-tree
+recovery rather than guessing the intended program.
 
 1. Check the spelling and import alias. There is no implicit prelude.
 2. Compare syntax with the table and the complete examples above.

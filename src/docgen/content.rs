@@ -37,9 +37,19 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
     chapter!("syntax-tour", "Syntax tour", "docs/syntax-tour.md"),
     chapter!("rust-to-rill", "Moving from Rust", "docs/rust-to-rill.md"),
     chapter!(
+        "rust-migration-recipes",
+        "Rust migration recipes",
+        "docs/rust-migration-recipes.md"
+    ),
+    chapter!(
         "rust-migration-proposals",
         "Rust migration proposals",
         "docs/proposals/rust-migration.md"
+    ),
+    chapter!(
+        "next-language-increments",
+        "Next language increments",
+        "docs/proposals/next-language-increments.md"
     ),
     chapter!(
         "language-features",

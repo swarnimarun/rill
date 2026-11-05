@@ -1,0 +1,33 @@
+import std.cli as cli;
+import std.result as result;
+
+type CountError = ExpectedCountOption | InvalidCount(cli.ParseError) | CountOutOfRange
+
+fn parse_count(token: str) -> result.Result<i32, CountError> {
+    match cli.classify(token, true) {
+        cli.LongValue(name, value) => {
+            if cli.span_equal(token, name, "count") {
+                match cli.parse_i32(token, value) {
+                    result.Ok(count) => {
+                        if count >= 1 && count <= 64 {
+                            result.Ok(count)
+                        } else {
+                            result.Err(CountOutOfRange)
+                        }
+                    }
+                    | result.Err(error) => result.Err(InvalidCount(error))
+                }
+            } else {
+                result.Err(ExpectedCountOption)
+            }
+        }
+        | _ => result.Err(ExpectedCountOption)
+    }
+}
+
+fn main() {
+    match parse_count("--count=8") {
+        result.Ok(count) => count
+        | result.Err(_) => 0
+    }
+}
