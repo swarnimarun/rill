@@ -42,9 +42,10 @@ defaults to 200. Usual native compiler and linker options pass without shell
 parsing. Interpret mode is not a watch option.
 
 Project watch also observes `rill.json`. The command resolves its entry and
-options at startup. Restart watch after changing that recipe. It does not
-implement an incremental compilation cache, and does not skip checking imported
-declarations. See [large library builds](build-performance.md).
+options at startup. Restart watch after changing that recipe. Project
+build/run/watch reuse checked generated C for exact unchanged pure source
+graphs. Changed graphs recheck all imported declarations; C compilation and
+linking always run. See [incremental builds](build-performance.md).
 
 On Unix, Ctrl-C and SIGTERM cancel the watcher, stop its active native process
 group and reap owned children. Compiler cancellation first gives the driver two
@@ -121,12 +122,12 @@ an accepted generation and tracks the last generation it handled. These helpers
 read no filesystem or hidden global state and register no implicit callbacks.
 The [runnable source example](../examples/reload/main.rill) prints `13`.
 
-The experimental [scalar C export API](c-exports.md) now emits checked library
-functions, headers and a versioned interface manifest. It supports direct native
-calls from C, with host-owned integer state and thread-local call-depth guards.
-It does not load a replacement or change a dispatch pointer.
+The experimental [native generation API](native-hot-reload.md) builds on the
+[scalar C export contract](c-exports.md). A Rust host compiles/loads a candidate
+and replaces registered native i32 functions between exclusive synchronous
+calls on macOS/Linux, retaining its own integer state. Failed candidates keep
+the old generation callable. Runtime traps remain process fatal.
 
-Arbitrary native function replacement still requires loader/dispatch,
-quiescence and state-migration work recorded in the
-[native reload blocker](blockers/hot-reload.md). Neither workflow patches
-suspended native frames or transparently migrates live Rill objects.
+General native replacement still needs the wider quiescence and migration
+contracts in the [native reload blocker](blockers/hot-reload.md).
+These workflows do not patch suspended frames or migrate live Rill objects.

@@ -18,6 +18,23 @@ pub(crate) fn emit_i32_library(
     checked: &crate::check::CheckedProgram<'_>,
     exports: &[crate::abi::Export],
 ) -> Result<String, String> {
+    super::c::emit_i32_library(&lower_library(checked, exports)?)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn emit_i32_reload(
+    checked: &crate::check::CheckedProgram<'_>,
+    exports: &[crate::abi::Export],
+    manifest: &str,
+    build_context: &[u8],
+) -> Result<(String, Vec<u8>), String> {
+    super::c::emit_i32_reload(&lower_library(checked, exports)?, manifest, build_context)
+}
+
+fn lower_library(
+    checked: &crate::check::CheckedProgram<'_>,
+    exports: &[crate::abi::Export],
+) -> Result<Library, String> {
     let (program, instances) = super::lower_rooted(checked, None, None, Some(exports))?;
     let exports = exports
         .iter()
@@ -35,7 +52,7 @@ pub(crate) fn emit_i32_library(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    super::c::emit_i32_library(&Library { program, exports })
+    Ok(Library { program, exports })
 }
 
 pub(super) fn verify(library: &Library) -> Result<(), String> {

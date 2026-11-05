@@ -76,6 +76,56 @@ pub(super) fn emit_i32_library(library: &super::library::Library) -> Result<Stri
     emit_mode(&library.program, Some(&library.exports))
 }
 
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) fn emit_i32_reload(
+    library: &super::library::Library,
+    manifest: &str,
+    build_context: &[u8],
+) -> Result<(String, Vec<u8>), String> {
+    // The ordinary independent body and root checks still run before we emit
+    // any dispatcher. Function IDs come from this checked Library, not names
+    // parsed out of generated C or the order of source declarations.
+    let mut c = emit_i32_library(library)?;
+    let mut identity = b"rill-native-i32\0\x01".to_vec();
+    for part in [build_context, manifest.as_bytes()] {
+        let length = u32::try_from(part.len())
+            .map_err(|_| "E-RELOAD: native build metadata exceeds its ABI length".to_string())?;
+        identity.extend_from_slice(&length.to_le_bytes());
+        identity.extend_from_slice(part);
+    }
+    identity.extend_from_slice(&crate::fingerprint::digest(c.as_bytes()));
+    if identity.len() > 128 * 1024 {
+        return Err("E-RELOAD: native build metadata exceeds 128 KiB".into());
+    }
+    c.push_str("\n/* Private versioned host bridge. */\n");
+    c.push_str("static const unsigned char rl_reload_identity[] = {");
+    for byte in &identity {
+        write!(c, "{byte},").unwrap();
+    }
+    c.push_str("};\nuint32_t rill_abi_identity_v1(unsigned char *out, uint32_t capacity) {\n");
+    c.push_str("    uint32_t n = (uint32_t)sizeof(rl_reload_identity);\n    if (out != NULL && capacity >= n) {\n        for (uint32_t i = 0; i < n; ++i) out[i] = rl_reload_identity[i];\n    }\n    return n;\n}\n");
+    c.push_str("uint32_t rill_abi_invoke_v1(uint32_t slot, const int32_t *args, uint32_t count, int32_t *out) {\n    if (out == NULL) return 3;\n    switch (slot) {\n");
+    for (slot, export) in library.exports.iter().enumerate() {
+        let arity = library.program.functions[export.function].params.len();
+        writeln!(c, "    case {slot}:").unwrap();
+        write!(c, "        if (count != {arity}").unwrap();
+        if arity != 0 {
+            c.push_str(" || args == NULL");
+        }
+        c.push_str(") return 2;\n");
+        write!(c, "        *out = rl_fn_{}(", export.function).unwrap();
+        for index in 0..arity {
+            if index != 0 {
+                c.push_str(", ");
+            }
+            write!(c, "args[{index}]").unwrap();
+        }
+        c.push_str(");\n        return 0;\n");
+    }
+    c.push_str("    default: return 1;\n    }\n}\n");
+    Ok((c, identity))
+}
+
 fn emit_mode(
     program: &TypedMain,
     exports: Option<&[super::library::FunctionExport]>,

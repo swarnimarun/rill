@@ -38,6 +38,61 @@ pub struct Artifact {
 /// and terminate the process with status 1. The call-depth limit is 32 Rill
 /// frames per thread; repeated or concurrent host calls retain no Rill state.
 pub fn emit_i32_library(program: &Program, exports: &[Export]) -> Result<Artifact, String> {
+    let (checked, header, manifest) = prepare_i32_library(program, exports)?;
+    let c = crate::typed::emit_i32_library(&checked, exports)?;
+    Ok(Artifact {
+        c,
+        header,
+        manifest,
+    })
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReloadExport {
+    pub name: String,
+    pub arity: usize,
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) struct ReloadArtifact {
+    pub c: String,
+    pub manifest: String,
+    pub exports: Vec<ReloadExport>,
+    pub identity: Vec<u8>,
+}
+
+// This path is intentionally private. A public, editable Artifact is not
+// authority to load native code into the compiler's host process.
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) fn emit_i32_reload(
+    program: &Program,
+    exports: &[Export],
+    build_context: &[u8],
+) -> Result<ReloadArtifact, String> {
+    let mut exports = exports.to_vec();
+    exports.sort_by(|left, right| left.c_name.cmp(&right.c_name));
+    let (checked, _, manifest) = prepare_i32_library(program, &exports)?;
+    let contract = exports
+        .iter()
+        .map(|export| ReloadExport {
+            name: export.c_name.clone(),
+            arity: checked.functions[&export.source].params.len(),
+        })
+        .collect();
+    let (c, identity) =
+        crate::typed::emit_i32_reload(&checked, &exports, &manifest, build_context)?;
+    Ok(ReloadArtifact {
+        c,
+        manifest,
+        exports: contract,
+        identity,
+    })
+}
+
+fn prepare_i32_library<'p>(
+    program: &'p Program,
+    exports: &[Export],
+) -> Result<(crate::check::CheckedProgram<'p>, String, String), String> {
     // Do this first: selecting a valid endpoint must not hide a bad declaration.
     let checked = crate::check::analyze_library(program)?;
     if program
@@ -126,7 +181,6 @@ pub fn emit_i32_library(program: &Program, exports: &[Export]) -> Result<Artifac
         }));
     }
     header.push_str("#ifdef __cplusplus\n}\n#endif\n");
-    let c = crate::typed::emit_i32_library(&checked, exports)?;
     let manifest = serde_json::to_string_pretty(&serde_json::json!({
         "version": 1,
         "abi": "rill-c-i32",
@@ -134,11 +188,7 @@ pub fn emit_i32_library(program: &Program, exports: &[Export]) -> Result<Artifac
     }))
     .map_err(|error| format!("E-ABI: cannot serialize manifest: {error}"))?
         + "\n";
-    Ok(Artifact {
-        c,
-        header,
-        manifest,
-    })
+    Ok((checked, header, manifest))
 }
 
 pub(crate) fn validate_c_name(name: &str) -> Result<(), String> {

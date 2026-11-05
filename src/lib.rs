@@ -4,12 +4,15 @@ pub mod backend;
 pub mod c_import;
 pub mod check;
 mod display;
+#[cfg(any(test, target_os = "macos", target_os = "linux"))]
+mod fingerprint;
 pub mod formatter;
 pub mod functions;
 pub mod interpreter;
 pub mod lexer;
 pub mod lsp;
 pub mod modules;
+pub mod native_reload;
 pub mod parser;
 pub mod reload;
 pub mod source;

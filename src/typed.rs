@@ -45,6 +45,8 @@ mod initialization_tests;
 mod instances;
 mod library;
 pub(crate) use library::emit_i32_library;
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(crate) use library::emit_i32_reload;
 mod logical;
 #[cfg(test)]
 mod logical_tests;

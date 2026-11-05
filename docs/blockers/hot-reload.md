@@ -5,10 +5,19 @@ function bodies while preserving arbitrary live program state. File watching
 and rebuilding/restarting a program provide a useful edit loop. An embedded
 checked-program reload API can replace supported function definitions under
 host control. An experimental scalar C export API now supplies a narrow native
-call boundary. None of these implements native generation replacement or
-live-state migration.
+call boundary. The [native generation API](../native-hot-reload.md) adds
+checked i32 dispatch and replacement between exclusive synchronous host calls
+on macOS/Linux. General live-state migration and concurrent replacement remain
+open.
 
 ## Evidence
+
+The native-generation increment builds source-generated private images, checks
+the complete canonical scalar contract and versioned identity, and resolves a
+fixed dispatcher before publication. Calls and replacement require exclusive
+access; the session is neither Send nor Sync. Failed candidates preserve the
+old generation. These guarantees apply only to that synchronous i32 boundary.
+The historical scalar export evidence below describes its prerequisite.
 
 - [PLAN.md section 14.5](../../PLAN.md#145-practical-development-loop)
   requires an explicitly versioned plugin ABI, state migration and quiescing
@@ -45,6 +54,10 @@ These are concrete missing compiler/runtime contracts. A polling interval,
 shared-library loader or symbol lookup alone cannot discharge them.
 
 ## Required next work
+
+Loading/dispatch, identity checking and quiescence now exist for the exclusive
+synchronous i32 boundary. Wider signatures, retained state and concurrent jobs
+still need the requirements below. No active-frame patching is implemented.
 
 1. Build on the admitted scalar export contract. Add explicit target/compiler
    and build identities, generation content identity and compatibility checks.

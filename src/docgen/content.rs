@@ -66,6 +66,11 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
         "docs/build-performance.md"
     ),
     chapter!("hot-reload", "Reload workflows", "docs/hot-reload.md"),
+    chapter!(
+        "native-hot-reload",
+        "Native function generations",
+        "docs/native-hot-reload.md"
+    ),
     chapter!("c-interop", "C interoperability", "docs/c-interop.md"),
     chapter!("c-exports", "Scalar C exports", "docs/c-exports.md"),
     chapter!(
