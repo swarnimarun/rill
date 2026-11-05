@@ -90,11 +90,33 @@ new reload cases. The regenerated example-project site passes its HTML audit
 across 27 pages, 2,017 links and 191 search addresses. Changed Markdown source
 links also resolve. No generated output is committed.
 
-The full aggregate regression run started at the typed-export implementation
-before the later admission-only fix and additional tests. It is still running
-at this feature checkpoint; its outcome will be recorded separately. The final
-targeted runs above exercise the current admission implementation. This record
-does not substitute their counts for a completed full matrix.
+## Aggregate native matrix
+
+```sh
+SDKROOT="$(xcrun --show-sdk-path)" cargo test --locked --no-fail-fast
+```
+
+The complete command exits successfully and reports **1,457 passed, 0 failed
+and 0 ignored** across 142 result groups. This includes native C, configured
+real SDL3, owner cleanup, logical/control representations, module/editor and
+project/watch regressions. Both AArch64 NEON cases pass, including actual vector
+execution and the generated XOR instruction check.
+
+The aggregate run began before the later admission-only fix and additional
+tests. Its initial library and ABI targets contain 530 and 8 tests, respectively;
+its later reload target contains all 10. The final targeted runs above verify
+the current 532 library tests and all 14 ABI tests, plus the final boundary
+selection. These scopes are kept separate rather than presenting the older
+prefix as a full frozen-source run of the final admission change. Counts overlap
+and are not added.
+
+The GPU target has availability-based early returns that the runner counts as
+passes, not ignored tests. A separate `--test sdl3_voxel_gpu -- --nocapture` run
+confirms three hardware preflights return status 77 because the video driver
+adds no displays. The fourth, 256-cubed capacity branch is not enabled without
+`RILL_TEST_GPU_256=1`. All four GPU hardware branches are therefore skipped;
+this is not GPU execution acceptance. No environment or source workaround was
+used to change those outcomes.
 
 ## Limits
 

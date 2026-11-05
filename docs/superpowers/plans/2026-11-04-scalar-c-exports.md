@@ -56,8 +56,9 @@ pub fn emit_i32_library(
 - [x] Commit the verified ABI increment separately; do not push or mark a full PLAN phase complete.
 
 The feature checkpoint records completed targeted evidence. The broader
-aggregate native matrix is running and will receive a separate verification
-update when it finishes. No acceptance phase is marked complete.
+aggregate native matrix finishes with 1,457 reported passes and zero failures;
+its verification update retains the precise pre/post-admission-fix test scope.
+No acceptance phase is marked complete.
 
 ## Review decisions
 
