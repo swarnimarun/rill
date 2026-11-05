@@ -4,11 +4,56 @@ Rill is an experimental compiler for the language described in [PLAN.md](PLAN.md
 It currently implements a small sequential subset. It is not yet a stable
 language; see [phase status](docs/phase-status.md) and [remaining work](docs/blockers/remaining-phases.md).
 
-The `v0.1.0-alpha` setup includes [bundled graphics tools](docs/distribution.md),
-[shader project commands](docs/shaders.md) and a [3D engine example](examples/engine-3d).
-Rill controls its scene, meshes, camera and transforms; a C11 adapter handles
-SDL3 GPU descriptors and resource cleanup. See the [graphics feature audit](docs/graphics-feature-audit.md)
-for the implemented subset and remaining work.
+The `v0.1.0-alpha` SDK bundles SDL3, Raylib, Slang, SPIR-V validation and the
+native bridges used by `std.sdl`, `std.raylib` and `std.slang`. It includes
+headers, runtime libraries, examples, docs and upstream licenses. A platform
+C11 compiler/SDK is still required. See the [distribution guide](docs/distribution.md)
+for the exact package contents and [graphics audit](docs/graphics-feature-audit.md)
+for language features still missing.
+
+## Install the alpha SDK
+
+From this checkout, install a published release into `$HOME/.local`:
+
+```sh
+sh tools/install/install.sh --version v0.1.0-alpha
+```
+
+The installer verifies the archive's SHA-256, keeps the complete SDK in a
+versioned directory and selects it through `bin/rill`. It supports macOS arm64,
+macOS x86_64 and Linux x86_64 with glibc. Add `$HOME/.local/bin` to `PATH` if needed;
+the installer does not edit shell profiles. Installation from GitHub requires
+the release assets to have been published. For a locally built archive:
+
+```sh
+sh tools/install/install.sh --version v0.1.0-alpha \
+  --archive target/dist/rill-0.1.0-alpha-aarch64-apple-darwin.tar.gz \
+  --checksum target/dist/rill-0.1.0-alpha-aarch64-apple-darwin.tar.gz.sha256
+```
+
+Choose your host's asset name. Use `--prefix <directory>` for another install
+location. See [installation and updates](docs/install.md) for retained versions,
+offline installation and failure behavior. To build the SDK archives yourself,
+run `python3 tools/dist/build.py` with Python 3.12+, CMake and Rust installed.
+
+## Try the graphics examples
+
+Copy an installed example from `share/rill/examples` to a writable directory,
+or use the examples in this checkout:
+
+```sh
+rill project run examples/raylib
+rill project run examples/engine-3d
+rill shader build examples/engine-3d/rill.shaders.json
+```
+
+The [Raylib example](examples/raylib) uses the bundled scalar bridge for a 3D
+scene and 2D text. The [SDL3 GPU engine](examples/engine-3d) keeps scene, camera,
+meshes and transforms in Rill while a C11 adapter handles GPU descriptors and
+cleanup. Its shaders use [Slang project tooling](docs/shaders.md). Raylib's
+OpenGL renderer is a separate backend and does not consume those SPIR-V/MSL
+artifacts. [Other SDK library candidates](docs/proposals/graphics-sdk-libraries.md)
+are documented for later decisions.
 
 Coming from Rust? Start with the [migration guide](docs/rust-to-rill.md),
 including control-flow alternatives, checked examples and library boundaries.
@@ -63,6 +108,13 @@ Output defaults to `build/docs/index.html`. Use `-o <directory>` to change it.
 The site includes bundled language guides, project Markdown and source API
 pages with section/symbol links. Search and assets work offline. See the
 [docs command guide](docs/docs-command.md).
+
+Keep language guides in `/docs` and library documentation beside `/stdlib`.
+The [documentation workflow](.github/workflows/docs.yml) builds HTML, checks
+links/search and uploads review artifacts for pull requests. After GitHub Pages
+is enabled for Actions, `v1` pushes publish that generated site. Generated HTML
+stays out of the source branch. See [maintenance and hosting](docs/docs-maintenance.md)
+for local previews and the one-time repository settings.
 
 Install a Rust toolchain and a C11 compiler, then run:
 

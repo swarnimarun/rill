@@ -63,6 +63,7 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
     ),
     chapter!("functions", "Functions", "docs/functions.md"),
     chapter!("projects", "Projects", "docs/projects.md"),
+    chapter!("install", "Installation and updates", "docs/install.md"),
     chapter!("shaders", "Shader projects", "docs/shaders.md"),
     chapter!(
         "distribution",
@@ -78,6 +79,11 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
         "docs-command",
         "Documentation command",
         "docs/docs-command.md"
+    ),
+    chapter!(
+        "docs-maintenance",
+        "Documentation maintenance and hosting",
+        "docs/docs-maintenance.md"
     ),
     chapter!("stdlib", "Standard library", "stdlib/README.md"),
     chapter!(

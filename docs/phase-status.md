@@ -356,7 +356,7 @@ version-2 [project recipes](projects.md) and rebuild/restart watch track these
 inputs without executing manifest shell commands. Stateful GPU pipeline or
 native function replacement across active GPU resources remains future work.
 
-The catalogue has 18 modules, including scalar SDL bindings, pure shader
+The catalogue has 19 modules, including scalar SDL bindings, pure shader
 metadata and a stateless Slang C ABI bridge. The [distribution setup](distribution.md)
 pins Slang/SDL/SPIR-V dependencies and prepares `v0.1.0-alpha` archives and a
 manually gated GitHub release workflow. Publication remains the user's action.

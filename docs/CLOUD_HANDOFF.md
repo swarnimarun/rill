@@ -533,3 +533,9 @@ and prepared release assets; let the user push tags and run publication later.
 A working GPU renderer does not make foreign pointers owned or establish GPU
 resource proofs. Project watch restarts processes. Stateful pipeline replacement
 still needs layout compatibility, quiescence and resource migration design.
+
+The SDK now also includes official pinned Raylib 6.2 and its curated scalar
+bridge. The versioned Unix installer, installation guide, README quickstart and
+GitHub Pages documentation workflow are prepared locally. Keep canonical guides
+in `docs/`; generated HTML is an Actions artifact, not a source branch. See
+[maintenance and hosting](docs-maintenance.md) before changing that pipeline.

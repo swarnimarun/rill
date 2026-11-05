@@ -1,0 +1,109 @@
+name: Documentation
+
+on:
+  pull_request:
+    branches: [v1]
+    paths:
+      - README.md
+      - PLAN.md
+      - docs/**
+      - stdlib/**
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - scripts/check-docs-links.py
+      - scripts/test-docs-search.cjs
+      - .github/workflows/docs.yml
+  push:
+    branches: [v1]
+    paths:
+      - README.md
+      - PLAN.md
+      - docs/**
+      - stdlib/**
+      - src/**
+      - Cargo.toml
+      - Cargo.lock
+      - build.rs
+      - scripts/check-docs-links.py
+      - scripts/test-docs-search.cjs
+      - .github/workflows/docs.yml
+  workflow_dispatch:
+    inputs:
+      deploy:
+        description: Deploy the checked documentation from v1 to GitHub Pages
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    name: Build and check documentation
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    concurrency:
+      group: docs-build-${{ github.event.pull_request.number || github.ref }}
+      cancel-in-progress: true
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v7.1.0
+        with:
+          node-version: '22'
+          package-manager-cache: false
+      - name: Select Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal
+      - name: Build language documentation
+        run: cargo run --locked --release --no-default-features -- docs --language -o target/site
+      - name: Check generated links and search addresses
+        run: python3 scripts/check-docs-links.py target/site
+      - name: Check search UI behavior
+        run: node scripts/test-docs-search.cjs
+      - name: Upload review site
+        uses: actions/upload-artifact@v7.0.2
+        with:
+          name: rill-docs-site
+          path: target/site
+          include-hidden-files: true
+          if-no-files-found: error
+          retention-days: 14
+      - name: Upload Pages site
+        if: github.ref == 'refs/heads/v1' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy))
+        uses: actions/upload-pages-artifact@v5.0.0
+        with:
+          path: target/site
+          include-hidden-files: true
+
+  deploy:
+    name: Deploy documentation
+    needs: build
+    if: github.ref == 'refs/heads/v1' && (github.event_name == 'push' || (github.event_name == 'workflow_dispatch' && inputs.deploy))
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    concurrency:
+      group: pages
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Configure Pages
+        uses: actions/configure-pages@v6.0.0
+        with:
+          enablement: false
+      - name: Deploy checked site
+        id: deployment
+        uses: actions/deploy-pages@v5.0.1
