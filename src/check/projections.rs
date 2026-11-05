@@ -162,7 +162,13 @@ impl Checker {
                 break;
             }
         }
-        let index = index.ok_or_else(|| format!("E-RECORD: record has no field '{field}'"))?;
+        let index = index.ok_or_else(|| {
+            crate::diagnostics::unknown_name(
+                format!("E-RECORD: record has no field '{field}'"),
+                field,
+                names.iter().map(String::as_str),
+            )
+        })?;
         if constructor.params.len() != args.len() {
             return Err("E-RECORD: invalid nominal record arity".into());
         }

@@ -37,38 +37,7 @@ fn primitive(name: &str) -> bool {
     )
 }
 pub(super) fn builtin(name: &str) -> bool {
-    matches!(
-        name,
-        "byte_len"
-            | "byte_at"
-            | "bytes_new"
-            | "bytes_len"
-            | "bytes_get"
-            | "bytes_set"
-            | "u8x16_load"
-            | "u8x16_lane"
-            | "u8x16_and"
-            | "u8x16_or"
-            | "u8x16_xor"
-            | "u8x16_eq"
-            | "u8x16_any"
-            | "u8x16_all"
-            | "system_box_i32"
-            | "system_bytes_zeroed"
-            | "system_box_i32_abort"
-            | "box_read"
-            | "box_write"
-            | "system_bytes_zeroed_abort"
-            | "owned_bytes_len"
-            | "owned_bytes_get"
-            | "owned_bytes_set"
-            | "u8"
-            | "u32"
-            | "u64"
-            | "f32"
-            | "c_null"
-            | "is_null"
-    )
+    super::resolve::BUILTIN_VALUES.contains(&name)
 }
 fn qualify(name: &str) -> (Option<&str>, &str) {
     match name.split_once('.') {
@@ -644,7 +613,22 @@ impl Rewrite<'_> {
     }
     fn symbol(&self, name: &str, space: Namespace) -> Result<&Symbol, ModuleError> {
         let (alias, name) = qualify(name);
-        self.resolver.resolve(self.module, alias, name, space)
+        self.resolver
+            .resolve(self.module, alias, name, space)
+            .map_err(|mut error| {
+                if alias.is_none() && space == Namespace::Value && error.code == "E-MODULE-NAME" {
+                    error.message = crate::diagnostics::unknown_value(
+                        format!("{}: unknown symbol {name}", self.module),
+                        name,
+                        self.locals
+                            .keys()
+                            .map(String::as_str)
+                            .chain(self.resolver.local_names(self.module, Namespace::Value))
+                            .chain(super::resolve::BUILTIN_VALUES.iter().copied()),
+                    );
+                }
+                error
+            })
     }
     fn value_name(&self, name: &str) -> Result<String, ModuleError> {
         let s = self.symbol(name, Namespace::Value)?;

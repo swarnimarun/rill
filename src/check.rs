@@ -205,6 +205,29 @@ struct Checker {
     has_owned: bool,
 }
 impl Checker {
+    fn unknown_value(
+        &self,
+        message: String,
+        name: &str,
+        locals: &HashMap<String, Scheme>,
+    ) -> String {
+        crate::diagnostics::unknown_value(
+            message,
+            name,
+            locals
+                .keys()
+                .chain(self.functions.keys())
+                .chain(self.constants.keys())
+                .chain(self.constructors.keys())
+                .map(String::as_str)
+                .chain(crate::modules::resolve::BUILTIN_VALUES.iter().copied()),
+        )
+    }
+
+    fn unknown_local(message: String, name: &str, locals: &HashMap<String, Scheme>) -> String {
+        crate::diagnostics::unknown_value(message, name, locals.keys().map(String::as_str))
+    }
+
     fn local_id(&mut self) -> usize {
         let id = self.next_local;
         self.next_local += 1;
@@ -491,9 +514,30 @@ impl Checker {
             }
             return Ok(ty);
         }
-        let count = self
-            .type_param_count(&t.name)
-            .ok_or_else(|| format!("E-TYPE: unknown type '{}'", t.name))?;
+        let count = self.type_param_count(&t.name).ok_or_else(|| {
+            crate::diagnostics::unknown_name(
+                format!("E-TYPE: unknown type '{}'", t.name),
+                &t.name,
+                vars.keys()
+                    .chain(self.variants.keys())
+                    .map(String::as_str)
+                    .chain([
+                        "i32",
+                        "bool",
+                        "unit",
+                        "str",
+                        "u8",
+                        "u32",
+                        "u64",
+                        "f32",
+                        "ptr",
+                        "const_ptr",
+                        "SystemBoxI32",
+                        "SystemBytes",
+                        "u8x16",
+                    ]),
+            )
+        })?;
         if count != t.args.len() {
             return Err(format!(
                 "E-ARITY: type '{}' expects {count} arguments, got {}",
@@ -517,11 +561,13 @@ impl Checker {
             .map(|c| c.params.len())
     }
     fn constructor_type(&mut self, name: &str) -> Result<(Vec<Type>, Type), String> {
-        let c = self
-            .constructors
-            .get(name)
-            .cloned()
-            .ok_or_else(|| format!("E-NAME: unknown constructor '{name}'"))?;
+        let c = self.constructors.get(name).cloned().ok_or_else(|| {
+            crate::diagnostics::unknown_name(
+                format!("E-NAME: unknown constructor '{name}'"),
+                name,
+                self.constructors.keys().map(String::as_str),
+            )
+        })?;
         let mut vars = HashMap::new();
         let mut args = Vec::new();
         for p in &c.params {
@@ -686,7 +732,9 @@ impl Checker {
             .get(root)
             .map(|binding| self.copy_scheme(binding))
             .transpose()?
-            .ok_or_else(|| format!("E-NAME: unknown owner '{root}'"))?;
+            .ok_or_else(|| {
+                Self::unknown_local(format!("E-NAME: unknown owner '{root}'"), root, locals)
+            })?;
         if exclusive && !binding.mutable {
             return Err(format!("E-LOAN: {name} root '{root}' must be mutable"));
         }
@@ -806,7 +854,9 @@ impl Checker {
                     .get(name)
                     .map(|binding| self.copy_scheme(binding))
                     .transpose()?
-                    .ok_or_else(|| format!("E-NAME: unknown owner '{name}'"))?;
+                    .ok_or_else(|| {
+                        Self::unknown_local(format!("E-NAME: unknown owner '{name}'"), name, locals)
+                    })?;
                 if self.conflicts(binding.local_id, &[], true)? {
                     return Err(format!("E-LOAN: cannot move borrowed root '{name}'"));
                 }
@@ -846,7 +896,7 @@ impl Checker {
                     }
                     return Ok(result);
                 }
-                Err(format!("E-NAME: unknown variable '{n}'"))
+                Err(self.unknown_value(format!("E-NAME: unknown variable '{n}'"), n, locals))
             }
             Expr::Record(name, fields) => {
                 let constructor_name = self
@@ -854,7 +904,18 @@ impl Checker {
                     .get(name)
                     .and_then(|v| v.first())
                     .cloned()
-                    .ok_or_else(|| format!("E-RECORD: unknown record '{name}'"))?;
+                    .ok_or_else(|| {
+                        crate::diagnostics::unknown_name(
+                            format!("E-RECORD: unknown record '{name}'"),
+                            name,
+                            self.constructors.values().filter_map(|constructor| {
+                                constructor
+                                    .record_fields
+                                    .as_ref()
+                                    .map(|_| constructor.owner.as_str())
+                            }),
+                        )
+                    })?;
                 let names = self.constructors[&constructor_name]
                     .record_fields
                     .clone()
@@ -869,10 +930,13 @@ impl Checker {
                 let mut seen = HashSet::new();
                 let mut indices = Vec::new();
                 for (field, value) in fields {
-                    let index = names
-                        .iter()
-                        .position(|n| n == field)
-                        .ok_or_else(|| format!("E-RECORD: unknown field '{field}'"))?;
+                    let index = names.iter().position(|n| n == field).ok_or_else(|| {
+                        crate::diagnostics::unknown_name(
+                            format!("E-RECORD: unknown field '{field}'"),
+                            field,
+                            names.iter().map(String::as_str),
+                        )
+                    })?;
                     if !seen.insert(index) {
                         return Err(format!("E-RECORD: duplicate field '{field}'"));
                     }
@@ -894,7 +958,13 @@ impl Checker {
                     .get(root)
                     .map(|binding| self.copy_scheme(binding))
                     .transpose()?
-                    .ok_or_else(|| format!("E-NAME: unknown record root '{root}'"))?;
+                    .ok_or_else(|| {
+                        Self::unknown_local(
+                            format!("E-NAME: unknown record root '{root}'"),
+                            root,
+                            locals,
+                        )
+                    })?;
                 self.local_uses
                     .insert(expr as *const Expr, binding.local_id);
                 let ty = self.record_field(expr, &binding, field)?;
@@ -910,7 +980,13 @@ impl Checker {
                     .get(root)
                     .map(|binding| self.copy_scheme(binding))
                     .transpose()?
-                    .ok_or_else(|| format!("E-NAME: unknown record root '{root}'"))?;
+                    .ok_or_else(|| {
+                        Self::unknown_local(
+                            format!("E-NAME: unknown record root '{root}'"),
+                            root,
+                            locals,
+                        )
+                    })?;
                 if !binding.mutable {
                     return Err(format!(
                         "E-MUT: cannot assign to immutable binding '{root}'"
@@ -947,7 +1023,9 @@ impl Checker {
                     .get(n)
                     .map(|binding| self.copy_scheme(binding))
                     .transpose()?
-                    .ok_or_else(|| format!("E-NAME: unknown variable '{n}'"))?;
+                    .ok_or_else(|| {
+                        Self::unknown_local(format!("E-NAME: unknown variable '{n}'"), n, locals)
+                    })?;
                 if !binding.mutable {
                     return Err(format!("E-MUT: cannot assign to immutable binding '{n}'"));
                 }
@@ -1062,7 +1140,9 @@ impl Checker {
                         .get(n)
                         .map(|signature| self.copy_function(signature))
                         .transpose()?
-                        .ok_or_else(|| format!("E-NAME: unknown function '{n}'"))?;
+                        .ok_or_else(|| {
+                            self.unknown_value(format!("E-NAME: unknown function '{n}'"), n, locals)
+                        })?;
                     self.instantiate_function(&s)?
                 };
                 if params.len() != args.len() {
@@ -1093,7 +1173,13 @@ impl Checker {
                             .get(name)
                             .map(|binding| self.copy_scheme(binding))
                             .transpose()?
-                            .ok_or_else(|| format!("E-NAME: unknown variable '{name}'"))?;
+                            .ok_or_else(|| {
+                                Self::unknown_local(
+                                    format!("E-NAME: unknown variable '{name}'"),
+                                    name,
+                                    locals,
+                                )
+                            })?;
                         if !binding.mutable {
                             return Err(format!("E-LOAN: inout root '{name}' must be mutable"));
                         }
@@ -1124,7 +1210,11 @@ impl Checker {
                             Expr::Var(name) => locals.get(name).map(|b| (b.local_id, Rc::from([]))),
                             Expr::Field(root, field) => {
                                 let binding = locals.get(root).ok_or_else(|| {
-                                    format!("E-NAME: unknown record root '{root}'")
+                                    Self::unknown_local(
+                                        format!("E-NAME: unknown record root '{root}'"),
+                                        root,
+                                        locals,
+                                    )
                                 })?;
                                 // Infer the projection only once, below. Loan
                                 // identity needs names, not a second instance.
@@ -1487,39 +1577,10 @@ fn analyze_inner(program: &Program, require_main: bool) -> Result<CheckedProgram
         has_owned: false,
     };
     program.native.validate()?;
-    let intrinsic_names: HashSet<&str> = [
-        "u8",
-        "u32",
-        "u64",
-        "f32",
-        "c_null",
-        "is_null",
-        "byte_len",
-        "byte_at",
-        "bytes_new",
-        "bytes_len",
-        "bytes_get",
-        "bytes_set",
-        "u8x16_load",
-        "u8x16_lane",
-        "u8x16_and",
-        "u8x16_or",
-        "u8x16_xor",
-        "u8x16_eq",
-        "u8x16_any",
-        "u8x16_all",
-        "system_box_i32",
-        "system_bytes_zeroed",
-        "system_box_i32_abort",
-        "box_read",
-        "box_write",
-        "system_bytes_zeroed_abort",
-        "owned_bytes_len",
-        "owned_bytes_get",
-        "owned_bytes_set",
-    ]
-    .into_iter()
-    .collect();
+    let intrinsic_names: HashSet<&str> = crate::modules::resolve::BUILTIN_VALUES
+        .iter()
+        .copied()
+        .collect();
     checker.functions.insert(
         "byte_len".into(),
         FunctionType {

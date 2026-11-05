@@ -3,6 +3,7 @@ pub mod ast;
 pub mod backend;
 pub mod c_import;
 pub mod check;
+mod diagnostics;
 mod display;
 #[cfg(any(test, target_os = "macos", target_os = "linux"))]
 mod fingerprint;

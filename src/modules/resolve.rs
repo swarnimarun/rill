@@ -73,57 +73,60 @@ fn valid_identifier(name: &str) -> bool {
         .is_some_and(|c| c.is_ascii_alphabetic() || c == '_')
         && chars.all(|c| c.is_ascii_alphanumeric() || c == '_')
 }
+// Keep reservation, source rewriting and diagnostic candidates on the same
+// vocabulary. These names are intrinsic operations, not ordinary function
+// values; spelling help does not bypass their type, loan or capacity checks.
+pub(crate) const BUILTIN_VALUES: &[&str] = &[
+    "byte_len",
+    "byte_at",
+    "bytes_new",
+    "bytes_len",
+    "bytes_get",
+    "bytes_set",
+    "u8x16_load",
+    "u8x16_lane",
+    "u8x16_and",
+    "u8x16_or",
+    "u8x16_xor",
+    "u8x16_eq",
+    "u8x16_any",
+    "u8x16_all",
+    "system_box_i32",
+    "system_bytes_zeroed",
+    "system_box_i32_abort",
+    "box_read",
+    "box_write",
+    "system_bytes_zeroed_abort",
+    "owned_bytes_len",
+    "owned_bytes_get",
+    "owned_bytes_set",
+    "u8",
+    "u32",
+    "u64",
+    "f32",
+    "c_null",
+    "is_null",
+];
 fn reserved_value(name: &str) -> bool {
-    matches!(
-        name,
-        "byte_len"
-            | "byte_at"
-            | "bytes_new"
-            | "bytes_len"
-            | "bytes_get"
-            | "bytes_set"
-            | "u8x16_load"
-            | "u8x16_lane"
-            | "u8x16_and"
-            | "u8x16_or"
-            | "u8x16_xor"
-            | "u8x16_eq"
-            | "u8x16_any"
-            | "u8x16_all"
-            | "system_box_i32"
-            | "system_bytes_zeroed"
-            | "system_box_i32_abort"
-            | "box_read"
-            | "box_write"
-            | "system_bytes_zeroed_abort"
-            | "owned_bytes_len"
-            | "owned_bytes_get"
-            | "owned_bytes_set"
-            | "u8"
-            | "u32"
-            | "u64"
-            | "f32"
-            | "c_null"
-            | "is_null"
-    )
+    BUILTIN_VALUES.contains(&name)
 }
+const RESERVED_TYPES: &[&str] = &[
+    "i32",
+    "bool",
+    "unit",
+    "str",
+    "u8x16",
+    "SystemBoxI32",
+    "SystemBytes",
+    "u8",
+    "u32",
+    "u64",
+    "f32",
+    "ptr",
+    "const_ptr",
+];
 fn reserved_type(name: &str) -> bool {
-    matches!(
-        name,
-        "i32"
-            | "bool"
-            | "unit"
-            | "str"
-            | "u8x16"
-            | "SystemBoxI32"
-            | "SystemBytes"
-            | "u8"
-            | "u32"
-            | "u64"
-            | "f32"
-            | "ptr"
-            | "const_ptr"
-    )
+    RESERVED_TYPES.contains(&name)
 }
 impl Resolver {
     /// Build an index from declarations provided for every graph node.
@@ -261,7 +264,14 @@ impl Resolver {
             .ok_or_else(|| error("E-MODULE-GRAPH", format!("unknown module {module}")))?;
         let (target, external) = if let Some(alias) = alias {
             let target = scope.aliases.get(alias).ok_or_else(|| {
-                error("E-MODULE-ALIAS", format!("{module}: unknown alias {alias}"))
+                error(
+                    "E-MODULE-ALIAS",
+                    crate::diagnostics::unknown_name(
+                        format!("{module}: unknown alias {alias}"),
+                        alias,
+                        scope.aliases.keys().map(String::as_str),
+                    ),
+                )
             })?;
             (
                 self.scopes
@@ -275,7 +285,39 @@ impl Resolver {
         let symbol = target
             .symbols
             .get(&(namespace, name.to_string()))
-            .ok_or_else(|| error("E-MODULE-NAME", format!("{module}: unknown symbol {name}")))?;
+            .ok_or_else(|| {
+                let candidates = target
+                    .symbols
+                    .values()
+                    .filter_map(|symbol| {
+                        (symbol.kind.namespace() == namespace && (!external || symbol.exported))
+                            .then_some(symbol.name.as_str())
+                    })
+                    .chain(
+                        RESERVED_TYPES
+                            .iter()
+                            .copied()
+                            .filter(|_| !external && namespace == Namespace::Type),
+                    )
+                    .chain(
+                        BUILTIN_VALUES
+                            .iter()
+                            .copied()
+                            .filter(|_| !external && namespace == Namespace::Value),
+                    );
+                let message = format!("{module}: unknown symbol {name}");
+                error(
+                    "E-MODULE-NAME",
+                    match namespace {
+                        Namespace::Value if !external => {
+                            crate::diagnostics::unknown_value(message, name, candidates)
+                        }
+                        Namespace::Value | Namespace::Type => {
+                            crate::diagnostics::unknown_name(message, name, candidates)
+                        }
+                    },
+                )
+            })?;
         if external && !symbol.exported {
             return Err(error(
                 "E-MODULE-PRIVATE",
@@ -283,6 +325,18 @@ impl Resolver {
             ));
         }
         Ok(symbol)
+    }
+    pub(crate) fn local_names(
+        &self,
+        module: &str,
+        namespace: Namespace,
+    ) -> impl Iterator<Item = &str> {
+        self.scopes
+            .get(module)
+            .into_iter()
+            .flat_map(|scope| scope.symbols.values())
+            .filter(move |symbol| symbol.kind.namespace() == namespace)
+            .map(|symbol| symbol.name.as_str())
     }
     pub fn module_id(&self, module: &str) -> Option<ModuleId> {
         self.scopes.get(module).map(|scope| scope.id)

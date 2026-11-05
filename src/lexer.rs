@@ -261,10 +261,15 @@ pub(crate) fn lex_diagnostic(source: &str) -> Result<SourceFile<'_>, LexError> {
                 '|' if paired('>') => Kind::PipeForward,
                 '|' => Kind::Pipe,
                 _ => {
+                    let help = match c {
+                        '?' => "\nhelp: The `?` propagation operator is not implemented. Handle a result explicitly with `match`.",
+                        '&' => "\nhelp: Borrowed parameters use `read` or `inout`; Rust-style `&` references are not implemented.",
+                        _ => "",
+                    };
                     return Err(error(
                         chars.position,
-                        format!("{start_line}:{start_column}: unexpected character {c:?}"),
-                    ))
+                        format!("{start_line}:{start_column}: unexpected character {c:?}{help}"),
+                    ));
                 }
             }
         };

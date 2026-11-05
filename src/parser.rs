@@ -143,6 +143,51 @@ impl Parser {
     }
     fn error(&self, message: &str) -> String {
         let t = &self.tokens[self.pos];
+        let help = if (message.starts_with("expected ';'") || message == "expected Let")
+            && *self.peek() == Kind::LBrace
+            && self.pos > 0
+            && matches!(&self.tokens[self.pos - 1].kind, Kind::Ident(name) if name == "loop")
+        {
+            Some("If you intended an unconditional `loop` expression, write `while true { ... };`. Built-in `loop` syntax is not implemented.")
+        } else if *self.peek() == Kind::In
+            && self.pos > 1
+            && matches!(self.tokens[self.pos - 1].kind, Kind::Ident(_))
+            && matches!(&self.tokens[self.pos - 2].kind, Kind::Ident(name) if name == "for")
+        {
+            Some("If you intended a `for name in ...` loop, use explicit mutable index or state with `while`. Iterator `for` syntax is not implemented.")
+        } else if message == "expected Let" {
+            match &t.kind {
+                Kind::Ident(name) => match name.as_str() {
+                    "struct" => Some("Declare a record with `type Name = { field: i32 }`; construct it with `record Name { field = value }`."),
+                    "enum" => Some("Declare an enum with `type Name = First | Second(i32)` and handle variants with `match`."),
+                    "pub" => Some("Module declarations use `export fn`, `export type`, or `export let` for public names."),
+                    "use" | "mod" => Some("Load a module with `import module;` or `import module as alias;` before declarations. Qualified names use dots."),
+                    "impl" | "trait" => Some("Traits and impl blocks are not implemented. Pass ordinary functions or explicit record values instead."),
+                    "async" => Some("Async functions are not implemented. Use an ordinary `fn` for the supported sequential subset."),
+                    _ => None,
+                },
+                _ => None,
+            }
+        } else if *self.peek() == Kind::Equal && message.starts_with("expected ';'") {
+            Some("Use `<-` to mutate a `let mut` binding, or `==` to compare values.")
+        } else if *self.peek() == Kind::Not
+            && self.pos > 0
+            && self.adjacent[self.pos]
+            && matches!(self.tokens[self.pos - 1].kind, Kind::Ident(_))
+            && self
+                .tokens
+                .get(self.pos + 1)
+                .is_some_and(|next| next.kind == Kind::LParen)
+        {
+            Some("Rust-style `name!(...)` macros are not implemented. Call a supported function with `name(...)`.")
+        } else {
+            None
+        };
+        let mut detail = format!("{}:{}: {} (found {:?})", t.line, t.column, message, t.kind);
+        if let Some(help) = help {
+            detail.push_str("\nhelp: ");
+            detail.push_str(help);
+        }
         self.error_at(
             self.pos,
             if message.starts_with("E-PARSE-DEPTH:") {
@@ -150,8 +195,17 @@ impl Parser {
             } else {
                 DiagnosticCode::Syntax
             },
-            format!("{}:{}: {} (found {:?})", t.line, t.column, message, t.kind),
+            detail,
         )
+    }
+    fn local_equal(&mut self) -> Result<(), String> {
+        if *self.peek() == Kind::Colon {
+            return Err(format!(
+                "{}\nhelp: Local type annotations are not implemented. Omit `: Type` to infer the local type; parameters and function results can be annotated.",
+                self.error("expected Equal")
+            ));
+        }
+        self.expect(Kind::Equal)
     }
     fn expect(&mut self, kind: Kind) -> Result<(), String> {
         if self.peek() == &kind {
@@ -552,7 +606,7 @@ impl Parser {
                 false
             };
             let name = self.name()?;
-            self.expect(Kind::Equal)?;
+            self.local_equal()?;
             let value = self.expr()?;
             if *self.peek() != Kind::Semi {
                 return Err(self.error("expected ';' after local binding"));
@@ -877,7 +931,7 @@ impl Parser {
                     false
                 };
                 let name = self.name()?;
-                self.expect(Kind::Equal)?;
+                self.local_equal()?;
                 let value = self.expr()?;
                 self.expect(Kind::In)?;
                 let body = self.expr()?;
