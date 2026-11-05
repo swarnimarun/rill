@@ -10,6 +10,7 @@ pub mod lexer;
 pub mod lsp;
 pub mod modules;
 pub mod parser;
+pub mod reload;
 pub mod source;
 pub mod source_map;
 pub mod syntax;

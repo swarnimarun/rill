@@ -1,0 +1,95 @@
+import std.result as result;
+
+// Byte offsets into the supplied token, with an exclusive end.
+export type Span = { start: i32; end: i32 }
+export type Token = Positional(Span) | LongOption(Span) | LongValue(Span, Span) | ShortOption(i32) | EndOptions | InvalidOption(Span)
+export type ParseError = InvalidSpan | ExpectedDigit(i32) | InvalidDigit(i32) | IntegerOverflow(i32)
+
+fn alpha(c) {
+    (c >= 65 && c <= 90) || (c >= 97 && c <= 122)
+}
+fn digit(c) { c >= 48 && c <= 57 }
+fn valid_span(text: str, span: Span) {
+    span.start >= 0 && span.end >= span.start && span.end <= byte_len(text)
+}
+
+// Call with options=false after observing EndOptions. A leading negative
+// decimal is positional. Short-option clusters are explicitly unsupported.
+export fn classify(text: str, options: bool) -> Token {
+    let length = byte_len(text);
+    let whole = record Span { start = 0; end = length };
+    if !options || length < 2 || byte_at(text, 0) != 45 {
+        Positional(whole)
+    } else {
+        if byte_at(text, 1) == 45 {
+            if length == 2 { EndOptions } else {
+                let mut end = 2;
+                let mut valid = alpha(byte_at(text, 2));
+                while end < length && byte_at(text, end) != 61 {
+                    let c = byte_at(text, end);
+                    valid <- valid && (alpha(c) || digit(c) || c == 45 || c == 95);
+                    end <- end + 1;
+                };
+                let name = record Span { start = 2; end = end };
+                if !valid { InvalidOption(whole) } else {
+                    if end == length { LongOption(name) } else {
+                        LongValue(name, record Span { start = end + 1; end = length })
+                    }
+                }
+            }
+        } else {
+            if digit(byte_at(text, 1)) { Positional(whole) } else {
+                if length == 2 && alpha(byte_at(text, 1)) {
+                    ShortOption(byte_at(text, 1))
+                } else { InvalidOption(whole) }
+            }
+        }
+    }
+}
+
+// Invalid caller-provided spans compare false instead of indexing the token.
+export fn span_equal(text: str, span: Span, expected: str) -> bool {
+    if !valid_span(text, span) { false } else {
+        if span.end - span.start != byte_len(expected) { false } else {
+            let mut offset = 0;
+            let mut equal = true;
+            while offset < byte_len(expected) && equal {
+                equal <- byte_at(text, span.start + offset) == byte_at(expected, offset);
+                offset <- offset + 1;
+            };
+            equal
+        }
+    }
+}
+
+// Decimal only, optional sign, no whitespace. Leading zeros are accepted.
+// Negative accumulation covers i32::MIN without an overflowing intermediate.
+export fn parse_i32(text: str, span: Span) -> result.Result<i32, ParseError> {
+    if !valid_span(text, span) { result.Err(InvalidSpan) } else {
+        if span.start == span.end { result.Err(ExpectedDigit(span.start)) } else {
+            let first_byte = byte_at(text, span.start);
+            let negative = first_byte == 45;
+            let first = if negative || first_byte == 43 { span.start + 1 } else { span.start };
+            if first == span.end { result.Err(ExpectedDigit(first)) } else {
+                let mut pos = first;
+                let mut value = 0;
+                let mut overflow = false;
+                let limit = if negative { -2147483647 - 1 } else { -2147483647 };
+                while pos < span.end && digit(byte_at(text, pos)) && !overflow {
+                    let d = byte_at(text, pos) - 48;
+                    if value < limit / 10 || (value == limit / 10 && d > 0 - limit % 10) {
+                        overflow <- true;
+                    } else {
+                        value <- value * 10 - d;
+                        pos <- pos + 1;
+                    };
+                };
+                if overflow { result.Err(IntegerOverflow(pos)) } else {
+                    if pos != span.end { result.Err(InvalidDigit(pos)) } else {
+                        result.Ok(if negative { value } else { 0 - value })
+                    }
+                }
+            }
+        }
+    }
+}

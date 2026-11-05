@@ -8,6 +8,7 @@ import std.json_input as input;
 import std.json_output as output;
 import std.result;
 import std.alloc as alloc;
+import std.cli as cli;
 ```
 
 The default alias is the final segment, such as `json_input` or `result`.
@@ -15,6 +16,30 @@ The default alias is the final segment, such as `json_input` or `result`.
 modules, and unknown `std` imports report `E-MODULE-STDLIB` without searching
 the filesystem. No library is linked implicitly. There is no package manager,
 search path, or stable interface version.
+
+`std.cli` parses supplied string tokens without allocation or mutation:
+
+- `Span = { start: i32; end: i32 }` uses zero-based byte offsets and an
+  exclusive end into the supplied string.
+- `classify(text, options)` returns `Token`: `Positional(Span)`,
+  `LongOption(Span)`, `LongValue(name_span, value_span)`, `ShortOption(ascii)`,
+  `EndOptions`, or `InvalidOption(Span)`. Pass `false` after `EndOptions` to
+  make subsequent tokens positional.
+- `span_equal(text, span, expected)` compares bytes, returning `false` for an
+  invalid span.
+- `parse_i32(text, span)` returns `result.Result<i32, cli.ParseError>`, accepting
+  optional `+`/`-`, decimal digits and leading zeros over the full signed range.
+  Errors are `InvalidSpan`, `ExpectedDigit(offset)`, `InvalidDigit(offset)` and
+  `IntegerOverflow(offset)`. Offsets refer to the original token, including
+  when parsing a value inside `--name=value`. The first error wins.
+
+Long names start with an ASCII letter and continue with ASCII letters, digits,
+`_` or `-`. Values can contain arbitrary bytes present in the string, including
+`=`; empty values remain empty spans. Short options have one ASCII letter;
+clusters return `InvalidOption`. Negative decimal tokens remain positional.
+The caller defines options, duplicates, subcommands and separate-token values.
+The module does not provide process-argument input or convert foreign pointers
+to strings. See the [runnable CLI example](../examples/cli/README.md).
 
 `std.result` exports the ordinary algebraic type
 `Result<a, e> = Ok(a) | Err(e)`. Use qualified constructors such as
@@ -106,3 +131,12 @@ using only explicit `std` imports.
 bytes, malformed runtime input, capacity failure, and concatenated writes.
 `tests/json_result.rs` checks typed errors, offsets and unchanged input across
 790 cases through the interpreter and C at both optimization levels.
+
+
+`std.reload` exports `Context = { generation: i32; previous: i32 }`,
+`context(generation, previous)`, `changed(read context)` and
+`first_load(read context)`. A host supplies the accepted generation and the
+last one it handled; a negative previous generation denotes first load.
+These are pure source decisions with explicit inputs, without global state or
+implicit callbacks. See [reload workflows](../docs/hot-reload.md) and the
+[runnable source example](../examples/reload/main.rill).
