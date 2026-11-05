@@ -243,6 +243,7 @@ def build(work, output, jobs, binary=None):
                             ignore=shutil.ignore_patterns("build", "target", ".rill-cache", "__pycache__"))
         for filename in ("README.md", "PLAN.md"):
             shutil.copy2(REPO / filename, share / filename)
+        shutil.copy2(REPO / "tools/install/install.sh", share / "install.sh")
         notices = share / "licenses"
         for key, source in sources.items():
             licenses(source, notices / key)
