@@ -90,6 +90,13 @@ resolved when the command started. Restart `project watch` after
 changing the manifest's entry or output recipe. This mode does not preserve
 process state or replace live function bodies.
 
+Project build/run/watch enable checked generated-C reuse by default, using
+`build/.rill-cache` inside the project. Use `--cache-status` to see hits and
+misses, `--no-incremental` to disable reuse, or `--cache-dir build/other-cache`
+to select another confined project directory. Every native build still compiles
+and links C using the current options and native inputs. See
+[incremental build contracts](build-performance.md#incremental-checked-c-reuse).
+
 
 ## HTML documentation
 

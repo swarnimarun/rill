@@ -1,6 +1,8 @@
+mod build_cache;
 #[cfg(unix)]
 mod config_driver;
 mod docgen;
+mod fingerprint;
 #[cfg(all(feature = "c-import", unix))]
 mod import_worker;
 mod native_headers;
@@ -63,6 +65,11 @@ fn run() -> Result<(), String> {
     }
     let options = BuildOptions::parse(command.to_str().unwrap(), args)?;
     if options.native_config.is_some() {
+        options.report_cache(if options.incremental {
+            "bypass (saved native configuration)"
+        } else {
+            "disabled"
+        });
         #[cfg(unix)]
         return config_driver::consume(command.to_str().unwrap(), Path::new(&path), &options);
         #[cfg(not(unix))]
@@ -77,8 +84,49 @@ fn run() -> Result<(), String> {
     if options.simd == Simd::Neon {
         arguments.push("-DRILL_SIMD_NEON=1".into());
     }
-    let mut prepared = native_headers::load(
-        Path::new(&path),
+    // Even a frontend hit must validate today's C options. Native compilation
+    // and linking below always use the current compiler and environment.
+    rill::c_import::validate_compile_args(&arguments)?;
+    let graph = rill::modules::load(Path::new(&path)).map_err(|error| error.to_string())?;
+    let cache = if !options.incremental {
+        options.report_cache("disabled");
+        None
+    } else if command == "check" || options.interpret {
+        options.report_cache("bypass (checking or interpretation)");
+        None
+    } else {
+        let directory = options
+            .cache_dir
+            .clone()
+            .unwrap_or_else(|| graph.root.join("build/.rill-cache"));
+        if let Some(output) = &options.output {
+            let directory = destination_path(&directory)?;
+            let output = destination_path(Path::new(output))?;
+            if directory.starts_with(&output) || output.starts_with(&directory) {
+                return Err("E-CACHE-PATH: cache directory and executable output must not contain each other; choose another --cache-dir or -o path".into());
+            }
+        }
+        Some(build_cache::Cache::new(directory))
+    };
+    if let Some(cache) = &cache {
+        // Only fully checked, pure programs are stored. An exact source graph
+        // and compiler identity therefore suffice before native preparation.
+        if let Some(c) = cache.lookup(&graph) {
+            options.report_cache("hit");
+            return execute_c(
+                command.to_str().unwrap(),
+                &c,
+                &compiler,
+                &arguments,
+                &options.link_args,
+                &options,
+                || Ok(()),
+            );
+        }
+        options.report_cache("miss");
+    }
+    let mut prepared = native_headers::load_graph(
+        &graph,
         &compiler,
         options.zig_cc,
         arguments,
@@ -88,10 +136,9 @@ fn run() -> Result<(), String> {
     let native_source = !program.native.includes.is_empty()
         || !program.native.links.is_empty()
         || !program.native.packages.is_empty();
-    let cflags = &prepared.cflags;
+    let cflags = prepared.cflags.clone();
     let mut link_args = prepared.link_args.clone();
     link_args.extend(options.link_args.iter().cloned());
-    let mut output = None;
     match command.to_str() {
         Some("check") => {
             if native_source {
@@ -99,46 +146,107 @@ fn run() -> Result<(), String> {
                     &rill::backend::emit(program)?,
                     &compiler,
                     options.zig_cc,
-                    cflags,
+                    &cflags,
                 )?;
             }
             prepared.publish()?;
         }
         Some("run") if options.interpret => {
-            output = Some(format!("{}\n", rill::interpreter::run(program)?));
+            let output = rill::interpreter::run(program)?;
             prepared.publish()?;
+            println!("{output}");
         }
-        Some("emit-c") => {
+        Some("emit-c" | "build" | "run") => {
             let c = rill::backend::emit(program)?;
-            if native_source {
-                rill::c_import::validate_c(&c, &compiler, options.zig_cc, cflags)?;
+            if native_source && command == "emit-c" {
+                rill::c_import::validate_c(&c, &compiler, options.zig_cc, &cflags)?;
             }
-            prepared.publish()?;
-            output = Some(c);
-        }
-        Some("build") => {
-            build_c(
-                &rill::backend::emit(program)?,
+            if !native_source && program.externs.is_empty() && program.constants.is_empty() {
+                if let Some(cache) = &cache {
+                    cache.store(&graph, &c);
+                }
+            }
+            execute_c(
+                command.to_str().unwrap(),
+                &c,
                 &compiler,
+                &cflags,
+                &link_args,
+                &options,
+                || prepared.publish(),
+            )?;
+        }
+        _ => return Err(usage()),
+    }
+    Ok(())
+}
+
+// Resolve existing ancestors without creating directories. This also catches
+// output aliases into the cache before a miss could turn a binary into a dir.
+fn destination_path(path: &Path) -> Result<PathBuf, String> {
+    let mut ancestor = if path.is_absolute() {
+        path.to_owned()
+    } else {
+        env::current_dir()
+            .map_err(|error| format!("E-CACHE-PATH: cannot locate current directory: {error}"))?
+            .join(path)
+    };
+    let mut missing = Vec::new();
+    loop {
+        match ancestor.canonicalize() {
+            Ok(mut resolved) => {
+                for name in missing.into_iter().rev() {
+                    resolved.push(name);
+                }
+                return Ok(resolved);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                let name = ancestor
+                    .file_name()
+                    .ok_or_else(|| format!("E-CACHE-PATH: cannot resolve {}", path.display()))?;
+                missing.push(name.to_owned());
+                ancestor.pop();
+            }
+            Err(error) => {
+                return Err(format!(
+                    "E-CACHE-PATH: cannot resolve {}: {error}",
+                    path.display()
+                ));
+            }
+        }
+    }
+}
+
+fn execute_c(
+    command: &str,
+    c: &str,
+    compiler: &OsStr,
+    cflags: &[OsString],
+    link_args: &[OsString],
+    options: &BuildOptions,
+    publish: impl FnOnce() -> Result<(), String>,
+) -> Result<(), String> {
+    match command {
+        "emit-c" => {
+            publish()?;
+            print!("{c}");
+        }
+        "build" => {
+            build_c(
+                c,
+                compiler,
                 options.zig_cc,
                 cflags,
-                &link_args,
+                link_args,
                 Path::new(options.output.as_ref().unwrap()),
             )?;
-            prepared.publish()?;
+            publish()?;
         }
-        Some("run") => {
+        "run" => {
             let directory = RunDirectory::create()?;
             let binary = directory.0.join("program");
-            build_c(
-                &rill::backend::emit(program)?,
-                &compiler,
-                options.zig_cc,
-                cflags,
-                &link_args,
-                &binary,
-            )?;
-            prepared.publish()?;
+            build_c(c, compiler, options.zig_cc, cflags, link_args, &binary)?;
+            publish()?;
             let status = Command::new(&binary)
                 .status()
                 .map_err(|e| format!("failed to run native program: {e}"))?;
@@ -147,9 +255,6 @@ fn run() -> Result<(), String> {
             }
         }
         _ => return Err(usage()),
-    }
-    if let Some(output) = output {
-        print!("{output}");
     }
     Ok(())
 }
@@ -432,6 +537,9 @@ struct BuildOptions {
     optimization: Optimization,
     simd: Simd,
     native_config: Option<OsString>,
+    incremental: bool,
+    cache_dir: Option<PathBuf>,
+    cache_status: bool,
     #[cfg(unix)]
     timeout_ms: Option<u64>,
 }
@@ -490,8 +598,36 @@ impl BuildOptions {
         let mut simd = None;
         let mut native_config = None;
         let mut timeout_ms = None;
+        let mut incremental = None;
+        let mut cache_dir = None;
+        let mut cache_status = false;
         while let Some(arg) = args.next() {
             match arg.as_os_str() {
+                arg if matches!(arg.to_str(), Some("--incremental" | "--no-incremental")) => {
+                    if incremental.is_some() {
+                        return Err(
+                            "--incremental and --no-incremental cannot be combined or repeated"
+                                .into(),
+                        );
+                    }
+                    incremental = Some(arg == OsStr::new("--incremental"));
+                }
+                arg if arg == OsStr::new("--cache-dir") => {
+                    if cache_dir.is_some() {
+                        return Err("--cache-dir may be specified only once".into());
+                    }
+                    let path = args.next().ok_or("--cache-dir requires a directory")?;
+                    if path.is_empty() {
+                        return Err("--cache-dir requires a nonempty directory".into());
+                    }
+                    cache_dir = Some(PathBuf::from(path));
+                }
+                arg if arg == OsStr::new("--cache-status") => {
+                    if cache_status {
+                        return Err("--cache-status may be specified only once".into());
+                    }
+                    cache_status = true;
+                }
                 arg if arg == OsStr::new("--native-config") => {
                     if native_config.is_some() {
                         return Err("E-C-CONFIG: only one --native-config is supported".into());
@@ -587,6 +723,9 @@ impl BuildOptions {
         if command == "build" && output.is_none() {
             return Err("build requires -o <executable>".into());
         }
+        if incremental == Some(false) && cache_dir.is_some() {
+            return Err("--cache-dir cannot be combined with --no-incremental".into());
+        }
         if interpret && native {
             return Err("--interpret cannot be combined with native compiler options".into());
         }
@@ -616,14 +755,24 @@ impl BuildOptions {
             optimization: optimization.unwrap_or(Optimization::Level3),
             simd: simd.unwrap_or(Simd::Scalar),
             native_config,
+            incremental: incremental.unwrap_or(cache_dir.is_some()),
+            cache_dir,
+            cache_status,
             #[cfg(unix)]
             timeout_ms,
         })
+    }
+
+    fn report_cache(&self, status: &str) {
+        if self.cache_status {
+            eprintln!("rill cache: {status}");
+        }
     }
 }
 
 fn usage() -> String {
     let mut help = String::from("usage: rill lsp\n       rill fmt <source.rill> [--check]\n       rill <check|emit-c> <source.rill> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--c-arg <arg>]...\n       rill run <source.rill> [--interpret | --native] [compiler options]\n       rill build <source.rill> -o <executable> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--simd scalar|neon] [--c-arg <arg>]... [--link-arg <arg>]...\n       rill import-c --header <header> [--function <name>]... [--constant <name>]... [-o <bindings.rill>] [--pkg-config <package>]... [--link <library>]... [--cc <compiler> | --zig-cc] [--c-arg <arg>]... [--clang-resource-dir <path>] [--timeout-ms <1..600000>]\n       rill import-c <selection> --config-out <native.rillcfg> --binding-module <logical.name> --cc <compiler> [--link-arg <validated-input>]...\n       rill import-c --config <native.rillcfg> --cc <compiler> [-o <bindings.rill>]\n       rill import-c --inspect-config <native.rillcfg>\n       rill <check|emit-c|build|run> <source.rill> --native-config <native.rillcfg> --cc <compiler> [--timeout-ms <1..600000>]");
     help.push_str("\n       rill new <directory>\n       rill project <check|build|run|watch|docs> [directory] [options]\n       rill watch <source.rill> [--interval-ms <10..60000>] [--watch <path>]... [--once] [compiler options]\n       rill docs [project-directory] [-o <directory>] [--language] [--open]");
+    help.push_str("\n       incremental options: [--incremental | --no-incremental] [--cache-dir <directory>] [--cache-status]\n       project build/run/watch enable incremental frontend caching by default; check always checks source");
     help
 }

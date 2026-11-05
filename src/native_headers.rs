@@ -1,10 +1,7 @@
 //! Native build preparation. Header tools run here, before ordinary resolution;
 //! editor analysis only reads snapshots published after successful compilation.
 use rill::{ast::Program, c_import, modules};
-use std::{
-    ffi::{OsStr, OsString},
-    path::Path,
-};
+use std::ffi::{OsStr, OsString};
 
 pub(super) struct Prepared {
     pub program: Program,
@@ -24,15 +21,14 @@ impl Prepared {
     }
 }
 
-pub(super) fn load(
-    entry: &Path,
+pub(super) fn load_graph(
+    graph: &modules::ModuleGraph,
     compiler: &OsStr,
     zig_cc: bool,
     arguments: Vec<OsString>,
     interpret: bool,
 ) -> Result<Prepared, String> {
-    let graph = modules::load(entry).map_err(|error| error.to_string())?;
-    let native = modules::headers::native_config(&graph).map_err(|error| error.to_string())?;
+    let native = modules::headers::native_config(graph).map_err(|error| error.to_string())?;
     if interpret
         && (!native.includes.is_empty() || !native.links.is_empty() || !native.packages.is_empty())
     {
@@ -44,7 +40,13 @@ pub(super) fn load(
     let mut cflags = resolved.cflags;
     cflags.extend(arguments);
     c_import::validate_compile_args(&cflags)?;
-    let requests = modules::headers::requests(&graph).map_err(|error| error.to_string())?;
+    // Native configuration is validated above for every module. Pure source
+    // graphs cannot request header bindings and need no second header parse.
+    let requests = if native.includes.is_empty() {
+        Vec::new()
+    } else {
+        modules::headers::requests(graph).map_err(|error| error.to_string())?
+    };
     let needs_import = requests.iter().any(|request| !request.names.is_empty());
     if needs_import {
         complete_sdk(&mut cflags)?;
@@ -55,7 +57,7 @@ pub(super) fn load(
     } else {
         None
     };
-    let mut expanded = graph.clone();
+    let mut expanded = (!requests.is_empty()).then(|| graph.clone());
     let mut snapshots = Vec::new();
     for request in requests {
         if request.names.is_empty() {
@@ -74,17 +76,22 @@ pub(super) fn load(
         };
         let imported = generate(&selection, compiler, zig_cc)?;
         let snapshot = modules::headers::prepare_with_state(
-            &graph,
+            graph,
             &request.module,
             &imported.module,
             &imported.inputs,
         )
         .map_err(|error| error.to_string())?;
-        modules::headers::apply(&mut expanded, &request.module, &imported.module)
-            .map_err(|error| error.to_string())?;
+        modules::headers::apply(
+            expanded.as_mut().unwrap(),
+            &request.module,
+            &imported.module,
+        )
+        .map_err(|error| error.to_string())?;
         snapshots.push(snapshot);
     }
-    let program = modules::compile::lower_graph(&expanded).map_err(|error| error.to_string())?;
+    let program = modules::compile::lower_graph(expanded.as_ref().unwrap_or(graph))
+        .map_err(|error| error.to_string())?;
     Ok(Prepared {
         program,
         cflags,

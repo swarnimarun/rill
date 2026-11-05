@@ -131,6 +131,9 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
         args.extend(options);
         return crate::docgen::run(args.into_iter());
     }
+    if matches!(action.to_str(), Some("build" | "run" | "watch")) {
+        project.configure_cache(&mut options)?;
+    }
     if action == "watch" {
         options.push("--watch".into());
         options.push(project.root.join(MANIFEST).into_os_string());
@@ -293,6 +296,78 @@ impl Project {
         }
         Ok(())
     }
+
+    fn configure_cache(&self, options: &mut Vec<OsString>) -> Result<(), String> {
+        let mut args = options.iter();
+        let mut mode = None;
+        let mut cache_dir = None;
+        while let Some(arg) = args.next() {
+            match arg.to_str() {
+                Some("--incremental") => mode = Some(true),
+                Some("--no-incremental") => mode = Some(false),
+                Some("--cache-dir") => {
+                    if cache_dir.is_some() {
+                        return Err(
+                            "E-PROJECT-CACHE: --cache-dir may be specified only once".into()
+                        );
+                    }
+                    let value = args
+                        .next()
+                        .ok_or("E-PROJECT-CACHE: --cache-dir requires a directory")?;
+                    cache_dir =
+                        Some(relative_path(value.to_str().ok_or(
+                            "E-PROJECT-CACHE: cache directory needs a UTF-8 path",
+                        )?)?);
+                }
+                Some(
+                    "-o" | "--cc" | "--c-arg" | "--link-arg" | "--opt-level" | "--simd"
+                    | "--native-config" | "--timeout-ms" | "--watch" | "--interval-ms",
+                ) => {
+                    args.next();
+                }
+                _ => {}
+            }
+        }
+        if mode == Some(false) && cache_dir.is_none() {
+            return Ok(());
+        }
+        let explicit = cache_dir.is_some();
+        let cache_dir = cache_dir.unwrap_or_else(|| PathBuf::from("build/.rill-cache"));
+        let output = explicit_output(options)?.unwrap_or_else(|| self.output.clone());
+        if cache_dir.starts_with(&output) || output.starts_with(&cache_dir) {
+            if !explicit && mode.is_none() {
+                options.push("--no-incremental".into());
+                return Ok(());
+            }
+            return Err(
+                "E-PROJECT-CACHE: cache directory and executable output must not contain each other; choose another --cache-dir or -o path".into(),
+            );
+        }
+        let mut path = self.root.clone();
+        for component in cache_dir.components() {
+            path.push(component);
+            match fs::symlink_metadata(&path) {
+                Ok(metadata) if metadata.is_dir() && !metadata.file_type().is_symlink() => {}
+                Ok(_) => {
+                    if !explicit && mode.is_none() {
+                        options.push("--no-incremental".into());
+                        return Ok(());
+                    }
+                    return Err("E-PROJECT-CACHE: cache path must use directories inside the project, without symlinks".into());
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+                Err(error) => {
+                    return Err(format!(
+                        "E-PROJECT-CACHE: cannot inspect cache directory: {error}"
+                    ))
+                }
+            }
+        }
+        if !explicit {
+            options.extend([OsString::from("--cache-dir"), cache_dir.into_os_string()]);
+        }
+        Ok(())
+    }
 }
 
 fn relative_path(value: &str) -> Result<PathBuf, String> {
@@ -344,7 +419,7 @@ fn explicit_output(options: &[OsString]) -> Result<Option<PathBuf>, String> {
             }
             Some(
                 "--cc" | "--c-arg" | "--link-arg" | "--opt-level" | "--simd" | "--native-config"
-                | "--timeout-ms",
+                | "--timeout-ms" | "--cache-dir",
             ) => {
                 args.next();
             }

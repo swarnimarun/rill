@@ -49,14 +49,16 @@ impl Options {
                 // named --watch is never reinterpreted as a watcher option.
                 Some(
                     "--cc" | "--c-arg" | "--link-arg" | "--opt-level" | "--simd"
-                    | "--native-config" | "--timeout-ms",
+                    | "--native-config" | "--timeout-ms" | "--cache-dir",
                 ) => {
                     let value = args.next().ok_or_else(|| {
                         format!("E-WATCH: {} requires a value", arg.to_string_lossy())
                     })?;
                     compiler_args.extend([arg, value]);
                 }
-                Some("--zig-cc") => compiler_args.push(arg),
+                Some("--zig-cc" | "--incremental" | "--no-incremental" | "--cache-status") => {
+                    compiler_args.push(arg)
+                }
                 _ => return Err(format!("E-WATCH: unsupported option {arg:?}")),
             }
         }

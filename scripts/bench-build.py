@@ -4,7 +4,8 @@
 Build the compiler with `cargo build --locked --release --bin rill`, then run
 this script. Output is JSON; all generated files stay in a temporary directory.
 Times include process startup and warm filesystem caches, but exclude execution
-of the resulting program. Repeated Rill builds still perform full builds.
+of the resulting program. --incremental also measures checked-C cache hits and
+synthetic source edits. Native compilation/linking still runs on build hits.
 """
 import argparse
 import hashlib
@@ -28,10 +29,19 @@ def execute(arguments):
     return result.stdout
 
 
-def measure(arguments, samples):
+def verify_cache_hit(arguments):
+    result = subprocess.run([str(value) for value in [*arguments, "--cache-status"]],
+                            capture_output=True, check=False)
+    if result.returncode or b"rill cache: hit" not in result.stderr:
+        raise RuntimeError(f"expected a cache hit: {result.stderr.decode(errors='replace')}")
+
+
+def measure(arguments, samples, prepare=lambda: None):
+    prepare()
     execute(arguments)
     times = []
     for _ in range(samples):
+        prepare()
         start = time.perf_counter_ns()
         execute(arguments)
         times.append((time.perf_counter_ns() - start) / 1_000_000)
@@ -86,6 +96,7 @@ def main():
     parser.add_argument("--debug-rill", type=Path)
     parser.add_argument("--cc", default=os.environ.get("CC", "cc"))
     parser.add_argument("--samples", type=int, default=5)
+    parser.add_argument("--incremental", action="store_true")
     parser.add_argument("--unused", type=int, nargs="*", default=[100, 1000, 5000])
     parser.add_argument("--reached", type=int, nargs="*", default=[100, 900])
     arguments = parser.parse_args()
@@ -107,7 +118,7 @@ def main():
         "workloads": [],
     }
     with tempfile.TemporaryDirectory(prefix="rill-build-bench-") as temporary:
-        root = Path(temporary)
+        root = Path(temporary).resolve()
         fixtures = [
             ("factorial", ROOT / "examples/factorial.rill", b"120\n", None),
             ("stdlib_utilities", ROOT / "examples/stdlib/utilities.rill", b"42\n", None),
@@ -138,6 +149,13 @@ def main():
             if debug_rill:
                 result["debug_check"] = measure([debug_rill, "check", entry, "--cc", arguments.cc], arguments.samples)
                 result["debug_emit_c"] = measure([debug_rill, "emit-c", entry, "--cc", arguments.cc], arguments.samples)
+            cache_options = ["--cache-dir", root / f"cache-{ordinal}"]
+            if arguments.incremental:
+                cached_emit = [rill, "emit-c", entry, "--cc", arguments.cc, *cache_options]
+                if execute(cached_emit) != generated:
+                    raise RuntimeError(f"{name}: cached emission changed generated C")
+                verify_cache_hit(cached_emit)
+                result["incremental_emit_c_hit"] = measure(cached_emit, arguments.samples)
             for level in [0, 3]:
                 result[f"c_compile_link_o{level}"] = measure(
                     [arguments.cc, "-std=c11", f"-O{level}", source, "-o", output], arguments.samples
@@ -150,6 +168,29 @@ def main():
                 )
                 if execute([output]) != expected:
                     raise RuntimeError(f"{name}: independently expected output differs at Rill O{level}")
+                if arguments.incremental:
+                    result[f"incremental_build_hit_o{level}"] = measure(
+                        [rill, "build", entry, "--cc", arguments.cc, "--opt-level", level,
+                         "-o", output, *cache_options], arguments.samples,
+                    )
+                    if execute([output]) != expected:
+                        raise RuntimeError(f"{name}: cache-hit program differs at O{level}")
+            if arguments.incremental and entry.is_relative_to(root):
+                # Edit only generated fixtures owned by this temporary directory.
+                edited = entry.with_name("library.rill") if name.startswith("unused_") else entry
+                original = edited.read_bytes()
+                revision = 0
+
+                def change_source():
+                    nonlocal revision
+                    revision += 1
+                    edited.write_bytes(original + f"\n// benchmark edit {revision}\n".encode())
+
+                result["incremental_source_edit_emit_c"] = measure(
+                    cached_emit, arguments.samples, change_source,
+                )
+                if execute(cached_emit) != generated:
+                    raise RuntimeError(f"{name}: comment edit changed generated C")
             report["workloads"].append(result)
     print(json.dumps(report, indent=2))
 

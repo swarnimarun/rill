@@ -116,12 +116,74 @@ Native-header imports, GPU compilation, compiler memory and cross-target builds
 are outside this measurement. The full record includes ranges, smaller sizes,
 the debug-compiler comparison and C-only compile/link timings.
 
+## Incremental checked-C reuse
+
+Project build/run/watch enable incremental frontend reuse by default:
+
+```sh
+rill project build my-tool --cache-status
+rill project watch my-tool --cache-status
+rill project build my-tool --no-incremental
+```
+
+Direct source commands opt in. `--cache-dir` also enables reuse:
+
+```sh
+rill build main.rill -o build/tool --incremental --cache-status
+rill emit-c main.rill --cache-dir build/rill-cache --cache-status
+```
+
+The default directory is `build/.rill-cache` under the entry directory for raw
+source commands, or under the project root for project commands. Explicit raw
+paths resolve from the working directory. Project overrides must stay inside
+the project and use ordinary directories. Cache and executable paths cannot
+contain each other. An implicit project default falls back to disabled reuse
+when it conflicts with an existing path or an unusual executable output path;
+an explicit conflicting cache choice rejects. `--cache-dir` and
+`--no-incremental` cannot be combined.
+
+A hit reuses C emitted after a previous successful whole-program check. The
+loader still reads the entire reachable graph and validates its import and
+filesystem identities. The exact key includes logical module names, path bytes,
+source bytes, imports and an embedded compiler-build identity. That identity
+covers compiler sources, bundled standard-library files, Cargo inputs, compiler
+version, features and build settings. A changed imported declaration, including
+an unused one, cannot reuse a previous checked graph. Changing any source byte
+invalidates the entry, even when emitted C would be identical.
+
+Only programs without native dependency directives, extern functions or native
+constants are stored. Saved native configurations and interpretation bypass
+reuse. `check` always checks source and retains its ordinary backend boundary.
+Native source graphs continue their complete header/dependency checks. Pure
+misses also avoid a redundant header-use parse and graph clone.
+
+Every `build` and native `run`, including hits, validates current C arguments,
+invokes the current C compiler, and links current inputs. C flags, injected
+headers, optimization/SIMD choices and linker arguments therefore take effect
+without depending on a cached toolchain/SDK certificate. No executable or object
+file is reused. Native C compilation can still dominate small builds.
+
+`--cache-status` writes `rill cache: hit`, `miss`, `disabled`, or a bypass reason
+to stderr. It does not change program/emit-C stdout. A native graph can report a
+miss but never writes an eligible entry. A hit reports frontend reuse, not a
+skipped native compilation.
+
+Storage is currently Unix-only and best-effort. Missing, malformed, truncated,
+incompatible or checksum-damaged entries fall back to compilation. Entries are
+published atomically through private no-follow directory handles. Symlinked
+cache ancestry, group/world-writable cache locations and unsupported hosts
+disable storage without failing a valid build. Canonical project/source roots
+work normally; an explicit `/tmp` alias on macOS may need its canonical path.
+The local cache trusts the current user, not arbitrary downloaded build data.
+An entry is bounded to a 64 MiB key and 32 MiB of C. Total storage has no eviction
+policy yet; removing the cache directory forces regeneration.
+
 ## Current limits and next build work
 
 The compiler currently flattens a checked import graph and emits one C
-translation unit. Every build rechecks imported modules and invokes the C
-compiler. This checkpoint adds neither object-file caching nor independent
-package compilation. The module loader currently bounds an entry graph to 256
+translation unit. Cache misses recheck imported modules; every native build
+invokes the C compiler. Checked-C reuse adds neither object-file caching nor
+independent package compilation. The module loader bounds an entry graph to 256
 modules, 64 levels and 1 MiB per source file. Other checker/specialization budgets
 can reject larger inputs explicitly. No support for an arbitrarily massive
 library follows from the lookup improvement.
