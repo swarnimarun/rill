@@ -7,6 +7,29 @@ language; see [phase status](docs/phase-status.md) and [remaining work](docs/blo
 The `v1` checkpoint includes a [cloud handoff](docs/CLOUD_HANDOFF.md) and
 [continuation plan](docs/CONTINUATION_PLAN.md).
 
+Project creation, local builds and source watching are available:
+
+```sh
+cargo run -- new my-tool
+cargo run -- project check my-tool
+cargo run -- project run my-tool
+cargo run -- project build my-tool
+cargo run -- project watch my-tool
+```
+
+A strict versioned `rill.json` selects the entry point and build output.
+See [project commands](docs/projects.md), [build scaling](docs/build-performance.md)
+and [rebuild/restart and function hooks](docs/hot-reload.md).
+A failed watch build keeps the running program alive. Successful rebuilds start
+fresh processes. An optional `rill::reload::Session` API supports checked
+interpreter hooks between calls with host-owned integer state.
+
+The bundled [CLI parser](examples/cli/README.md) classifies supplied string
+tokens and returns checked integers with typed errors. Runtime argv and general
+I/O remain open. `std.reload` supplies explicit generation-context helpers.
+The [feature matrix](docs/language-features.md) covers current records, enums,
+polymorphism, low-level operations and the compiler work still required.
+
 Install a Rust toolchain and a C11 compiler, then run:
 
 ```sh

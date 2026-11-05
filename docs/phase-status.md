@@ -236,3 +236,30 @@ slice. Historical counts above describe their own checkpoints. They are not
 a fresh aggregate result for this port. No P1, P4, P5 or later phase is marked
 complete. General effects, affine closures, foreign ownership and broader
 layout/provenance coverage retain their documented limits.
+
+
+## Project tooling, CLI tokens and reload hooks
+
+The local project driver adds `new` and `project check/build/run/watch` through
+strict version-1 `rill.json` manifests and structured compiler arguments.
+[Project documentation](projects.md) describes path rules and the executable
+example. Native watch builds candidates before replacing the running process;
+a rejected candidate retains it. Default watching follows imported sources,
+with explicit extra native/asset inputs. Unchanged valid input graphs need no
+repeat import discovery. Callable detection/conversion now use indexed source
+declarations; the retained benchmark measures that compiler operation alone.
+
+`std.cli` provides allocation-free classification of supplied static-string
+tokens, spans and checked i32 parsing with typed errors. Runtime argv and general
+I/O remain open. `std.reload` provides explicit generation-context decisions.
+The optional `reload::Session` embeds synchronous, closed integer hooks in the
+checked interpreter; exclusive replacement checks the complete candidate and
+keeps the accepted generation after failure. It does not patch native code.
+See [reload contracts](hot-reload.md), [build scaling](build-performance.md) and
+the [feature matrix](language-features.md). Native per-function ABI/state
+migration remains a [documented blocker](blockers/hot-reload.md).
+
+No phase gate or Rust/Zig feature parity follows from this tooling increment.
+Fresh [verification](verification/2026-11-04-project-cli-reload.md) records this
+work separately from historical counts, including the configured SDL SDK setup
+failure and its passing environment-only retest.
