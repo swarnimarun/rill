@@ -486,3 +486,33 @@ runtime allocation. The [guide](standard-library.md),
 [catalogue](../stdlib/README.md) and [blockers](blockers/standard-library.md)
 describe that boundary and the remaining runtime containers/OS work.
 This is a source-library increment, not a completed P2/P3 phase or stable release.
+
+## Incremental and migration continuation, 5 November
+
+`v1-ernie` is already an ancestor of the current local `v1` work. Fetching it
+found no additional cloud changes to port. Preserve the integrated lineage;
+do not replace the newer checkpoint with that older branch tip.
+
+Project build/run/watch now enable checked generated-C reuse for exact unchanged
+pure graphs. Raw commands opt in. C compilation/linking always run; changed
+graphs still check all declarations. See [build contracts](build-performance.md)
+and [timings](verification/2026-11-05-incremental-speed.md).
+
+The [native generation API](native-hot-reload.md) supports source-generated,
+closed i32 functions with exclusive synchronous replacement and host-owned
+integer state on macOS/Linux. Failed candidates preserve the old generation.
+Runtime traps remain process fatal. Wider interfaces, owned state migration
+and arbitrary active threads/callbacks remain outside this boundary.
+
+The [migration guide](rust-to-rill.md), [recipes](rust-migration-recipes.md) and
+[ranked proposals](proposals/next-language-increments.md) distinguish implemented
+forms from useful future work. Contextual help and spelling suggestions preserve
+strict rejection, namespaces and privacy. The
+[verification record](verification/2026-11-05-tooling.md) distinguishes current
+focused checks, full-suite coverage, compile-only platforms and GPU skips.
+
+String `==`/`!=` now compares exact byte contents, including NUL, in both C
+representations and the checked interpreters. See [search and equality](search-and-equality.md)
+for complete examples and the exact loop-body behavior after finding a match.
+Ordinary record/enum equality and abrupt exits remain unsupported; explicit
+helpers work today and broader rules remain documented proposals.

@@ -178,6 +178,12 @@ The local cache trusts the current user, not arbitrary downloaded build data.
 An entry is bounded to a 64 MiB key and 32 MiB of C. Total storage has no eviction
 policy yet; removing the cache directory forces regeneration.
 
+The [incremental measurements](verification/2026-11-05-incremental-speed.md)
+observe 5,000-unused-declaration emission at 72.6 ms normally and 6.8 ms on a
+hit; full O3 builds take 117.8 ms and 52.6 ms respectively. Small factorial
+builds gain little, while changed-source misses include cache publication
+overhead. These are whole-graph reuse measurements, not separate compilation.
+
 ## Current limits and next build work
 
 The compiler currently flattens a checked import graph and emits one C

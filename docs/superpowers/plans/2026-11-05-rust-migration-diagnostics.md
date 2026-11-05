@@ -36,15 +36,15 @@ fn unknown_name<'a>(message: String, name: &str,
     candidates: impl IntoIterator<Item = &'a str>) -> String;
 ```
 
-- [ ] Add bounded deterministic edit-distance suggestions. Ignore ties, very
+- [x] Add bounded deterministic edit-distance suggestions. Ignore ties, very
   short names and compiler-generated identities.
-- [ ] Integrate unknown local/function/type/field and module-name suggestions.
+- [x] Integrate unknown local/function/type/field and module-name suggestions.
   Imported candidates must be exported and in the requested namespace.
-- [ ] Add contextual help for Rust declaration words, unsupported abrupt flow,
+- [x] Add contextual help for Rust declaration words, unsupported abrupt flow,
   local annotations, assignment and unsupported lexical operators.
-- [ ] Test exact errors and valid similarly named identifiers, privacy, recovery
+- [x] Test exact errors and valid similarly named identifiers, privacy, recovery
   and interpreter/C behavior of the recommended loop patterns.
-- [ ] Run focused parser, syntax, module and checker tests before committing.
+- [x] Run focused parser, syntax, module and checker tests before committing.
 
 ## Task 2: Migration guide and feature decisions
 
@@ -52,13 +52,13 @@ Files: `docs/rust-to-rill.md`, `docs/proposals/rust-migration.md`,
 `examples/rust-migration/`, `README.md`, `docs/language-features.md`,
 `src/docgen/content.rs`, `tests/rust_migration_examples.rs`.
 
-- [ ] Document commands, expression results, mutation, records/enums, modules,
+- [x] Document commands, expression results, mutation, records/enums, modules,
   explicit ownership/loans, checked arithmetic, library and native boundaries.
-- [ ] Provide complete runnable search/filter loop examples using boolean
+- [x] Provide complete runnable search/filter loop examples using boolean
   conditions and guarded bodies. Explain where these patterns differ from
   `break`, `continue`, early return and iterators.
-- [ ] Inventory useful missing features with tradeoffs, prerequisites and
+- [x] Inventory useful missing features with tradeoffs, prerequisites and
   acceptance criteria. Keep implementation decisions open for discussion.
-- [ ] Link the guide into the offline searchable docs catalogue.
-- [ ] Verify examples natively and in the interpreter; verify generated docs
+- [x] Link the guide into the offline searchable docs catalogue.
+- [x] Verify examples natively and in the interpreter; verify generated docs
   links/search and report actual checks before committing.

@@ -65,7 +65,7 @@ Files: `docs/search-and-equality.md`, `examples/search/`,
 
 ## Verification and commit
 
-- [ ] Run focused equality/search tests, malformed verifier tests and existing
+- [x] Run focused equality/search tests, malformed verifier tests and existing
   boolean/primitive/native equality cases, then the full locked suite.
-- [ ] Run formatting, strict Clippy, generated-doc links/search and inspect diffs.
-- [ ] Commit the feature and document actual coverage/skips. No phase completion.
+- [x] Run formatting, strict Clippy, generated-doc links/search and inspect diffs.
+- [x] Commit the feature and document actual coverage/skips. No phase completion.

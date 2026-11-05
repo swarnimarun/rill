@@ -58,7 +58,7 @@ bounded independently testable change over a broad compatibility claim.
 
 ## Structural equality after strings
 
-String `==`/`!=` is a bounded content-comparison increment. Record and enum
+String `==`/`!=` is now implemented as a bounded content comparison. Record and enum
 operators remain a separate proposal. Today an explicit helper can compare
 record fields, or match enum tags and compare active payloads. An implicit
 derived comparison could remove repeated code, but needs these decisions:

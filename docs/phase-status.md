@@ -310,3 +310,33 @@ runtime allocation. The [guide](standard-library.md),
 [catalogue](../stdlib/README.md) and [blockers](blockers/standard-library.md)
 describe that boundary and the remaining runtime containers/OS work.
 This is a source-library increment, not a completed P2/P3 phase or stable release.
+
+## Incremental builds, native generations and migration help
+
+Project build/run/watch reuse checked generated C for exact unchanged pure
+source graphs. Direct commands opt in; changed graphs recheck completely.
+Every native build still compiles/links against current inputs. This is not
+per-module/object caching or independent package compilation. See
+[contracts and measurements](build-performance.md#incremental-checked-c-reuse).
+
+The experimental [native generation API](native-hot-reload.md) replaces scalar
+i32 library generations between exclusive synchronous host calls on
+macOS/Linux. It checks canonical interfaces and versioned build identities,
+retains old code after failed candidates and unloads only between calls. Host
+state remains integers; owned-state migration and retained callbacks remain
+open. Project watch continues process replacement.
+
+[Rust migration](rust-to-rill.md) and [practical recipes](rust-migration-recipes.md)
+document implemented alternatives. Rejection help covers common Rust forms,
+and spelling suggestions use accessible namespaces and existing builtins.
+The [ranked proposals](proposals/next-language-increments.md) leave abrupt exits,
+local annotations and runtime input additions for discussion. Hints do not
+implement those forms. [Verification](verification/2026-11-05-tooling.md) records
+checks, platform limits and hardware skips. PLAN phase gates remain open.
+
+The subsequent [string equality increment](search-and-equality.md) admits
+byte-content `str == str` and `!=`, preserving one left-to-right evaluation
+of each operand in both interpreter/C representations. UTF-8 and embedded NUL
+bytes compare by exact contents. Independent typed checks still reject mixed
+operands, ordering and aggregate equality. Record/enum helpers and guarded
+search examples are checked; derived aggregate equality remains a proposal.

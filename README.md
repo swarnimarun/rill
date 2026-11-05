@@ -30,7 +30,9 @@ interpreter hooks between calls with host-owned integer state.
 The experimental [`rill::abi` API](docs/c-exports.md) emits checked C11 scalar
 libraries, generated headers and versioned interface manifests. The
 [independent C caller example](examples/c-exports) demonstrates the export
-boundary needed before native function replacement.
+boundary. The experimental [native generation API](docs/native-hot-reload.md)
+replaces registered i32 functions between exclusive host calls on macOS/Linux,
+with host-owned integer state. Failed replacements keep the old generation.
 
 The bundled [CLI parser](examples/cli/README.md) classifies supplied string
 tokens and returns checked integers with typed errors. Runtime argv and general
@@ -112,6 +114,10 @@ generated-C source map. A separate [Copy-body origin API](docs/typed-copy-node-o
 now covers pure typed expressions, operands, patterns and local capture/shape
 elaboration with explicit generated and erased provenance. Native, owner-cleanup
 and generated-C byte-range coverage remain separate work.
+
+String `==` and `!=` compare byte contents. Records/enums still need explicit
+field/match helpers. See [search and equality](docs/search-and-equality.md) for
+checked examples and loop exit alternatives.
 
 The primary syntax uses functions, braces and semicolon-separated statements:
 

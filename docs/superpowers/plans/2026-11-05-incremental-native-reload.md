@@ -48,16 +48,16 @@ impl Cache {
 }
 ```
 
-- [ ] Embed a framed SHA-256 build identity covering compiler sources, bundled
+- [x] Embed a framed SHA-256 build identity covering compiler sources, bundled
   modules, Cargo inputs, compiler version, features and build settings.
-- [ ] Store bounded framed keys and C integrity hashes with atomic publication.
+- [x] Store bounded framed keys and C integrity hashes with atomic publication.
   Reject malformed entries and unsafe cache paths without failing compilation.
-- [ ] Add `--incremental`, `--no-incremental`, `--cache-dir`, `--cache-status`.
+- [x] Add `--incremental`, `--no-incremental`, `--cache-dir`, `--cache-status`.
   Project build/run/watch enable reuse by default; raw source commands opt in.
-- [ ] Avoid a redundant parse/use walk for graphs without native includes.
-- [ ] Verify exact source/import invalidation, corrupt entries, compiler failure,
+- [x] Avoid a redundant parse/use walk for graphs without native includes.
+- [x] Verify exact source/import invalidation, corrupt entries, compiler failure,
   unchanged C compilation/linking, project confinement and watch forwarding.
-- [ ] Measure clean, warm reuse and edited-source behavior with expected program
+- [x] Measure clean, warm reuse and edited-source behavior with expected program
   outputs checked outside the timing interval. Commit this independent change.
 
 ## Task 2: Native scalar generations
@@ -71,21 +71,21 @@ and a host C compiler. `Session::call_i32(&mut self, name, arguments)` and
 `Session::replace(&mut self, candidate)` require exclusive access. Session is
 neither Send nor Sync, and never exposes generation function pointers.
 
-- [ ] Emit a private fixed-signature dispatcher using verified function IDs.
+- [x] Emit a private fixed-signature dispatcher using verified function IDs.
   Sort public names and signatures for compatibility; source order is irrelevant.
-- [ ] Bind a bounded identity query to emitted code, interface and build inputs.
-- [ ] Compile to a unique private absolute image path on macOS/Linux. Load,
+- [x] Bind a bounded identity query to emitted code, interface and build inputs.
+- [x] Compile to a unique private absolute image path on macOS/Linux. Load,
   query identity and resolve the dispatcher before replacing the active image.
-- [ ] Reject incompatible candidates and retain the old callable generation on
+- [x] Reject incompatible candidates and retain the old callable generation on
   every preparation/load failure. Increment generation only after publication.
-- [ ] Exercise O0/O3 body/helper changes, reordered exports, repeated reloads,
+- [x] Exercise O0/O3 body/helper changes, reordered exports, repeated reloads,
   signature rejection, bad compiler output, trap subprocesses and host state.
-- [ ] Document host/compiler trust and exact platform limits. Commit separately.
+- [x] Document host/compiler trust and exact platform limits. Commit separately.
 
 ## Final verification
 
-- [ ] Review diffs and untracked files, excluding build output and caches.
-- [ ] Run affected tests, `cargo fmt --all -- --check`, full locked tests and
+- [x] Review diffs and untracked files, excluding build output and caches.
+- [x] Run affected tests, `cargo fmt --all -- --check`, full locked tests and
   `cargo clippy --all-targets -- -D warnings` after freezing compiler sources.
-- [ ] Update build/reload guides, blockers, phase status and cloud handoff with
+- [x] Update build/reload guides, blockers, phase status and cloud handoff with
   actual acceptance evidence. Keep broader language and ABI gates open.
