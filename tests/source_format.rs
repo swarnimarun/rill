@@ -75,15 +75,28 @@ fn source_round_trip_retains_unicode_crlf_tabs_escapes_and_comments() {
 
 #[test]
 fn lossless_lexer_keeps_original_error_positions() {
-    for (source, message) in [
-        ("// λ\r\n\t?", "2:2: unexpected character '?'"),
-        ("\"é\" λ", "1:5: unexpected character 'λ'"),
-        ("fn main() { \"\\q\" }", "1:13: unsupported string escape"),
-        ("c\"\\0\"", "1:1: unsupported string escape"),
-        ("\"hi", "1:1: unterminated string"),
+    for (source, message, help) in [
+        (
+            "// λ\r\n\t?",
+            "2:2: unexpected character '?'",
+            Some("help: The `?` propagation operator is not implemented. Handle a result explicitly with `match`."),
+        ),
+        (
+            "// λ\r\n\t&",
+            "2:2: unexpected character '&'",
+            Some("help: Borrowed parameters use `read` or `inout`; Rust-style `&` references are not implemented."),
+        ),
+        ("\"é\" λ", "1:5: unexpected character 'λ'", None),
+        ("fn main() { \"\\q\" }", "1:13: unsupported string escape", None),
+        ("c\"\\0\"", "1:1: unsupported string escape", None),
+        ("\"hi", "1:1: unterminated string", None),
     ] {
-        assert_eq!(SourceFile::lex(source).unwrap_err(), message);
-        assert_eq!(lexer::lex(source).unwrap_err(), message);
+        let error = SourceFile::lex(source).unwrap_err();
+        assert_eq!(lexer::lex(source).unwrap_err(), error);
+        let mut lines = error.lines();
+        assert_eq!(lines.next(), Some(message));
+        assert_eq!(lines.next(), help);
+        assert_eq!(lines.next(), None);
     }
 }
 
