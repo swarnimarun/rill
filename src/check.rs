@@ -15,6 +15,7 @@ mod layout;
 mod owned_types;
 mod ownership;
 mod projections;
+mod raw_types;
 mod solver;
 mod type_cursor;
 pub(crate) use callables::children as callable_children;

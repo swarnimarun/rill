@@ -63,19 +63,25 @@ names hooks with closed, monomorphic value-mode `i32` parameters and an `i32`
 result. The input is an ordinary checked `ast::Program` library without `main`.
 Owners, foreign declarations, native dependencies and foreign values reject.
 Pure helpers can use ordinary Copy types, records/enums and polymorphism.
+The foreign-value ban includes unused raw signatures, raw declaration fields
+and raw types nested in callable metadata. Admission shares the
+[bounded whole-source type scan](c-exports.md#admitted-interface) used by scalar
+C exports. A rejected replacement keeps the existing generation available.
 
 ```rust
 use rill::{parser, reload::Session};
 
-let mut session = Session::new(
-    parser::parse("fn update(state) { state + 1 }")?,
-    &["update"],
-)?;
-let state = session.call_i32("update", &[40])?;
-let next = parser::parse("fn update(state) { state + 2 }")?;
-session.replace(next)?;
-assert_eq!(session.call_i32("update", &[state])?, 43);
-# Ok::<(), String>(())
+fn main() -> Result<(), String> {
+    let mut session = Session::new(
+        parser::parse("fn update(state) { state + 1 }")?,
+        &["update"],
+    )?;
+    let state = session.call_i32("update", &[40])?;
+    let next = parser::parse("fn update(state) { state + 2 }")?;
+    session.replace(next)?;
+    assert_eq!(session.call_i32("update", &[state])?, 43);
+    Ok(())
+}
 ```
 
 `new` and `replace` check the entire library and emit each hook's checked wrapper
@@ -115,7 +121,12 @@ an accepted generation and tracks the last generation it handled. These helpers
 read no filesystem or hidden global state and register no implicit callbacks.
 The [runnable source example](../examples/reload/main.rill) prints `13`.
 
-Arbitrary native function replacement still requires the exported ABI,
+The experimental [scalar C export API](c-exports.md) now emits checked library
+functions, headers and a versioned interface manifest. It supports direct native
+calls from C, with host-owned integer state and thread-local call-depth guards.
+It does not load a replacement or change a dispatch pointer.
+
+Arbitrary native function replacement still requires loader/dispatch,
 quiescence and state-migration work recorded in the
 [native reload blocker](blockers/hot-reload.md). Neither workflow patches
 suspended native frames or transparently migrates live Rill objects.

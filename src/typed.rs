@@ -43,6 +43,8 @@ mod initialization;
 #[cfg(test)]
 mod initialization_tests;
 mod instances;
+mod library;
+pub(crate) use library::emit_i32_library;
 mod logical;
 #[cfg(test)]
 mod logical_tests;
@@ -354,6 +356,18 @@ fn lower_main_traced<'source>(
     trace: Option<&mut instances::Trace>,
     body_trace: Option<&mut nodes::Trace<'source>>,
 ) -> Result<(TypedMain, instances::Instances), String> {
+    lower_rooted(checked, trace, body_trace, None)
+}
+
+// A library has real typed roots, but no executable entry point. Only the
+// private library module may consume this intermediate before verifying its
+// alternate entry contract; public executable APIs still require main.
+fn lower_rooted<'source>(
+    checked: &CheckedProgram<'source>,
+    trace: Option<&mut instances::Trace>,
+    body_trace: Option<&mut nodes::Trace<'source>>,
+    exports: Option<&[crate::abi::Export]>,
+) -> Result<(TypedMain, instances::Instances), String> {
     let program = checked.program;
     if crate::functions::needs_lowering(program) {
         return Err(
@@ -367,17 +381,25 @@ fn lower_main_traced<'source>(
         );
     }
     let mut control = None;
-    let instances = match instances::Instances::discover_traced(checked, trace) {
-        Ok(instances) => instances,
-        Err(error)
-            if error == instances::BARE_RESULT || error == logical::layout::UNREPRESENTABLE =>
-        {
-            let facts = control::SourceFacts::build(checked)?;
-            let instances = instances::Instances::discover_control(checked, &facts)?;
-            control = Some(facts);
-            instances
+    let instances = if let Some(exports) = exports {
+        let instances = instances::Instances::discover_exports(checked, exports)?;
+        if !instances.binders.is_empty() {
+            return Err("E-ABI: symbolic logical values are unsupported".into());
         }
-        Err(error) => return Err(error),
+        instances
+    } else {
+        match instances::Instances::discover_traced(checked, trace) {
+            Ok(instances) => instances,
+            Err(error)
+                if error == instances::BARE_RESULT || error == logical::layout::UNREPRESENTABLE =>
+            {
+                let facts = control::SourceFacts::build(checked)?;
+                let instances = instances::Instances::discover_control(checked, &facts)?;
+                control = Some(facts);
+                instances
+            }
+            Err(error) => return Err(error),
+        }
     };
     let registry = if control.is_some() {
         adts::Registry::build_control(checked, &instances, &native, control.as_ref())?
@@ -530,7 +552,9 @@ fn lower_main_traced<'source>(
         proof.verify_source(checked)?;
         result.logical.control = Some(std::sync::Arc::new(proof));
     }
-    verify(&result)?;
+    if exports.is_none() {
+        verify(&result)?;
+    }
     Ok((result, instances))
 }
 
@@ -1158,6 +1182,30 @@ impl Lower<'_, '_> {
 /// local identity, mutability, and operation types. This is not an ownership
 /// or effect proof and must not be used to bypass the source checker.
 pub fn verify(program: &TypedMain) -> Result<(), String> {
+    verify_with_entry(program, verify_main_entry)
+}
+
+fn verify_main_entry(program: &TypedMain) -> Result<(), String> {
+    let entry = program
+        .functions
+        .get(program.entry)
+        .ok_or("E-TYPED: invalid entry")?;
+    if matches!(entry.result, ResultRepr::Discarded(_)) {
+        return Err("E-TYPED-CONTROL: main cannot discard its observed result".into());
+    }
+    if matches!(entry.result, ResultRepr::Value(ty) if ty.is_owner()) {
+        return Err("E-TYPED-OWNER: main cannot return an owner".into());
+    }
+    if !entry.params.is_empty() {
+        return Err("E-TYPED: main has parameters".into());
+    }
+    Ok(())
+}
+
+fn verify_with_entry(
+    program: &TypedMain,
+    verify_entry: impl FnOnce(&TypedMain) -> Result<(), String>,
+) -> Result<(), String> {
     if let Some(proof) = &program.logical.control {
         // This performs bounded actual-tree and frozen-witness preflight before
         // any generic recursive consumer. It proves correspondence to a frozen
@@ -1199,19 +1247,7 @@ pub fn verify(program: &TypedMain) -> Result<(), String> {
             return Err(error);
         }
     }
-    let entry = program
-        .functions
-        .get(program.entry)
-        .ok_or("E-TYPED: invalid entry")?;
-    if matches!(entry.result, ResultRepr::Discarded(_)) {
-        return Err("E-TYPED-CONTROL: main cannot discard its observed result".into());
-    }
-    if matches!(entry.result, ResultRepr::Value(ty) if ty.is_owner()) {
-        return Err("E-TYPED-OWNER: main cannot return an owner".into());
-    }
-    if !entry.params.is_empty() {
-        return Err("E-TYPED: main has parameters".into());
-    }
+    verify_entry(program)?;
     let has_owner = program.adts.iter().any(|adt| {
         adt.owned
             || adt.arguments.iter().any(|ty| ty.is_owner())

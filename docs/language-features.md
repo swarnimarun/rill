@@ -18,7 +18,7 @@ uses the gates in [PLAN.md section 19](../PLAN.md#19-dependency-ordered-delivery
 | Functions | Named function values, lambdas, immutable Copy captures, currying, pipelines and composition | Mutable/owned/borrowed captures, affine call capabilities and explicit dynamic erasure |
 | Numbers and vectors | Checked `i32` arithmetic, booleans, explicit `u8x16` operations, portable scalar C and selected AArch64 NEON operations | General integer/float arithmetic, explicit wrapping/saturating operations, target-sized integers and broader SIMD |
 | Memory and borrowing | Hosted owned `i32` boxes and fixed-length owned bytes, recoverable allocation, restricted moves/returns, owner-bearing enums, call-scoped `read`/`inout` and disjoint field loans | Custom allocators, growable vectors/strings, borrowed slices, stored/returned references, general initialization and cleanup |
-| C interop | Target-header checks, automatic referenced-header imports, explicit externs, scalar calls/constants and exact nullable raw pointer transport | Pointer dereference/arithmetic, aggregate ABI adapters, callbacks, C exports and checked foreign lifetime/resource contracts |
+| C interop | Target-header checks, automatic referenced-header imports, explicit externs, scalar calls/constants, exact nullable raw pointer transport and experimental explicit i32 C exports | Pointer dereference/arithmetic, aggregate ABI adapters, callbacks, wider/stable C exports and checked foreign lifetime/resource contracts |
 | Modules and libraries | Local file modules, explicit exports, bundled Result/allocation/JSON/CLI/reload helpers, local project manifests and reusable native bindings | Dependency packages, opaque interfaces, canonical interface serialization and stable ABI versions |
 | Metaprogramming | Bounded compiler specialization and generated C declarations from supported header inputs | Source-level constant evaluation, hygienic macros, reflection, checked builders and bounded `comptime` |
 | Effects and concurrency | Explicit supported allocation and mutation operations | Effect checking, transitive allocation policies, tasks, atomics, thread safety, cancellation, transactions and search |
@@ -66,6 +66,7 @@ Choose an example according to the work the program needs:
 | --- | --- | --- |
 | Small computation or command result | [Factorial](../examples/factorial.rill), [blocks](../examples/blocks/main.rill) | Inferred functions, control flow and a printed `main` result |
 | Reusable source library | [Modules](../examples/modules/main.rill), [library catalogue](../stdlib/README.md) | `import`, aliases, `export fn`, explicit bundled `std` imports |
+| C-facing scalar library | [Scalar exports](../examples/c-exports/README.md) | Explicit i32 C exports, generated headers and interface manifests |
 | Data model and mutation | [Health/shield](../examples/records/README.md) | Nominal records and disjoint mutable field loans |
 | Generic functional code | [Functions](../examples/functions/README.md), [local values](../examples/local-values/README.md) | Generic callbacks, closures, currying and local schemes |
 | Owned buffer processing | [Owned examples](../examples/owned/README.md), [JSON result](../examples/json/result.rill) | Allocation policy, moves, borrows, typed errors and cleanup |

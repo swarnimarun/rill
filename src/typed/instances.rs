@@ -58,19 +58,26 @@ impl Instances {
         checked: &CheckedProgram<'_>,
         trace: Option<&mut Trace>,
     ) -> Result<Self, String> {
-        Self::discover_mode(checked, trace, None)
+        Self::discover_mode(checked, trace, None, None)
     }
     pub fn discover_control(
         checked: &CheckedProgram<'_>,
         control: &super::control::SourceFacts<'_, '_>,
     ) -> Result<Self, String> {
         control.check_pure_subset()?;
-        Self::discover_mode(checked, None, Some(control))
+        Self::discover_mode(checked, None, Some(control), None)
+    }
+    pub fn discover_exports(
+        checked: &CheckedProgram<'_>,
+        exports: &[crate::abi::Export],
+    ) -> Result<Self, String> {
+        Self::discover_mode(checked, None, None, Some(exports))
     }
     fn discover_mode(
         checked: &CheckedProgram<'_>,
         mut trace: Option<&mut Trace>,
         control: Option<&super::control::SourceFacts<'_, '_>>,
+        exports: Option<&[crate::abi::Export]>,
     ) -> Result<Self, String> {
         let control_work =
             control.map(|_| std::cell::RefCell::new(super::control::Budget::default()));
@@ -88,8 +95,6 @@ impl Instances {
             .enumerate()
             .map(|(id, f)| (f.name.clone(), id))
             .collect::<HashMap<_, _>>();
-        let main = *functions.get("main").ok_or("E-TYPED: missing main")?;
-        let signature = &checked.functions["main"];
         let mut result = Self {
             domain: super::logical::Domain::default(),
             functions,
@@ -101,24 +106,58 @@ impl Instances {
             admission: super::logical::layout::Admission::default(),
             control_work,
         };
-        let mut entry_context = Substitution::new();
-        result.freeze_unbound(checked, main, 0, &mut entry_context)?;
-        let entry_key = Key {
-            source: main,
-            demand: Demand::Observe,
-            params: vec![],
-            result: result.substituted_type(
-                checked,
-                &signature.result,
-                &entry_context,
-                control.is_some_and(|control| control.function_may_return(main) == Some(false)),
-            )?,
+        let seeds = if let Some(exports) = exports {
+            if exports.is_empty() {
+                return Err("E-ABI: missing library roots".into());
+            }
+            exports
+                .iter()
+                .map(|export| {
+                    let &source = result
+                        .functions
+                        .get(&export.source)
+                        .ok_or("E-ABI: unknown source root")?;
+                    let signature = &checked.functions[&export.source];
+                    Ok((
+                        Key {
+                            source,
+                            demand: Demand::Observe,
+                            params: signature.params.clone(),
+                            result: signature.result.clone(),
+                        },
+                        None,
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?
+        } else {
+            let main = *result
+                .functions
+                .get("main")
+                .ok_or("E-TYPED: missing main")?;
+            let signature = &checked.functions["main"];
+            let mut entry_context = Substitution::new();
+            result.freeze_unbound(checked, main, 0, &mut entry_context)?;
+            let entry_key = Key {
+                source: main,
+                demand: Demand::Observe,
+                params: vec![],
+                result: result.substituted_type(
+                    checked,
+                    &signature.result,
+                    &entry_context,
+                    control.is_some_and(|control| control.function_may_return(main) == Some(false)),
+                )?,
+            };
+            vec![(entry_key, Some(entry_context))]
         };
-        result.admission.reserve_type(&entry_key.result, 1)?;
-        result.reserve_control_type(&entry_key.result, 2)?;
-        let entry = result.insert_seeded(checked, entry_key.clone(), Some(entry_context))?;
-        if let Some(trace) = &mut trace {
-            trace.request(None, None, entry);
+        let entry_key = seeds[0].0.clone();
+        for (key, context) in seeds {
+            result.admission.reserve_type(&key.result, 1)?;
+            result.reserve_control_type(&key.result, 2)?;
+            let entry = result.insert_seeded(checked, key, context)?;
+            if let Some(trace) = &mut trace {
+                trace.request(None, None, entry);
+            }
         }
         let mut next = 0;
         while next < result.list.len() {

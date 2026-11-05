@@ -4,7 +4,9 @@ Generated native executables do not yet support replacing individual Rill
 function bodies while preserving arbitrary live program state. File watching
 and rebuilding/restarting a program provide a useful edit loop. An embedded
 checked-program reload API can replace supported function definitions under
-host control. Neither establishes a native plugin ABI or live-state migration.
+host control. An experimental scalar C export API now supplies a narrow native
+call boundary. None of these implements native generation replacement or
+live-state migration.
 
 ## Evidence
 
@@ -12,9 +14,10 @@ host control. Neither establishes a native plugin ABI or live-state migration.
   requires an explicitly versioned plugin ABI, state migration and quiescing
   active jobs/callbacks. It excludes assuming that suspended frames, vtables
   and pointers into retired code survive unloading.
-- [The typed C emitter](../../src/typed/c.rs), `emit_c`/`emit_verified`,
-  emits private `static` functions named `rl_fn_<id>`, direct calls and a fixed
-  executable `main`. [The reference emitter](../../src/backend.rs) uses the
+- [The typed C emitter](../../src/typed/c.rs) emits private `static` functions
+  named `rl_fn_<id>` and direct calls. Its executable mode adds a fixed `main`;
+  its new verified scalar-library mode instead emits explicit C wrappers.
+  [The reference emitter](../../src/backend.rs) uses the
   same private indexed-function structure. These indices are internal to one
   compilation and are not exported stable function identities.
 - [Typed instances](../../src/typed/instances.rs) specialize concrete calls.
@@ -27,20 +30,27 @@ host control. Neither establishes a native plugin ABI or live-state migration.
   The checker does not yet track affine captured environments, retained loans
   and destruction across indirect invocation. A reload protocol cannot infer
   their safety from Copy-callable support.
-- [Phase status](../phase-status.md) leaves public interface serialization,
-  general ownership/effects, concurrency and stable ABI work open. The current
-  native build produces an executable, not a versioned reloadable library.
+- [Scalar exports](../c-exports.md) check every source declaration, admit only
+  monomorphic value-i32 endpoints and emit a header and ABI-version-1 JSON
+  manifest. Independent C callers exercise several roots, recursion, repeated
+  calls, traps and separate host threads at O0/O3. A private library verifier
+  retains all ordinary body checks and rejects symbolic/control proofs that
+  assume a single source main. The artifact has no loader or dispatch table.
+- [Phase status](../phase-status.md) leaves canonical public interfaces,
+  general ownership/effects, concurrency and stable ABI work open. The ordinary
+  native CLI still builds executables. Scalar export generation is an embedding
+  API and does not produce a versioned reloadable plugin by itself.
 
 These are concrete missing compiler/runtime contracts. A polling interval,
 shared-library loader or symbol lookup alone cannot discharge them.
 
 ## Required next work
 
-1. Define a deliberately narrow exported ABI. Fix supported scalar signatures,
-   calling conventions, error/trap behavior, interface version and stable
-   function IDs. Give every concrete generic instance its exact signature.
-   Reject unsupported owner, closure, aggregate and pointer forms explicitly.
-2. Emit generated declarations and call indirection for opted-in exports.
+1. Build on the admitted scalar export contract. Add explicit target/compiler
+   and build identities, generation content identity and compatibility checks.
+   The host must match public C names and exact signatures, not private
+   specialization IDs. Wider signatures still need their own checked contract.
+2. Add loading and host call indirection for opted-in exports.
    Preserve ordinary direct calls outside that boundary. Compile and validate
    a candidate generation before making any replacement visible.
 3. Specify host-owned state independently of implementation-private layouts.

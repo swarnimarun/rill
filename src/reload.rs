@@ -109,7 +109,7 @@ fn validate(program: &Program, names: &[&str]) -> Result<BTreeMap<String, usize>
         );
     }
     let checked = crate::check::analyze_library(program)?;
-    if checked.has_owned() || checked.has_c_values() {
+    if checked.has_owned() || checked.has_c_values() || checked.has_raw_source_types()? {
         return Err("E-RELOAD: owners and foreign values are unsupported".into());
     }
     let mut hooks = BTreeMap::new();

@@ -98,6 +98,79 @@ fn native_declarations_dependencies_raw_values_and_owners_reject() {
 }
 
 #[test]
+fn dormant_raw_types_reject_new_and_replacement_without_changing_state() {
+    let mut candidates = [
+        "u8",
+        "u32",
+        "u64",
+        "f32",
+        "ptr<Handle>",
+        "const_ptr<Handle>",
+    ]
+    .map(|ty| {
+        library(&format!(
+            "fn ignored(raw: {ty}) -> i32 {{ 0 }} fn update(x: i32) -> i32 {{ x + 100 }}"
+        ))
+    })
+    .to_vec();
+    for source in [
+        "type Raw = { value: u32 } fn update(x: i32) -> i32 { x + 100 }",
+        "type Raw = { value: ptr<Handle> } type Outer = { inner: Raw } fn ignored(value: Outer) -> i32 { 0 } fn update(x: i32) -> i32 { x + 100 }",
+        "type Phantom<T> = P; fn ignored(value: Phantom<u32>) -> i32 { 0 } fn update(x: i32) -> i32 { x + 100 }",
+        "type Phantom<T> = P; type Raw = { value: Phantom<ptr<Handle>> } fn update(x: i32) -> i32 { x + 100 }",
+        "fn ignored() { let f = fn(raw: u32) { 0 }; 0 } fn update(x: i32) -> i32 { x + 100 }",
+        "type Holder<T> = { callback: T } fn ignored() { let holder = record Holder { callback = fn(raw: const_ptr<Handle>) { 0 } }; 0 } fn update(x: i32) -> i32 { x + 100 }",
+    ] {
+        candidates.push(library(source));
+    }
+    let mut cstr =
+        library("fn ignored(raw: i32) -> i32 { 0 } fn update(x: i32) -> i32 { x + 100 }");
+    cstr.functions[0].params[0]
+        .annotation
+        .as_mut()
+        .unwrap()
+        .name = "$cstr".into();
+    candidates.push(cstr);
+    let mut callable_cstr = library(
+        "fn ignored() { let f = fn(raw: i32) { 0 }; 0 } fn update(x: i32) -> i32 { x + 100 }",
+    );
+    let rill::ast::Expr::Let(_, value, _) = &mut callable_cstr.functions[0].body else {
+        panic!("expected the unused callable binding");
+    };
+    let rill::ast::Expr::Lambda(params, _) = value.as_mut() else {
+        panic!("expected the callable initializer");
+    };
+    params[0].annotation.as_mut().unwrap().name = "$cstr".into();
+    candidates.push(callable_cstr);
+
+    let mut session = Session::new(library("fn update(x) { x + 1 }"), &["update"]).unwrap();
+    assert_eq!(
+        session.replace(library("fn update(x) { x + 2 }")).unwrap(),
+        1
+    );
+    for candidate in candidates {
+        // These are valid source libraries. The pure embedding contract must
+        // reject their dormant raw types before publishing either generation.
+        rill::check::analyze_library(&candidate).unwrap();
+        let Err(error) = Session::new(candidate.clone(), &["update"]) else {
+            panic!("raw library must reject");
+        };
+        assert!(error.starts_with("E-RELOAD:"), "{error}");
+        let error = session.replace(candidate).unwrap_err();
+        assert!(error.starts_with("E-RELOAD:"), "{error}");
+        assert_eq!(session.generation(), 1);
+        assert_eq!(session.call_i32("update", &[40]).unwrap(), 42);
+    }
+}
+
+#[test]
+fn generic_type_parameters_can_shadow_raw_names_in_reload_libraries() {
+    let program = library("type Wrapper<u32> = Wrap(u32); fn update(x: i32) -> i32 { match Wrap(x) { Wrap(value) => value + 1 } }");
+    let session = Session::new(program, &["update"]).unwrap();
+    assert_eq!(session.call_i32("update", &[41]).unwrap(), 42);
+}
+
+#[test]
 fn calls_check_registration_and_arity_and_accept_zero_arguments() {
     let session = Session::new(
         library("fn answer() { 42 } fn sum(x, y) { x + y } fn helper(x) { x + 1 }"),

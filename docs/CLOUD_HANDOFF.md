@@ -455,3 +455,18 @@ See [the docs command guide](docs-command.md) for `--language`, `-o`, `--open`,
 portable URLs, file discovery and bounds. This adds tooling only, with no
 language or phase completion claim. Fresh checks are recorded in the
 [documentation verification](verification/2026-11-04-docs-command.md).
+
+## Experimental scalar C exports
+
+The [`abi::emit_i32_library` API](c-exports.md) emits checked C11 library source,
+public fixed-i32 declarations and an ABI-version-1 manifest without requiring
+an executable main. Real signatures seed verified instances; wrappers use their
+actual sorted identities. Library call-depth guards are thread-local. Explicit
+whole-source admission now rejects dormant raw types in ABI and interpreter
+reload libraries, while failed interpreter replacement retains its generation.
+
+[Verification](verification/2026-11-04-scalar-c-exports.md) includes independent
+C callers, O0/O3 recursion/traps, source reorder, bundled reload hooks and the
+remaining limitations. This is a bounded P5 prerequisite. Native loading,
+dispatch replacement, quiescence, state migration and full phase gates remain
+open.

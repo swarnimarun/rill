@@ -38,8 +38,10 @@ typedef struct { unsigned char unused; } rl_unit;
 typedef struct { const unsigned char *data; size_t len; } rl_str;
 _Static_assert(CHAR_BIT == 8, "Rill strings require 8-bit bytes");
 _Noreturn static void rl_trap(void) { fputs("rill: runtime trap\n", stderr); exit(1); }
-static unsigned rl_call_depth;
-static void rl_enter(void) { if (rl_call_depth >= 32) rl_trap(); ++rl_call_depth; }
+"#;
+const DEPTH: &str = "static unsigned rl_call_depth;\n";
+const LIBRARY_DEPTH: &str = "static _Thread_local unsigned rl_call_depth;\n";
+const RUNTIME_BODY: &str = r#"static void rl_enter(void) { if (rl_call_depth >= 32) rl_trap(); ++rl_call_depth; }
 static void rl_leave(void) { --rl_call_depth; }
 static int32_t rl_byte_len(rl_str s) { if (s.len > INT32_MAX) rl_trap(); return (int32_t)s.len; }
 static int32_t rl_byte_at(rl_str s, int32_t i) { if (i < 0 || (size_t)i >= s.len) rl_trap(); return (int32_t)s.data[i]; }
@@ -66,8 +68,26 @@ pub fn emit_c(program: &TypedMain) -> Result<String, String> {
 }
 
 fn emit_verified(program: &TypedMain) -> Result<String, String> {
+    emit_mode(program, None)
+}
+
+pub(super) fn emit_i32_library(library: &super::library::Library) -> Result<String, String> {
+    super::library::verify(library)?;
+    emit_mode(&library.program, Some(&library.exports))
+}
+
+fn emit_mode(
+    program: &TypedMain,
+    exports: Option<&[super::library::FunctionExport]>,
+) -> Result<String, String> {
     let mut out = program.native.config.preamble()?;
     out.push_str(RUNTIME);
+    out.push_str(if exports.is_some() {
+        LIBRARY_DEPTH
+    } else {
+        DEPTH
+    });
+    out.push_str(RUNTIME_BODY);
     crate::c_import::abi::emit_declarations(
         &program.native.config,
         &program.native.functions,
@@ -249,6 +269,30 @@ fn emit_verified(program: &TypedMain) -> Result<String, String> {
                 emitter.out.push_str("rl_trap();\n}\n");
             }
         }
+    }
+    if let Some(exports) = exports {
+        for export in exports {
+            let function = &program.functions[export.function];
+            write!(emitter.out, "\nint32_t {}(", export.c_name).unwrap();
+            if function.params.is_empty() {
+                emitter.out.push_str("void");
+            }
+            for ordinal in 0..function.params.len() {
+                if ordinal != 0 {
+                    emitter.out.push_str(", ");
+                }
+                write!(emitter.out, "int32_t arg{ordinal}").unwrap();
+            }
+            write!(emitter.out, ") {{ return rl_fn_{}(", export.function).unwrap();
+            for ordinal in 0..function.params.len() {
+                if ordinal != 0 {
+                    emitter.out.push_str(", ");
+                }
+                write!(emitter.out, "arg{ordinal}").unwrap();
+            }
+            emitter.out.push_str("); }\n");
+        }
+        return Ok(emitter.out);
     }
     let entry = &program.functions[program.entry];
     if matches!(entry.result, super::ResultRepr::NoNormal(_)) {

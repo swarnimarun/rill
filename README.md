@@ -24,6 +24,11 @@ A failed watch build keeps the running program alive. Successful rebuilds start
 fresh processes. An optional `rill::reload::Session` API supports checked
 interpreter hooks between calls with host-owned integer state.
 
+The experimental [`rill::abi` API](docs/c-exports.md) emits checked C11 scalar
+libraries, generated headers and versioned interface manifests. The
+[independent C caller example](examples/c-exports) demonstrates the export
+boundary needed before native function replacement.
+
 The bundled [CLI parser](examples/cli/README.md) classifies supplied string
 tokens and returns checked integers with typed errors. Runtime argv and general
 I/O remain open. `std.reload` supplies explicit generation-context helpers.
