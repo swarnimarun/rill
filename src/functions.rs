@@ -27,6 +27,7 @@ enum Job {
 }
 struct Converter<'a> {
     checked: CheckedProgram<'a>,
+    declarations: HashMap<&'a str, &'a Function>,
     output: Program,
     sites: HashMap<usize, &'a Expr>,
     instances: HashMap<Instance, String>,
@@ -38,15 +39,26 @@ struct Converter<'a> {
 }
 
 pub fn needs_lowering(program: &Program) -> bool {
-    let names: std::collections::HashSet<_> =
-        program.functions.iter().map(|f| f.name.as_str()).collect();
+    let mut arities = HashMap::with_capacity(program.functions.len());
+    for function in &program.functions {
+        arities
+            .entry(function.name.as_str())
+            .and_modify(|arity| {
+                // Preserve detection even for malformed duplicate declarations:
+                // a call differs from at least one arity when they disagree.
+                if *arity != Some(function.params.len()) {
+                    *arity = None;
+                }
+            })
+            .or_insert(Some(function.params.len()));
+    }
     let mut pending: Vec<_> = program.functions.iter().map(|f| &f.body).collect();
     while let Some(expr) = pending.pop() {
         if matches!(
             expr,
             Expr::Lambda(..) | Expr::Apply(..) | Expr::FunctionOp(..)
-        ) || matches!(expr, Expr::Var(name) if names.contains(name.as_str()))
-            || matches!(expr, Expr::Call(name,args) if program.functions.iter().any(|f| f.name==*name && f.params.len()!=args.len()))
+        ) || matches!(expr, Expr::Var(name) if arities.contains_key(name.as_str()))
+            || matches!(expr, Expr::Call(name,args) if arities.get(name.as_str()).is_some_and(|arity| *arity != Some(args.len())))
         {
             return true;
         }
@@ -81,6 +93,11 @@ pub fn lower(program: &Program) -> Result<Program, String> {
     }
     let mut converter = Converter {
         checked,
+        declarations: program
+            .functions
+            .iter()
+            .map(|f| (f.name.as_str(), f))
+            .collect(),
         output,
         sites,
         instances: HashMap::new(),
@@ -213,11 +230,9 @@ impl<'a> Converter<'a> {
     }
     fn source_function(&mut self, key: &Instance, name: String) -> Result<Function, String> {
         let source = self
-            .checked
-            .program
-            .functions
-            .iter()
-            .find(|f| f.name == key.source)
+            .declarations
+            .get(key.source.as_str())
+            .copied()
             .ok_or("E-FUNCTION: missing source function")?;
         let signature = &self.checked.functions[&key.source];
         let mut subst = HashMap::new();
@@ -285,11 +300,8 @@ impl<'a> Converter<'a> {
             return Err("E-FUNCTION: invalid base environment".into());
         };
         let arity = if let Some(name) = tag.strip_prefix("$fn:") {
-            self.checked
-                .program
-                .functions
-                .iter()
-                .find(|f| f.name == name)
+            self.declarations
+                .get(name)
                 .ok_or("E-FUNCTION: missing callable declaration")?
                 .params
                 .len()
@@ -652,20 +664,10 @@ impl<'a> Converter<'a> {
                     .collect::<Result<_, _>>()?;
                 self.apply_values(callee, &callable, args, &ty)?
             }
-            Expr::Call(name, args)
-                if self
-                    .checked
-                    .program
-                    .functions
-                    .iter()
-                    .any(|f| f.name == *name) =>
-            {
+            Expr::Call(name, args) if self.declarations.contains_key(name.as_str()) => {
                 let natural = self
-                    .checked
-                    .program
-                    .functions
-                    .iter()
-                    .find(|f| f.name == *name)
+                    .declarations
+                    .get(name.as_str())
                     .ok_or("E-FUNCTION: missing direct declaration")?
                     .params
                     .len();
