@@ -1,0 +1,58 @@
+//! Camera state and movement are pure Rill and can run in the interpreter.
+import math;
+
+export type Camera = {
+    position: math.Vec3;
+    yaw: i32;
+    pitch: i32
+}
+
+export fn camera(mode: i32) -> Camera {
+    record Camera {
+        position = if mode == 2 {
+            math.v3(2, 1, -7)
+        }
+        else {
+            if mode == 1 {
+                math.v3(0, 0, -7)
+            } else {
+                math.v3(0, 1, -7)
+            }
+        };
+        yaw = 0;
+        pitch = if mode == 1 {
+            0
+        } else {
+            -7000
+        }
+    }
+}
+
+export fn look(camera: Camera, yaw: i32, pitch: i32) -> Camera {
+    let target = camera.pitch + pitch;
+    record Camera {
+        position = camera.position;
+        yaw = (camera.yaw + yaw) % 360000;
+        pitch = if target < -89000 {
+            -89000
+        } else {
+            if target > 89000 {
+                89000
+            } else {
+                target
+            }
+        }
+    }
+}
+
+export fn move_camera(camera: Camera, forward: f32, right: f32, up: f32, sine: f32, cosine: f32) -> Camera {
+    record Camera {
+        position = record math.Vec3 {
+            x = f32_add(camera.position.x, f32_add(f32_mul(forward, sine), f32_mul(right, cosine)));
+            y = f32_add(camera.position.y, up);
+            z = f32_add(camera.position.z, f32_sub(f32_mul(forward, cosine), f32_mul(right, sine)))
+        };
+        yaw = camera.yaw;
+        pitch = camera.pitch
+    }
+}

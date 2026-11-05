@@ -1,0 +1,26 @@
+//! Explicit scalar FFI. Engine/mesh GPU resources require manual close.
+@include("renderer.h");
+export extern fn e3_open(width: i32, height: i32) -> ptr < Engine >;
+export extern fn e3_close(engine: ptr < Engine >) -> unit;
+export extern fn e3_status() -> i32;
+export extern fn e3_headless(engine: ptr < Engine >) -> bool;
+export extern fn e3_mode(engine: ptr < Engine >) -> i32;
+export extern fn e3_limit(engine: ptr < Engine >) -> i32;
+export extern fn e3_width(engine: ptr < Engine >) -> i32;
+export extern fn e3_height(engine: ptr < Engine >) -> i32;
+export extern fn e3_poll(engine: ptr < Engine >) -> bool;
+export extern fn e3_key(engine: ptr < Engine >, action: i32) -> i32;
+export extern fn e3_mouse(engine: ptr < Engine >, axis: i32) -> i32;
+export extern fn e3_elapsed(engine: ptr < Engine >) -> i32;
+export extern fn e3_sin(millidegrees: i32) -> f32;
+export extern fn e3_cos(millidegrees: i32) -> f32;
+export extern fn e3_mesh_new(engine: ptr < Engine >, capacity: i32) -> i32;
+export extern fn e3_vertex(engine: ptr < Engine >, mesh: i32, x: f32, y: f32, z: f32, nx: f32, ny: f32, nz: f32) -> bool;
+export extern fn e3_mesh_upload(engine: ptr < Engine >, mesh: i32) -> bool;
+export extern fn e3_begin(engine: ptr < Engine >) -> bool;
+export extern fn e3_matrix(engine: ptr < Engine >, slot: i32, row: i32, x: f32, y: f32, z: f32, w: f32) -> bool;
+export extern fn e3_material(engine: ptr < Engine >, r: f32, g: f32, b: f32, lx: f32, ly: f32, lz: f32, ambient: f32) -> bool;
+export extern fn e3_draw(engine: ptr < Engine >, mesh: i32) -> bool;
+export extern fn e3_end(engine: ptr < Engine >) -> bool;
+export extern fn e3_capture(engine: ptr < Engine >) -> bool;
+export extern fn e3_pixel(engine: ptr < Engine >, x: i32, y: i32, component: i32) -> i32;

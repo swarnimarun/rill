@@ -1,0 +1,79 @@
+//! Rill computes every scene transform and issues each material and draw.
+import math;
+import scene;
+import native as io;
+
+fn row(engine: ptr < Engine >, slot: i32, index: i32, value: math.Vec4) -> bool {
+    io.e3_matrix(engine, slot, index, value.x, value.y, value.z, value.w)
+}
+fn matrix(engine: ptr < Engine >, slot: i32, value: math.Mat4) -> bool {
+    row(engine, slot, 0, value.r0) && row(engine, slot, 1, value.r1)
+    && row(engine, slot, 2, value.r2) && row(engine, slot, 3, value.r3)
+}
+
+fn draw(engine: ptr < Engine >, mesh: i32, view_projection: math.Mat4,
+    model: math.Mat4, color: math.Vec3, ambient: f32) -> bool {
+    let mvp = math.multiply(view_projection, model);
+    matrix(engine, 0, mvp) && matrix(engine, 1, model)
+    && io.e3_material(engine, color.x, color.y, color.z, f32_neg(f32(1)), f32(2), f32_neg(f32(3)), ambient)
+    && io.e3_draw(engine, mesh)
+}
+
+fn view_projection(engine: ptr < Engine >, camera: scene.Camera) -> math.Mat4 {
+    let view = math.view(camera.position, io.e3_sin(camera.yaw), io.e3_cos(camera.yaw),
+        io.e3_sin(camera.pitch), io.e3_cos(camera.pitch));
+    math.multiply(math.perspective(io.e3_width(engine), io.e3_height(engine)), view)
+}
+
+fn objects(engine: ptr < Engine >, cube: i32, floor: i32, view_projection: math.Mat4, frame: i32) -> bool {
+    let angle = frame * 900 % 360000;
+    let model = math.model(math.v3(-1, 0, 0), f32(1), io.e3_sin(angle), io.e3_cos(angle));
+    let second = math.model(math.v3(2, 0, 2), f32_div(f32(3), f32(4)),
+        io.e3_sin(0 - angle), io.e3_cos(0 - angle));
+    let ground = math.model(math.v3(0, -1, 0), f32(1), f32(0), f32(1));
+    let orange = record math.Vec3 {
+        x = f32(1);
+        y = f32_div(f32(2), f32(5));
+        z = f32_div(f32(1), f32(10))
+    };
+    let cyan = record math.Vec3 {
+        x = f32_div(f32(1), f32(10));
+        y = f32_div(f32(4), f32(5));
+        z = f32(1)
+    };
+    let gray = record math.Vec3 {
+        x = f32_div(f32(2), f32(5));
+        y = f32_div(f32(1), f32(2));
+        z = f32_div(f32(3), f32(5))
+    };
+    let ambient = f32_div(f32(1), f32(5));
+    draw(engine, cube, view_projection, model, orange, ambient)
+    && draw(engine, cube, view_projection, second, cyan, ambient)
+    && draw(engine, floor, view_projection, ground, gray, ambient)
+}
+
+fn depth_test(engine: ptr < Engine >, quad: i32, view_projection: math.Mat4) -> bool {
+    // Draw the near red surface first. A missing depth test would leave blue.
+    let near = math.model(math.v3(0, 0, 0), f32(1), f32(0), f32(1));
+    let far = math.model(math.v3(0, 0, 2), f32(1), f32(0), f32(1));
+    draw(engine, quad, view_projection, near, math.v3(1, 0, 0), f32(1))
+    && draw(engine, quad, view_projection, far, math.v3(0, 0, 1), f32(1))
+}
+
+export fn frame(engine: ptr < Engine >, cube: i32, floor: i32, quad: i32, camera: scene.Camera, tick: i32) -> bool {
+    let started = io.e3_begin(engine);
+    if started {
+        let vp = view_projection(engine, camera);
+        let drawn = if io.e3_mode(engine) == 1 {
+            depth_test(engine, quad, vp)
+        }
+        else {
+            objects(engine, cube, floor, vp, tick)
+        };
+        // End a begun frame even when one of the draws failed.
+        let ended = io.e3_end(engine);
+        drawn && ended
+    } else {
+        false
+    }
+}

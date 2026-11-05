@@ -1,0 +1,64 @@
+//! Procedural geometry belongs to Rill; the native adapter only packs vertices.
+import math;
+import native as io;
+
+fn vertex(engine: ptr < Engine >, mesh: i32, position: math.Vec3, normal: math.Vec3) -> bool {
+    io.e3_vertex(engine, mesh, position.x, position.y, position.z, normal.x, normal.y, normal.z)
+}
+
+fn quad(engine: ptr < Engine >, mesh: i32, a: math.Vec3, b: math.Vec3, c: math.Vec3, d: math.Vec3, normal: math.Vec3) -> bool {
+    vertex(engine, mesh, a, normal) && vertex(engine, mesh, b, normal)
+    && vertex(engine, mesh, c, normal) && vertex(engine, mesh, a, normal)
+    && vertex(engine, mesh, c, normal) && vertex(engine, mesh, d, normal)
+}
+
+export fn cube(engine: ptr < Engine >) -> i32 {
+    let mesh = io.e3_mesh_new(engine, 36);
+    let a = math.v3(-1, -1, -1);
+    let b = math.v3(1, -1, -1);
+    let c = math.v3(1, 1, -1);
+    let d = math.v3(-1, 1, -1);
+    let e = math.v3(-1, -1, 1);
+    let f = math.v3(1, -1, 1);
+    let g = math.v3(1, 1, 1);
+    let h = math.v3(-1, 1, 1);
+    let ok = mesh >= 0
+    && quad(engine, mesh, a, d, c, b, math.v3(0, 0, -1))
+    && quad(engine, mesh, e, f, g, h, math.v3(0, 0, 1))
+    && quad(engine, mesh, a, e, h, d, math.v3(-1, 0, 0))
+    && quad(engine, mesh, b, c, g, f, math.v3(1, 0, 0))
+    && quad(engine, mesh, d, h, g, c, math.v3(0, 1, 0))
+    && quad(engine, mesh, a, b, f, e, math.v3(0, -1, 0))
+    && io.e3_mesh_upload(engine, mesh);
+    if ok {
+        mesh
+    } else {
+        -1
+    }
+}
+
+export fn floor(engine: ptr < Engine >) -> i32 {
+    let mesh = io.e3_mesh_new(engine, 6);
+    let ok = mesh >= 0 && quad(engine, mesh,
+        math.v3(-6, 0, -4), math.v3(-6, 0, 10),
+        math.v3(6, 0, 10), math.v3(6, 0, -4), math.v3(0, 1, 0))
+    && io.e3_mesh_upload(engine, mesh);
+    if ok {
+        mesh
+    } else {
+        -1
+    }
+}
+
+export fn test_quad(engine: ptr < Engine >) -> i32 {
+    let mesh = io.e3_mesh_new(engine, 6);
+    let ok = mesh >= 0 && quad(engine, mesh,
+        math.v3(-1, -1, 0), math.v3(-1, 1, 0),
+        math.v3(1, 1, 0), math.v3(1, -1, 0), math.v3(0, 0, -1))
+    && io.e3_mesh_upload(engine, mesh);
+    if ok {
+        mesh
+    } else {
+        -1
+    }
+}

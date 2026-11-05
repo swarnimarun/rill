@@ -1,0 +1,10 @@
+{
+  "version": 1,
+  "output": "build/shaders",
+  "shaders": [
+    { "name": "mesh_vertex_msl", "language": "slang", "stage": "vertex", "entry": "vertex_main", "source": "shaders/mesh.slang", "target": "msl" },
+    { "name": "mesh_fragment_msl", "language": "slang", "stage": "fragment", "entry": "fragment_main", "source": "shaders/mesh.slang", "target": "msl" },
+    { "name": "mesh_vertex_spv", "language": "slang", "stage": "vertex", "entry": "vertex_main", "source": "shaders/mesh.slang", "target": "spirv" },
+    { "name": "mesh_fragment_spv", "language": "slang", "stage": "fragment", "entry": "fragment_main", "source": "shaders/mesh.slang", "target": "spirv" }
+  ]
+}

@@ -1,0 +1,66 @@
+import math;
+import mesh;
+import scene;
+import render;
+import native as io;
+
+fn input(engine: ptr < Engine >, camera: scene.Camera) -> scene.Camera {
+    let elapsed = io.e3_elapsed(engine);
+    let yaw = io.e3_mouse(engine, 0) * 200 + (io.e3_key(engine, 7) - io.e3_key(engine, 6)) * elapsed * 60;
+    let pitch = (0 - io.e3_mouse(engine, 1)) * 200 + (io.e3_key(engine, 8) - io.e3_key(engine, 9)) * elapsed * 60;
+    let looking = scene.look(camera, yaw, pitch);
+    let distance = f32_div(f32(elapsed), f32(250));
+    let forward = f32_mul(distance, f32(io.e3_key(engine, 0) - io.e3_key(engine, 1)));
+    let right = f32_mul(distance, f32(io.e3_key(engine, 3) - io.e3_key(engine, 2)));
+    let up = f32_mul(distance, f32(io.e3_key(engine, 5) - io.e3_key(engine, 4)));
+    scene.move_camera(looking, forward, right, up, io.e3_sin(looking.yaw), io.e3_cos(looking.yaw))
+}
+
+fn verify_depth(engine: ptr < Engine >) -> bool {
+    let x = io.e3_width(engine) / 2;
+    let y = io.e3_height(engine) / 2;
+    io.e3_pixel(engine, x, y, 0) > 240 && io.e3_pixel(engine, x, y, 1) < 15
+    && io.e3_pixel(engine, x, y, 2) < 15
+}
+
+fn play(engine: ptr < Engine >) -> i32 {
+    let cube = mesh.cube(engine);
+    let floor = mesh.floor(engine);
+    let quad = mesh.test_quad(engine);
+    let mut camera = scene.camera(io.e3_mode(engine));
+    let mut ok = cube >= 0 && floor >= 0 && quad >= 0;
+    let mut running = true;
+    let mut frame = 0;
+    let limit = io.e3_limit(engine);
+    while ok && running && (limit == 0 || frame < limit) {
+        running <- io.e3_poll(engine) && io.e3_key(engine, 10) == 0;
+        if running {
+            camera <- input(engine, camera);
+            ok <- render.frame(engine, cube, floor, quad, camera, frame % 1000000);
+            frame <- (frame + 1) % 1000000;
+        };
+    };
+    if ok && frame > 0 {
+        ok <- io.e3_capture(engine);
+        if ok && io.e3_mode(engine) == 1 {
+            ok <- verify_depth(engine);
+        };
+    };
+    if ok {
+        0
+    } else {
+        1
+    }
+}
+
+fn main() {
+    let engine = io.e3_open(640, 480);
+    if is_null(engine) {
+        io.e3_status()
+    }
+    else {
+        let result = play(engine);
+        io.e3_close(engine);
+        result
+    }
+}

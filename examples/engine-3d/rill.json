@@ -1,0 +1,13 @@
+{
+  "version": 2,
+  "name": "engine-3d",
+  "entry": "src/main.rill",
+  "output": "build/engine-3d",
+  "native": {
+    "sources": ["native/renderer.c"],
+    "include_dirs": ["native"],
+    "packages": ["sdl3"],
+    "libraries": ["m"]
+  },
+  "shaders": "rill.shaders.json"
+}
