@@ -26,9 +26,30 @@ lint configurations, formatting and diff checks pass. Independent spec/quality
 review found no implementation defect and checked the oracle construction,
 arithmetic guards, indexing, ownership and preflight behavior.
 
-The complete aggregate native regression command is running from frozen source
-at this checkpoint. Its outcome will be recorded in a separate verification
-update; the selected counts above are not substituted for a completed matrix.
+## Complete frozen-source matrix
+
+```sh
+SDKROOT="$(xcrun --show-sdk-path)" cargo test --locked --no-fail-fast
+```
+
+The full command exits successfully on feature source `23c50f51`, reporting
+**1,489 passed, 0 failed and 0 ignored** across 149 result groups. All 24 new
+tests pass in this run. Source and test files were frozen before starting;
+only this evidence and the unbundled implementation plan change afterward.
+
+This includes existing compiler/IR, ownership/cleanup, native imports and C ABI,
+module/editor, project/watch, docs and library regressions. Configured real
+SDL3 and both AArch64 NEON tests pass, including actual vector execution and
+the emitted XOR instruction check. The host is arm64 macOS with Rust 1.99.1
+and Apple Clang 17. No Windows execution or general target portability proof
+is added. Selected and full counts overlap and are not summed.
+
+The GPU target reports successful test returns for availability skips, rather
+than marking them ignored. A separate `--test sdl3_voxel_gpu -- --nocapture`
+run confirms three hardware preflights return status 77 because the video
+driver adds no displays; the fourth, 256-cubed capacity branch is disabled
+without `RILL_TEST_GPU_256=1`. All four GPU hardware branches are skipped.
+The aggregate count therefore does not establish GPU execution acceptance.
 
 ## Semantic evidence
 

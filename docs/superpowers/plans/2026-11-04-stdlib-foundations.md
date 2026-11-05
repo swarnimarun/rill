@@ -74,5 +74,6 @@ export type Option<a> = None | Some(a)
 The feature checkpoint has 62 passing selected default tests and all 24 new
 tests in minimal mode, both strict lint modes, formatting and an independent
 review. See [the exact verification](../../verification/2026-11-04-stdlib-foundations.md).
-The frozen-source aggregate run is still in progress and will be recorded in
-a separate evidence checkpoint. No completed language phase is inferred.
+The frozen-source aggregate run finishes with 1,489 reported passes and zero
+failures. Four optional GPU hardware branches skip, as detailed in the separate
+evidence checkpoint. No completed language phase is inferred.
