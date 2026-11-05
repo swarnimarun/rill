@@ -1,0 +1,23 @@
+//! Curated Raylib scalar bridge. All calls belong on the application main thread.
+//! Explicitly close the window and balance every drawing/3D scope.
+@include("rill/raylib.h");
+@pkg_config("rill-raylib");
+
+export extern fn RillRaylib_InitWindow(width: i32, height: i32, title: cstr) -> bool;
+export extern fn RillRaylib_CloseWindow() -> bool;
+export extern fn RillRaylib_Status() -> i32;
+/// Return -1 for invalid state, 0 to continue, or 1 when the window should close.
+export extern fn RillRaylib_WindowShouldClose() -> i32;
+export extern fn RillRaylib_SetTargetFPS(fps: i32) -> bool;
+export extern fn RillRaylib_BeginDrawing() -> bool;
+export extern fn RillRaylib_EndDrawing() -> bool;
+export extern fn RillRaylib_ClearBackground(red: u8, green: u8, blue: u8, alpha: u8) -> bool;
+export extern fn RillRaylib_DrawRectangle(x: i32, y: i32, width: i32, height: i32, red: u8, green: u8, blue: u8, alpha: u8) -> bool;
+export extern fn RillRaylib_DrawText(text: cstr, x: i32, y: i32, size: i32, red: u8, green: u8, blue: u8, alpha: u8) -> bool;
+export extern fn RillRaylib_SetCamera(px: f32, py: f32, pz: f32, tx: f32, ty: f32, tz: f32, ux: f32, uy: f32, uz: f32, fovy: f32, perspective: bool) -> bool;
+export extern fn RillRaylib_BeginMode3D() -> bool;
+export extern fn RillRaylib_EndMode3D() -> bool;
+export extern fn RillRaylib_DrawCube(x: f32, y: f32, z: f32, width: f32, height: f32, length: f32, red: u8, green: u8, blue: u8, alpha: u8) -> bool;
+export extern fn RillRaylib_DrawPlane(x: f32, y: f32, z: f32, width: f32, length: f32, red: u8, green: u8, blue: u8, alpha: u8) -> bool;
+/// Export the current back buffer before EndDrawing, releasing temporary pixels in C.
+export extern fn RillRaylib_Capture(path: cstr) -> bool;

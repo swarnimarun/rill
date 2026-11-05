@@ -1,0 +1,86 @@
+/**********************************************************************************************
+*
+*   rlsw v1.6 - An OpenGL 1.1-style software renderer implementation
+*
+*   DESCRIPTION:
+*       rlsw is a custom OpenGL 1.1-style implementation on software, intended to provide all
+*       functionality available on rlgl.h library used by raylib, becoming a direct software
+*       rendering replacement for OpenGL 1.1 backend and allowing to run raylib on GPU-less
+*       devices when required
+*
+*   FEATURES:
+*       - Rendering to custom internal framebuffer with multiple color modes supported:
+*           - Color buffer: RGB - 8-bit (3:3:2) | RGB - 16-bit (5:6:5) | RGB - 24-bit (8:8:8)
+*           - Depth buffer: D - 8-bit (unorm) | D - 16-bit (unorm) | D - 24-bit (unorm)
+*       - Rendering modes supported: POINT, LINES, TRIANGLE, QUADS
+*           - Additional features: Polygon modes, Point width, Line width
+*       - Clipping support for all rendering modes
+*       - Texture features supported:
+*           - All uncompressed texture formats supported by raylib
+*           - Texture Minification/Magnification checks
+*           - Point and Bilinear filtering
+*           - Texture Wrap Modes with separate checks for S/T coordinates
+*       - Vertex Arrays support with direct primitive drawing mode
+*       - Matrix Stack support (Matrix Push/Pop)
+*       - Other GL misc features:
+*           - GL-style getter functions
+*           - Framebuffer resizing
+*           - Perspective correction
+*           - Scissor clipping
+*           - Depth testing
+*           - Blend modes
+*           - Face culling
+*
+*   ADDITIONAL NOTES:
+*       Check PR for more info: https://github.com/raysan5/raylib/pull/4832
+*
+*   CONFIGURATION:
+*       #define RLSW_IMPLEMENTATION
+*           Generates the implementation of the library into the included file
+*           If not defined, the library is in header only mode and can be included in other headers
+*           or source files without problems. But only ONE file should hold the implementation
+*
+*       #define RLSW_USE_SIMD_INTRINSICS
+*           Detect and use SIMD intrinsics on the host compilation platform
+*           SIMD could improve rendering considerable vectorizing some raster operations
+*           but the target platforms running the compiled program with SIMD enabled
+*           must support the SIMD the program has been built for, making them only
+*           recommended under specific situations and only if the developers know
+*           what are they doing; this flag is not defined by default
+*
+*       rlsw capabilities could be customized defining some internal
+*       values before library inclusion (default values listed):
+*
+*           #define RLSW_FRAMEBUFFER_OUTPUT_BGRA      true
+*           #define RLSW_FRAMEBUFFER_COLOR_TYPE       R8G8B8A8
+*           #define RLSW_FRAMEBUFFER_DEPTH_TYPE       D32
+*           #define RLSW_MAX_PROJECTION_STACK_SIZE    2
+*           #define RLSW_MAX_MODELVIEW_STACK_SIZE     8
+*           #define RLSW_MAX_TEXTURE_STACK_SIZE       2
+*           #define RLSW_MAX_TEXTURES                 128
+*           #define RLSW_DOUBLE_BUFFERING             0
+*
+*
+*   LICENSE: MIT
+*
+*   Copyright (c) 2025-2026 Le Juez Victor (@Bigfoot71), reviewed by Ramon Santamaria (@raysan5)
+*
+*   Permission is hereby granted, free of charge, to any person obtaining a copy
+*   of this software and associated documentation files (the "Software"), to deal
+*   in the Software without restriction, including without limitation the rights
+*   to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+*   copies of the Software, and to permit persons to whom the Software is
+*   furnished to do so, subject to the following conditions:
+*
+*   The above copyright notice and this permission notice shall be included in all
+*   copies or substantial portions of the Software.
+*
+*   THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+*   IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+*   FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+*   AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+*   LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+*   OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+*   SOFTWARE.
+*
+**********************************************************************************************/

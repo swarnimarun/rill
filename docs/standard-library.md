@@ -1,10 +1,10 @@
 # Standard library utilities
 
-Rill bundles 18 experimental source modules. They use the ordinary name, type,
+Rill bundles 19 experimental source modules. They use the ordinary name, type,
 ownership and backend checks; no implicit prelude is imported. Start with the
 [catalogue](../stdlib/README.md) and import only what a program uses.
 
-Graphics integrations are `std.sdl`, `std.shader` and `std.slang`. The
+Graphics integrations are `std.sdl`, `std.shader`, `std.raylib` and `std.slang`. The
 [distribution guide](distribution.md#standard-modules) describes their native
 dependencies, explicit destruction and compiler-output validation boundaries.
 

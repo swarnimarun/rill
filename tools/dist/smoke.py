@@ -53,6 +53,12 @@ def smoke(prefix):
         result = run(binary, "run", source, env=env, cwd=root)
         if result != "42\n":
             raise RuntimeError(f"SDL smoke result: {result!r}")
+        source.write_text('import std.raylib as ray; fn main() { '
+                          'if ray.RillRaylib_InitWindow(0, 240, c"invalid") { 99 } '
+                          'else { ray.RillRaylib_Status() } }\n')
+        result = run(binary, "run", source, env=env, cwd=root)
+        if result != "1\n":
+            raise RuntimeError(f"Raylib SDK smoke result: {result!r}")
         source.write_text('import std.slang as slang; import std.shader as shader;\n'
                           'fn main() { slang.RillSlang_compile_spirv(c"shader.slang", c"main", '
                           'shader.stage_code(shader.Compute), c"sdk.spv") }\n')
@@ -63,7 +69,7 @@ def smoke(prefix):
         run(binary, "docs", "--language", "-o", root / "docs", env=env, cwd=root)
         if not (root / "docs/index.html").is_file():
             raise RuntimeError("bundled docs smoke failed")
-    print("Distribution smoke passed: bundled Slang, SPIR-V validation, SDL, SDK and docs")
+    print("Distribution smoke passed: bundled Slang, SPIR-V validation, SDL, Raylib, SDK and docs")
 
 
 if __name__ == "__main__":

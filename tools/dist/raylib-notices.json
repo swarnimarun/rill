@@ -1,0 +1,2233 @@
+{
+  "version": 1,
+  "repository": "https://github.com/raysan5/raylib",
+  "release": "6.2",
+  "revision": "02566453880e06bec97f5b8160fa6fe1e98397ca",
+  "selection": "All C, C++, Objective-C and XML vendor files plus explicit license files under src/external in the pinned Git tree. License-bearing C comment blocks and complete XML copyright elements are retained verbatim; explicit license files are copied whole. Blank lines separate multiple blocks. This is a superset including optional platform/backend notices, not a list of enabled features.",
+  "files": [
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/RGFW.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/RGFW.h",
+      "source_git_blob_sha1": "e114334e03c8b8679a94a0e978fded8ba14aa58e",
+      "source_sha256": "34d0897564a01211d3a0245e35a6a4d73aaea869556e3c3fb40765b8f596c1d1",
+      "source_bytes": 593801,
+      "notice_file": "RGFW/RGFW.h.license.txt",
+      "notice_sha256": "c36a5a19543eaa283c97a56ebb7dc9140e0b3efa17ec34ae1dceadd6732f5bff",
+      "notice_bytes": 974,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 974,
+          "sha256": "c36a5a19543eaa283c97a56ebb7dc9140e0b3efa17ec34ae1dceadd6732f5bff"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/minigamepad.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/minigamepad.h",
+      "source_git_blob_sha1": "dfadcbf40c0ed9d6fd0feb1024c77c8aff18958e",
+      "source_sha256": "2772200b92b75eb35ec8c186b37c97c37b4adf8b4696a51a1ae9479e13cb4e5b",
+      "source_bytes": 644154,
+      "notice_file": "RGFW/deps/minigamepad.h.license.txt",
+      "notice_sha256": "efa15b4f091d2dc37454519208e0668e8d316e09ec5a43a1ecfe026425c3ccb9",
+      "notice_bytes": 939,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 939,
+          "sha256": "efa15b4f091d2dc37454519208e0668e8d316e09ec5a43a1ecfe026425c3ccb9"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/wayland/pointer-constraints-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/wayland/pointer-constraints-unstable-v1.xml",
+      "source_git_blob_sha1": "83b0a1c2cf7d3bb4a2dbacfb70d80770a9041a0b",
+      "source_sha256": "f980fac900ba1dcfbbe97f588fc17b893926bd2b57624563653a1bfe4d035948",
+      "source_bytes": 15115,
+      "notice_file": "RGFW/deps/wayland/pointer-constraints-unstable-v1.xml.license.txt",
+      "notice_sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930",
+      "notice_bytes": 1226,
+      "ranges": [
+        {
+          "start": 92,
+          "end": 1318,
+          "sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/wayland/pointer-warp-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/wayland/pointer-warp-v1.xml",
+      "source_git_blob_sha1": "158dad83c5db23eee7c8aa1f1215dcc00b309da9",
+      "source_sha256": "1389e89c68c6f6d231fd2dcda57fa9c75c5230d0ac1deffa8d80a7648e197e66",
+      "source_bytes": 3519,
+      "notice_file": "RGFW/deps/wayland/pointer-warp-v1.xml.license.txt",
+      "notice_sha256": "6798ab38df8a874ddcd956833596112530c8a9a2c9a21d3f623756b0abdec695",
+      "notice_bytes": 1285,
+      "ranges": [
+        {
+          "start": 75,
+          "end": 1360,
+          "sha256": "6798ab38df8a874ddcd956833596112530c8a9a2c9a21d3f623756b0abdec695"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/wayland/relative-pointer-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/wayland/relative-pointer-unstable-v1.xml",
+      "source_git_blob_sha1": "ca6f81d12ac1de1960ae1417cf4179def59b69e9",
+      "source_sha256": "ab4930dd3084f732b6fdd12ee6dbd0a112a758ed8a57b170366391dbeb1a22ff",
+      "source_bytes": 6584,
+      "notice_file": "RGFW/deps/wayland/relative-pointer-unstable-v1.xml.license.txt",
+      "notice_sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930",
+      "notice_bytes": 1226,
+      "ranges": [
+        {
+          "start": 89,
+          "end": 1315,
+          "sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/wayland/xdg-decoration-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/wayland/xdg-decoration-unstable-v1.xml",
+      "source_git_blob_sha1": "82ca247c745080fdcd582dc0f0b035a66572bf48",
+      "source_sha256": "73101094eedd2295ac48972a2562d6f99881fee68f3d4d403675837434ab7c70",
+      "source_bytes": 7283,
+      "notice_file": "RGFW/deps/wayland/xdg-decoration-unstable-v1.xml.license.txt",
+      "notice_sha256": "0049d53679071f98be3ba3b67e3d4df9673353bf5777f0e50ea69468bc3370e0",
+      "notice_bytes": 1178,
+      "ranges": [
+        {
+          "start": 86,
+          "end": 1264,
+          "sha256": "0049d53679071f98be3ba3b67e3d4df9673353bf5777f0e50ea69468bc3370e0"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/wayland/xdg-output-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/wayland/xdg-output-unstable-v1.xml",
+      "source_git_blob_sha1": "a7306e4193e2841926f2ca4d37d348476176cedd",
+      "source_sha256": "363d547c3eefe8959160cac903ff90b311d4b183005557d73640d9df2cfd7f79",
+      "source_bytes": 9693,
+      "notice_file": "RGFW/deps/wayland/xdg-output-unstable-v1.xml.license.txt",
+      "notice_sha256": "284e77e20d4bbdbf294f8a6ca80364855185264441b5b8f637b134505b716eb7",
+      "notice_bytes": 1181,
+      "ranges": [
+        {
+          "start": 83,
+          "end": 1264,
+          "sha256": "284e77e20d4bbdbf294f8a6ca80364855185264441b5b8f637b134505b716eb7"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/wayland/xdg-shell.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/wayland/xdg-shell.xml",
+      "source_git_blob_sha1": "39ecf8acc28ab8502b7d51740dc072da8eede208",
+      "source_sha256": "5084e76386f6c3959bee957a784c57de204be0de3f57533ce07b4be0617b171a",
+      "source_bytes": 62861,
+      "notice_file": "RGFW/deps/wayland/xdg-shell.xml.license.txt",
+      "notice_sha256": "08fd771f993367ab945922838e5ef68bc58202eca5da64709ce5fe69af956e7d",
+      "notice_bytes": 1423,
+      "ranges": [
+        {
+          "start": 70,
+          "end": 1493,
+          "sha256": "08fd771f993367ab945922838e5ef68bc58202eca5da64709ce5fe69af956e7d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/RGFW/deps/wayland/xdg-toplevel-icon-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/RGFW/deps/wayland/xdg-toplevel-icon-v1.xml",
+      "source_git_blob_sha1": "fc409fef7c67e7c0e05951f5f2fb57b60d191c50",
+      "source_sha256": "791dbfed89280c1b8031689955a03e9b2da55601be3c5854a6198e38cea4978f",
+      "source_bytes": 9567,
+      "notice_file": "RGFW/deps/wayland/xdg-toplevel-icon-v1.xml.license.txt",
+      "notice_sha256": "bcc5a9686f0b62f4e78d6d4c12ba5b99bbfdf6a75bbc00435e65cd7f6c89a390",
+      "notice_bytes": 1232,
+      "ranges": [
+        {
+          "start": 81,
+          "end": 1313,
+          "sha256": "bcc5a9686f0b62f4e78d6d4c12ba5b99bbfdf6a75bbc00435e65cd7f6c89a390"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/cgltf.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/cgltf.h",
+      "source_git_blob_sha1": "316a11dfd89e1ff69348a3cacb21709ad1e29bd8",
+      "source_sha256": "efb169dee911696b5d35fc8e3f7ea0c56d679debc529eba9ca6aa6443ba9d5e9",
+      "source_bytes": 205754,
+      "notice_file": "cgltf.h.license.txt",
+      "notice_sha256": "92818da0a745b67ceba7f69cb49c75d71302d2f6d0af4b0233564a9170bd7d9d",
+      "notice_bytes": 7359,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 4907,
+          "sha256": "f95c7cd5ce4b942b1cc3c387d3c9a3a09b6bfa8c99ad306b753b652c8f064abf"
+        },
+        {
+          "start": 27673,
+          "end": 27759,
+          "sha256": "50e6b2d3224d3f35f731541fd0cbc578811f232baa65b88f3963378bad901514"
+        },
+        {
+          "start": 195606,
+          "end": 196803,
+          "sha256": "5b854ad801c1a9c6ca3e284423c7d46e36b413ade27d2368bb091a12fa544c5d"
+        },
+        {
+          "start": 204590,
+          "end": 205753,
+          "sha256": "99656688da13e87bc74d7daafcf083a2704d4abae129543eba6f983dcd69124e"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/cgltf_write.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/cgltf_write.h",
+      "source_git_blob_sha1": "4c060da792a3f31f6a7ebb3a8c59eafe5791bc86",
+      "source_sha256": "42199ef8b43d6784dde2ac6ea70b0b1053ec6b19136670687a189ce5df840084",
+      "source_bytes": 53300,
+      "notice_file": "cgltf_write.h.license.txt",
+      "notice_sha256": "f10d9c1cd962adc5a9df72d16f3ec0e26de81310d2900887bcdb9d3aa8a4a9f3",
+      "notice_bytes": 2407,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1245,
+          "sha256": "c0266b7240ad68db0911a6bc78f8ef36feff2700095fa15d02aa3adeaf2d7e69"
+        },
+        {
+          "start": 52139,
+          "end": 53299,
+          "sha256": "80f3a557a344d9ddb0dca68457fbeb0d3a3ca7dd0da6949c0befd41e56ddeba7"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/dirent.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/dirent.h",
+      "source_git_blob_sha1": "c6113765e44c6e62fcbfbb4da621d369d6a75946",
+      "source_sha256": "0fdc24e938e17e7c6b905e1566731f2f76d133245e740edf6b39518deefb257e",
+      "source_bytes": 5184,
+      "notice_file": "dirent.h.license.txt",
+      "notice_sha256": "68a21dd87b048e035df8ddcbe95aca0d2889424f614efa97349717192f71e402",
+      "notice_bytes": 1743,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 869,
+          "sha256": "96d52b9244bfcab067a14ce3706419ad9ca6a9629085817a070aa05a53256f43"
+        },
+        {
+          "start": 1812,
+          "end": 2684,
+          "sha256": "a0d9cc3effd17284e9d3a74eebe866f3124cb4d6dc5ef2ec9418b1ad179713ca"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/dr_flac.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/dr_flac.h",
+      "source_git_blob_sha1": "72bc6b762e79d1ef5ed78964d748dd648ad4e92c",
+      "source_sha256": "4c4ecf25e31e0766871db99e31c1867524bf5aa5cd1b5e442177ffbeb6c0c183",
+      "source_bytes": 530202,
+      "notice_file": "dr_flac.h.license.txt",
+      "notice_sha256": "fffba5b072674749dbc1bcaff2890a8b9135b377d687d37ef54d81538179da4d",
+      "notice_bytes": 17558,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 207,
+          "sha256": "c07f293eae19b039a671206167411151b52a2f886646bcefa55bfb791ee1a98e"
+        },
+        {
+          "start": 512852,
+          "end": 527596,
+          "sha256": "ebd159e47b9f36c66feb0e365e9cffd5dc3ac6039a4f37ab2f81baca16af2ab7"
+        },
+        {
+          "start": 527598,
+          "end": 530201,
+          "sha256": "6622f826e1e526110debad04b9fec7f6b542bb930690352e89536f28d31940e1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/dr_mp3.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/dr_mp3.h",
+      "source_git_blob_sha1": "a458d86cfad82f9e4bef7e8a08b349529ecf602c",
+      "source_sha256": "f0919e1652ffd9469e3440b5c759d26e862a50e6dc93cb4b51cb7e7e90b00f77",
+      "source_bytes": 208336,
+      "notice_file": "dr_mp3.h.license.txt",
+      "notice_sha256": "c75bc775a53d460e6247f5a471aaf956b81d5aa8332115b034151170df403841",
+      "notice_bytes": 13782,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 368,
+          "sha256": "1f9ec1cd1d013b557ddc9409667729633700442fe23841e03ea36d14898b1d22"
+        },
+        {
+          "start": 194923,
+          "end": 205405,
+          "sha256": "71791a74ac3f9ff5a538e5183fe0fa74a5edf4fcf4c24b09ef25b2fb70c5b578"
+        },
+        {
+          "start": 205407,
+          "end": 208010,
+          "sha256": "6622f826e1e526110debad04b9fec7f6b542bb930690352e89536f28d31940e1"
+        },
+        {
+          "start": 208012,
+          "end": 208335,
+          "sha256": "c831d0537fe88d344bf5f51ef5ddf627421598b6bb036c6dca53b738cbfea07f"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/dr_wav.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/dr_wav.h",
+      "source_git_blob_sha1": "a18bc043f2aa6c20ec2e988ceed20616a2fb3f74",
+      "source_sha256": "9fa5cce426a225dde6da84bbd65bf9ac1f4c3ec479c0b811584755dc405949fb",
+      "source_bytes": 366404,
+      "notice_file": "dr_wav.h.license.txt",
+      "notice_sha256": "9360101d2b0b59c20356723f576bc36c696abaa2f275b4ec0cb1600cb8675c3a",
+      "notice_bytes": 19719,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 215,
+          "sha256": "96d84b73ef20759782e4664223d027a361296153fa7be69727cb506326c74293"
+        },
+        {
+          "start": 346901,
+          "end": 363798,
+          "sha256": "5ed6789a380d5b6a8151942501d53b546d1ff0bf75e2475612ffa92b29e85ffc"
+        },
+        {
+          "start": 363800,
+          "end": 366403,
+          "sha256": "6622f826e1e526110debad04b9fec7f6b542bb930690352e89536f28d31940e1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/fix_win32_compatibility.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/fix_win32_compatibility.h",
+      "source_git_blob_sha1": "4e5b8ca35cbd8b5e1193ae336abcd147ac0d98fd",
+      "source_sha256": "c573eec9e5eb1da673913e4c63e060a7a3852789bbb9ea82f1939451a7c75b2f",
+      "source_bytes": 2560,
+      "notice_file": "fix_win32_compatibility.h.license.txt",
+      "notice_sha256": "0309ae716f661a6f9b8c0e752a4d9d6a985d9b3688635e747cf4919f194a57fe",
+      "notice_bytes": 1598,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1598,
+          "sha256": "0309ae716f661a6f9b8c0e752a4d9d6a985d9b3688635e747cf4919f194a57fe"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glad.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glad.h",
+      "source_git_blob_sha1": "5bb79d40d9f5f987e40be88844d6098a6e227589",
+      "source_sha256": "220b47282d4aee2c9cd2cba21943c29c0684f1bd489ff66d36d7ea1d2e9418c3",
+      "source_bytes": 557459,
+      "notice_file": "glad.h.license.txt",
+      "notice_sha256": "fd7c88f69e70ffa778137ba0bc8267fa8dd83189365d9ff5a2533161432b3d0b",
+      "notice_bytes": 1146,
+      "ranges": [
+        {
+          "start": 80545,
+          "end": 81691,
+          "sha256": "fd7c88f69e70ffa778137ba0bc8267fa8dd83189365d9ff5a2533161432b3d0b"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glad_gles2.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glad_gles2.h",
+      "source_git_blob_sha1": "6c753d0a4d503490cdbc64b2111f094365996922",
+      "source_sha256": "28755a633621b393045c67f750a2903b856364992f7b643a33436895bc227321",
+      "source_bytes": 289641,
+      "notice_file": "glad_gles2.h.license.txt",
+      "notice_sha256": "d01f421551487bcae481dc6514b9c0917e2d8c78b1021724c4ab652a314cdce5",
+      "notice_bytes": 6321,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 5102,
+          "sha256": "73b95f08deaf57ce40ea1acd002b10dd1874697422f15693c626ea110e60009b"
+        },
+        {
+          "start": 53367,
+          "end": 54513,
+          "sha256": "fd7c88f69e70ffa778137ba0bc8267fa8dd83189365d9ff5a2533161432b3d0b"
+        },
+        {
+          "start": 176463,
+          "end": 176532,
+          "sha256": "3c4717568c2d0bf967ec9a8ae2d618fdf6aacf5960fb5993769b658b7f3b4037"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/LICENSE.md",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/LICENSE.md",
+      "source_git_blob_sha1": "7494a3f689caf46e268f7ac0b28a07f5416f8c65",
+      "source_sha256": "149704059b5d0bf551637e50042dd4de9c2cae921021f6636298911e3a5f9462",
+      "source_bytes": 904,
+      "notice_file": "glfw/LICENSE.md.license.txt",
+      "notice_sha256": "149704059b5d0bf551637e50042dd4de9c2cae921021f6636298911e3a5f9462",
+      "notice_bytes": 904,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 904,
+          "sha256": "149704059b5d0bf551637e50042dd4de9c2cae921021f6636298911e3a5f9462"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/fractional-scale-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/fractional-scale-v1.xml",
+      "source_git_blob_sha1": "350bfc01eafa03e0b8a9cebbb6c59c398201ba8c",
+      "source_sha256": "5941de5d28f427ecdadddc8623a6f6af0a30b0ab4726847236ba7a7652b81316",
+      "source_bytes": 4636,
+      "notice_file": "glfw/deps/wayland/fractional-scale-v1.xml.license.txt",
+      "notice_sha256": "ade0cc43fd1d9bbec6dc030ac020f1290b134bbcc0c745ecf8fd731ffa91e991",
+      "notice_bytes": 1183,
+      "ranges": [
+        {
+          "start": 79,
+          "end": 1262,
+          "sha256": "ade0cc43fd1d9bbec6dc030ac020f1290b134bbcc0c745ecf8fd731ffa91e991"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/idle-inhibit-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/idle-inhibit-unstable-v1.xml",
+      "source_git_blob_sha1": "9c06cdcba6c06f978ac81ab70ad4b3f77911c4a4",
+      "source_sha256": "c2ac9f002c6669ca6c02eb9b587b8e9108e3ce6deab4a2de58b576f4f864ca38",
+      "source_bytes": 4017,
+      "notice_file": "glfw/deps/wayland/idle-inhibit-unstable-v1.xml.license.txt",
+      "notice_sha256": "bdb2efb81c5d5a45bf1b7c5456fdb61470bfa0ebb658e6d9bf4f6f851c344e5a",
+      "notice_bytes": 1197,
+      "ranges": [
+        {
+          "start": 85,
+          "end": 1282,
+          "sha256": "bdb2efb81c5d5a45bf1b7c5456fdb61470bfa0ebb658e6d9bf4f6f851c344e5a"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/pointer-constraints-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/pointer-constraints-unstable-v1.xml",
+      "source_git_blob_sha1": "efd64b6603c8da85bbdfccef737e07da133d1d33",
+      "source_sha256": "92553c58baa04931afcd409a9d947518b70bc986b847ccb1ef74f377779b0b5d",
+      "source_bytes": 15451,
+      "notice_file": "glfw/deps/wayland/pointer-constraints-unstable-v1.xml.license.txt",
+      "notice_sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930",
+      "notice_bytes": 1226,
+      "ranges": [
+        {
+          "start": 92,
+          "end": 1318,
+          "sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/relative-pointer-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/relative-pointer-unstable-v1.xml",
+      "source_git_blob_sha1": "ca6f81d12ac1de1960ae1417cf4179def59b69e9",
+      "source_sha256": "ab4930dd3084f732b6fdd12ee6dbd0a112a758ed8a57b170366391dbeb1a22ff",
+      "source_bytes": 6584,
+      "notice_file": "glfw/deps/wayland/relative-pointer-unstable-v1.xml.license.txt",
+      "notice_sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930",
+      "notice_bytes": 1226,
+      "ranges": [
+        {
+          "start": 89,
+          "end": 1315,
+          "sha256": "200a4bfbe9aafec82e9716924d0d6f2a7b46fd26af6695d8c6715567f6fcb930"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/viewporter.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/viewporter.xml",
+      "source_git_blob_sha1": "d1048d1f3327603af92ceaa446843f8fc354f819",
+      "source_sha256": "b327b824ff2799032aa852d9607f8db8f0f672474444812a3b0997d87aa5dd0b",
+      "source_bytes": 8232,
+      "notice_file": "glfw/deps/wayland/viewporter.xml.license.txt",
+      "notice_sha256": "9dade1a69312e718206b9ec3ad6a52ded7d0bab10ae27058e8903b1b0d365094",
+      "notice_bytes": 1189,
+      "ranges": [
+        {
+          "start": 71,
+          "end": 1260,
+          "sha256": "9dade1a69312e718206b9ec3ad6a52ded7d0bab10ae27058e8903b1b0d365094"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/wayland.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/wayland.xml",
+      "source_git_blob_sha1": "10e039d6eccea65542228ceaa41768756216ad4b",
+      "source_sha256": "053bdb354709893dbfb5cee4ee6fbb3eadb4fed78e6d761bb7dc8f30513d6541",
+      "source_bytes": 144896,
+      "notice_file": "glfw/deps/wayland/wayland.xml.license.txt",
+      "notice_sha256": "37c6125a6f8e5e4d05b64d3d8c437be0a62bdaf48f3e27c2774a537f45ca98a6",
+      "notice_bytes": 1288,
+      "ranges": [
+        {
+          "start": 68,
+          "end": 1356,
+          "sha256": "37c6125a6f8e5e4d05b64d3d8c437be0a62bdaf48f3e27c2774a537f45ca98a6"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/xdg-activation-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/xdg-activation-v1.xml",
+      "source_git_blob_sha1": "9adcc274ef14a58a307270c8c7b15fb10c22f7e1",
+      "source_sha256": "d8418be2d5738d50aff788bef1c7574f33f26659aa045447ff2ef9b78c58fe01",
+      "source_bytes": 9016,
+      "notice_file": "glfw/deps/wayland/xdg-activation-v1.xml.license.txt",
+      "notice_sha256": "122597c57b521bb35895e513adefe8c707d27da5e93371e8979d3ca7eb7705c8",
+      "notice_bytes": 1276,
+      "ranges": [
+        {
+          "start": 78,
+          "end": 1354,
+          "sha256": "122597c57b521bb35895e513adefe8c707d27da5e93371e8979d3ca7eb7705c8"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/xdg-decoration-unstable-v1.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/xdg-decoration-unstable-v1.xml",
+      "source_git_blob_sha1": "e5967751d7f3db14859982ef3704fc28e4db7b79",
+      "source_sha256": "88e2d60f7ca8df5e034b816fb8a4b3f0b2abd6fc07b4ee6ca058a72404ea6904",
+      "source_bytes": 7089,
+      "notice_file": "glfw/deps/wayland/xdg-decoration-unstable-v1.xml.license.txt",
+      "notice_sha256": "0049d53679071f98be3ba3b67e3d4df9673353bf5777f0e50ea69468bc3370e0",
+      "notice_bytes": 1178,
+      "ranges": [
+        {
+          "start": 86,
+          "end": 1264,
+          "sha256": "0049d53679071f98be3ba3b67e3d4df9673353bf5777f0e50ea69468bc3370e0"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/deps/wayland/xdg-shell.xml",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/deps/wayland/xdg-shell.xml",
+      "source_git_blob_sha1": "777eaa7499ad26cfcdaf422b6ed2c9df6c4e9ab2",
+      "source_sha256": "b72112a7a1f9b2ad94ffa59468753ced568d6e7b2069df94a9d437e488b8506e",
+      "source_bytes": 60418,
+      "notice_file": "glfw/deps/wayland/xdg-shell.xml.license.txt",
+      "notice_sha256": "08fd771f993367ab945922838e5ef68bc58202eca5da64709ce5fe69af956e7d",
+      "notice_bytes": 1423,
+      "ranges": [
+        {
+          "start": 70,
+          "end": 1493,
+          "sha256": "08fd771f993367ab945922838e5ef68bc58202eca5da64709ce5fe69af956e7d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/include/GLFW/glfw3.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/include/GLFW/glfw3.h",
+      "source_git_blob_sha1": "dec5700245c1f47853f9731145d851f156928758",
+      "source_sha256": "95ecc16e4875bca18cff863232d5dbb623f3457b05f07efd26fe8bc8a06345b6",
+      "source_bytes": 243818,
+      "notice_file": "glfw/include/GLFW/glfw3.h.license.txt",
+      "notice_sha256": "6f0bdcf905be5aad46319705979605f502ca43a130b4ac100af3933e6b758af6",
+      "notice_bytes": 1279,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1279,
+          "sha256": "6f0bdcf905be5aad46319705979605f502ca43a130b4ac100af3933e6b758af6"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/include/GLFW/glfw3native.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/include/GLFW/glfw3native.h",
+      "source_git_blob_sha1": "8db2cfa3b28e02f5602737745ec953c2e648fd58",
+      "source_sha256": "d301085c2a998345c0f80127d8e67d4394f1c7b12ca9c2cf3b73b7fa15c804ae",
+      "source_bytes": 22931,
+      "notice_file": "glfw/include/GLFW/glfw3native.h.license.txt",
+      "notice_sha256": "268b1546e98a7469931c264088f6141b50e3fbae1b929225b721f5efa4e451fb",
+      "notice_bytes": 1279,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1279,
+          "sha256": "268b1546e98a7469931c264088f6141b50e3fbae1b929225b721f5efa4e451fb"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/cocoa_init.m",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/cocoa_init.m",
+      "source_git_blob_sha1": "95d6289e3e19093b95120873aad25606ec8673bb",
+      "source_sha256": "deb56d1b01fd04908d5c83e5b78146b2eb753f581fd143778288a8257f19d00a",
+      "source_bytes": 23839,
+      "notice_file": "glfw/src/cocoa_init.m.license.txt",
+      "notice_sha256": "af04cdff43bc957af314410fcb13c695cc9b4de1c73add30e7c03a201bc4a8d1",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "af04cdff43bc957af314410fcb13c695cc9b4de1c73add30e7c03a201bc4a8d1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/cocoa_joystick.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/cocoa_joystick.h",
+      "source_git_blob_sha1": "c3a58e23eaca59c9438973e38a2afb8873660ca6",
+      "source_sha256": "af44682e64e88526373aebb5a48f53edde18eee158b8f4dbd55f25ebde575ccc",
+      "source_bytes": 1849,
+      "notice_file": "glfw/src/cocoa_joystick.h.license.txt",
+      "notice_sha256": "b93d2dd786d24184d32d05738c27caed4f05713a2e3063b0491dcdffad91d775",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "b93d2dd786d24184d32d05738c27caed4f05713a2e3063b0491dcdffad91d775"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/cocoa_joystick.m",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/cocoa_joystick.m",
+      "source_git_blob_sha1": "bb86ad226eb0ace2d0017204189c8a4149a23054",
+      "source_sha256": "b3d9ec109c5496a43443cc64727fffd1d8d2e0e01063c3be5cec59b87e6a3de4",
+      "source_bytes": 15740,
+      "notice_file": "glfw/src/cocoa_joystick.m.license.txt",
+      "notice_sha256": "c3490cba3ee7f2fe3edc0135300a8c81bd2196f286997168e90cd1e26542aeaf",
+      "notice_bytes": 1390,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1254,
+          "sha256": "be89ce8ddae3f77334f439678cb14ca7a0e6be9ea0c5488d8cbab16c71a3c588"
+        },
+        {
+          "start": 4173,
+          "end": 4307,
+          "sha256": "7dc289e01a58838d45b39786190771da3e34f3260e13b6b429f6d85d9438646c"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/cocoa_monitor.m",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/cocoa_monitor.m",
+      "source_git_blob_sha1": "620a8cfb766917bab04525dda07b20f356cadd08",
+      "source_sha256": "0ec584e087bffb7bb9f8b7782792e46d2969966d109da3d0bb1d897457075cf6",
+      "source_bytes": 19688,
+      "notice_file": "glfw/src/cocoa_monitor.m.license.txt",
+      "notice_sha256": "b48c8f0d2894baa256aedea851d7a27f9e6355afc5f79ddd2b399493747fa50b",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "b48c8f0d2894baa256aedea851d7a27f9e6355afc5f79ddd2b399493747fa50b"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/cocoa_platform.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/cocoa_platform.h",
+      "source_git_blob_sha1": "175372d6088df0c174b5382700c8e3f4f599f79a",
+      "source_sha256": "b1e91a156eb4017f94d87303881a6db1db4d8a2fac98906f7096c217142da1eb",
+      "source_bytes": 12874,
+      "notice_file": "glfw/src/cocoa_platform.h.license.txt",
+      "notice_sha256": "af04cdff43bc957af314410fcb13c695cc9b4de1c73add30e7c03a201bc4a8d1",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "af04cdff43bc957af314410fcb13c695cc9b4de1c73add30e7c03a201bc4a8d1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/cocoa_window.m",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/cocoa_window.m",
+      "source_git_blob_sha1": "6104980809dbf6ff2463d352598c3ee315b0b29b",
+      "source_sha256": "63f7d7fad22c016b587eb9ba319167f65e18388eb11308781383e121e58ccf72",
+      "source_bytes": 60527,
+      "notice_file": "glfw/src/cocoa_window.m.license.txt",
+      "notice_sha256": "af04cdff43bc957af314410fcb13c695cc9b4de1c73add30e7c03a201bc4a8d1",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "af04cdff43bc957af314410fcb13c695cc9b4de1c73add30e7c03a201bc4a8d1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/context.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/context.c",
+      "source_git_blob_sha1": "a584cb12f6aba8138b181c68a4bcbfe11d6622a4",
+      "source_sha256": "1555a8d185de9c64b86eba2beabaea151d33c9162813e562724d4109aae403fb",
+      "source_bytes": 25801,
+      "notice_file": "glfw/src/context.c.license.txt",
+      "notice_sha256": "e9c6d180b40eb1f1fd9303c5a8965f815945b2f6caf4f29e1d3597ec629ef381",
+      "notice_bytes": 1236,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "e9c6d180b40eb1f1fd9303c5a8965f815945b2f6caf4f29e1d3597ec629ef381"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/egl_context.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/egl_context.c",
+      "source_git_blob_sha1": "4d436d398733be9c2ab09ade13e5ce3ae620081b",
+      "source_sha256": "a9d01f5c4b78dc5a186971847e2500a1e85f445582be54b092ae85c02ced3e3b",
+      "source_bytes": 32384,
+      "notice_file": "glfw/src/egl_context.c.license.txt",
+      "notice_sha256": "9cd7969d5b1ef6602f356e7899a9da8a6b9f67d3b893d945de7de44541232d27",
+      "notice_bytes": 1240,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "9cd7969d5b1ef6602f356e7899a9da8a6b9f67d3b893d945de7de44541232d27"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/glx_context.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/glx_context.c",
+      "source_git_blob_sha1": "f56f674e650be9b21a8b6049e180edb34cad0d93",
+      "source_sha256": "1c022c0e4e24dcdde1aaa6cca58b50fc464295a9e87b79f5ecbe38bc5fb5012f",
+      "source_bytes": 24203,
+      "notice_file": "glfw/src/glx_context.c.license.txt",
+      "notice_sha256": "d4e9f641f35b5ad70ef85ee132a6dd212648a0d94818357c221da2b93fb4b57b",
+      "notice_bytes": 1240,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "d4e9f641f35b5ad70ef85ee132a6dd212648a0d94818357c221da2b93fb4b57b"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/init.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/init.c",
+      "source_git_blob_sha1": "7cd872c7f0ff82d36fd085ac90e4eea9fa180ca1",
+      "source_sha256": "d2b87ac99ee03a2f4bc4e3f2134dd32cd1bac7f9fc9821727d51f0df5166d507",
+      "source_bytes": 14484,
+      "notice_file": "glfw/src/init.c.license.txt",
+      "notice_sha256": "86d374a32f67cca00c10619ccb5c62a9102984a89cdfed9e539045682427f578",
+      "notice_bytes": 1567,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "23810674ed847427e1672b850952378c267522ee68c3a37dccd63f4815ab4aa1"
+        },
+        {
+          "start": 3993,
+          "end": 4322,
+          "sha256": "f1a6dfe31de80e53765f3097a54e026f42e04862e27d7a8fab524e93973e1cf3"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/input.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/input.c",
+      "source_git_blob_sha1": "b68ddef4d2e289ff94316fb4e390b179ad5d821e",
+      "source_sha256": "d750bc5a5553aae4e7f0e9d4b1628d06dc7e0626b847efba26b800943b0c0f6d",
+      "source_bytes": 41556,
+      "notice_file": "glfw/src/input.c.license.txt",
+      "notice_sha256": "5e4d0c041fc28a088426d60db2dc0e08e1138ab0d043a682ff6e72bcb57f52a5",
+      "notice_bytes": 1236,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "5e4d0c041fc28a088426d60db2dc0e08e1138ab0d043a682ff6e72bcb57f52a5"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/internal.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/internal.h",
+      "source_git_blob_sha1": "fc3ceda5970769378ca6b0c73b29dce972ecfd57",
+      "source_sha256": "fec6a5d74a8873e97da2dc6427daed63350c1de41f7aa03d9c39a04cd76f45a6",
+      "source_bytes": 36455,
+      "notice_file": "glfw/src/internal.h.license.txt",
+      "notice_sha256": "5e4d0c041fc28a088426d60db2dc0e08e1138ab0d043a682ff6e72bcb57f52a5",
+      "notice_bytes": 1236,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "5e4d0c041fc28a088426d60db2dc0e08e1138ab0d043a682ff6e72bcb57f52a5"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/linux_joystick.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/linux_joystick.c",
+      "source_git_blob_sha1": "e4d2852b314ee4213b2ee0d898767c1210377242",
+      "source_sha256": "b6691fbb3d80dd3ff5f560828b6fae0045ade62777b33ab3f7787e1074da790e",
+      "source_bytes": 12427,
+      "notice_file": "glfw/src/linux_joystick.c.license.txt",
+      "notice_sha256": "27578c68b37aca089b28a497a009d0974bba5faec802fc4313f525718f465c1b",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "27578c68b37aca089b28a497a009d0974bba5faec802fc4313f525718f465c1b"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/linux_joystick.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/linux_joystick.h",
+      "source_git_blob_sha1": "1ea3deb3da2287a7f58b3df6c48a404af6d3e0bd",
+      "source_sha256": "f18c9fabd1b92c47c0c60be97cc7a91ae1aa7682f2730a2ab2ce5b4d3f290dcb",
+      "source_bytes": 2322,
+      "notice_file": "glfw/src/linux_joystick.h.license.txt",
+      "notice_sha256": "c0db8f5fd8e687ae662092d189d5a8a23276e8554cb885aa19e260ef7a2600b7",
+      "notice_bytes": 1190,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1190,
+          "sha256": "c0db8f5fd8e687ae662092d189d5a8a23276e8554cb885aa19e260ef7a2600b7"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/macos_time.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/macos_time.c",
+      "source_git_blob_sha1": "c66ea3c9bbc12be9c01637cd07cd090776d397e5",
+      "source_sha256": "2597d7277e6f4323bcc2c37c331eec65d59243107e1af20880fe9e003c31c043",
+      "source_bytes": 1896,
+      "notice_file": "glfw/src/macos_time.c.license.txt",
+      "notice_sha256": "97b7e92115c0c062c897b893275b8c5ebf0c8e7e1e232857e74bf6707e844b3d",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "97b7e92115c0c062c897b893275b8c5ebf0c8e7e1e232857e74bf6707e844b3d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/macos_time.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/macos_time.h",
+      "source_git_blob_sha1": "77bf119aee5aac5c1d11642cc4e753d5066075bc",
+      "source_sha256": "1c4e574a4482c3c28785f37c1d02389a843a4d031fc391359f989b532beb4b17",
+      "source_bytes": 1387,
+      "notice_file": "glfw/src/macos_time.h.license.txt",
+      "notice_sha256": "fbfd1ddb58c97a4d8d56c2242277383ade2609c93447981f02b567f5dbc619f1",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "fbfd1ddb58c97a4d8d56c2242277383ade2609c93447981f02b567f5dbc619f1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/mappings.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/mappings.h",
+      "source_git_blob_sha1": "cd32e5d05b06892d4c559343fd97dfa8c8f7c94b",
+      "source_sha256": "67e203c5e06401fdfbb623fa489581947fd6f0c0bd35ce876f73df5d653a665f",
+      "source_bytes": 256981,
+      "notice_file": "glfw/src/mappings.h.license.txt",
+      "notice_sha256": "3dad2e6968a1a27414a207de4deac3e99ef98d29eaa252c76bfa5943fa2be720",
+      "notice_bytes": 2965,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 2965,
+          "sha256": "3dad2e6968a1a27414a207de4deac3e99ef98d29eaa252c76bfa5943fa2be720"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/monitor.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/monitor.c",
+      "source_git_blob_sha1": "7cdf2df1f00b301ea2dde7ea84724f41caae7bd2",
+      "source_sha256": "f1139c60d99f79e8e586877c8cc3f88a9e1b8922e54f8bed64c01012272ec7de",
+      "source_bytes": 15184,
+      "notice_file": "glfw/src/monitor.c.license.txt",
+      "notice_sha256": "5e4d0c041fc28a088426d60db2dc0e08e1138ab0d043a682ff6e72bcb57f52a5",
+      "notice_bytes": 1236,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "5e4d0c041fc28a088426d60db2dc0e08e1138ab0d043a682ff6e72bcb57f52a5"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/nsgl_context.m",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/nsgl_context.m",
+      "source_git_blob_sha1": "cc676171e2111ccd4d372417c1d78d30db73b0a1",
+      "source_sha256": "a532f5084a72e484985504b9d0540d11fff86e6e2beec1b6da2f58d90978b0b0",
+      "source_bytes": 11771,
+      "notice_file": "glfw/src/nsgl_context.m.license.txt",
+      "notice_sha256": "f218aa4a7f8ed67bbdce24f2e2344387077b66b4a0b9d25a24e2f022524cbd05",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "f218aa4a7f8ed67bbdce24f2e2344387077b66b4a0b9d25a24e2f022524cbd05"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/null_init.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/null_init.c",
+      "source_git_blob_sha1": "fd0d9e9698fa0815676df281b9d25d803c6e70fc",
+      "source_sha256": "90e32f70e6a0cee1bc306c95e9a30148a58e0801864421f4c73ce3e380945bf5",
+      "source_bytes": 14485,
+      "notice_file": "glfw/src/null_init.c.license.txt",
+      "notice_sha256": "140420d1861d0f0b324fd40a6d7523d5c88972985def9ff86ae0d3180414c779",
+      "notice_bytes": 1227,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1227,
+          "sha256": "140420d1861d0f0b324fd40a6d7523d5c88972985def9ff86ae0d3180414c779"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/null_joystick.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/null_joystick.c",
+      "source_git_blob_sha1": "16dc8cf32d810c6ebe528ca2641b7782000142b1",
+      "source_sha256": "cab40056113cbaf530c1c2237ac3fe28c49ce966cf7b0a30b0656413e9c179b2",
+      "source_bytes": 1753,
+      "notice_file": "glfw/src/null_joystick.c.license.txt",
+      "notice_sha256": "e19aa0d9cffcef1b585403063e686a3a48e5811de77d5b5b9f538e0c52590218",
+      "notice_bytes": 1193,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1193,
+          "sha256": "e19aa0d9cffcef1b585403063e686a3a48e5811de77d5b5b9f538e0c52590218"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/null_joystick.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/null_joystick.h",
+      "source_git_blob_sha1": "40a490f9024372b5287373ded20f0759751cd50d",
+      "source_sha256": "17588d2c8616df080e1932228cedb77561f33e4d11f680e7243959866b2114d7",
+      "source_bytes": 1424,
+      "notice_file": "glfw/src/null_joystick.h.license.txt",
+      "notice_sha256": "f5c17d4b096e5c94b79031dea224da2179ca849d279976218009ba1804a64bda",
+      "notice_bytes": 1193,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1193,
+          "sha256": "f5c17d4b096e5c94b79031dea224da2179ca849d279976218009ba1804a64bda"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/null_monitor.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/null_monitor.c",
+      "source_git_blob_sha1": "a9b528f03a740fd7defef011fd45aa5a5abe41cd",
+      "source_sha256": "4b0192f700bb353ef535251e0985235fbc0ae9e26b55a79c95cfd1604e09bf22",
+      "source_bytes": 5178,
+      "notice_file": "glfw/src/null_monitor.c.license.txt",
+      "notice_sha256": "603231d0dfffbb8f48089af59f81b47efd76524e01eab597c66e0191f317f39b",
+      "notice_bytes": 1227,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1227,
+          "sha256": "603231d0dfffbb8f48089af59f81b47efd76524e01eab597c66e0191f317f39b"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/null_platform.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/null_platform.h",
+      "source_git_blob_sha1": "dbcb835b8347f61cb9d24310e2cead44dc0272ea",
+      "source_sha256": "7ce4254caf8da442216158650fef8ab8bab0364e3ea74fa41c4028b4a3b94621",
+      "source_bytes": 12244,
+      "notice_file": "glfw/src/null_platform.h.license.txt",
+      "notice_sha256": "140420d1861d0f0b324fd40a6d7523d5c88972985def9ff86ae0d3180414c779",
+      "notice_bytes": 1227,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1227,
+          "sha256": "140420d1861d0f0b324fd40a6d7523d5c88972985def9ff86ae0d3180414c779"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/null_window.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/null_window.c",
+      "source_git_blob_sha1": "f0e1dcc9a9a6664fb8716aedd6804374fa277f41",
+      "source_sha256": "123b2a750fef93a533cd2e07281cdcdfc95421bf7881d2c9137ef355e38679a0",
+      "source_bytes": 19696,
+      "notice_file": "glfw/src/null_window.c.license.txt",
+      "notice_sha256": "603231d0dfffbb8f48089af59f81b47efd76524e01eab597c66e0191f317f39b",
+      "notice_bytes": 1227,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1227,
+          "sha256": "603231d0dfffbb8f48089af59f81b47efd76524e01eab597c66e0191f317f39b"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/osmesa_context.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/osmesa_context.c",
+      "source_git_blob_sha1": "c7a4c86863180a37b35ece09efc75e052359ab95",
+      "source_sha256": "7db59920557fb704b8535ce85a57b37966be5f056ed8c1321e46ab66502415c5",
+      "source_bytes": 11917,
+      "notice_file": "glfw/src/osmesa_context.c.license.txt",
+      "notice_sha256": "94ec3bfa9a791318edaee8e04d4089a4aae3e19b82d11d9c780446d997770efc",
+      "notice_bytes": 1234,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1234,
+          "sha256": "94ec3bfa9a791318edaee8e04d4089a4aae3e19b82d11d9c780446d997770efc"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/platform.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/platform.c",
+      "source_git_blob_sha1": "95b8d0b58956fd04154ea196fc26b3575551b678",
+      "source_sha256": "7b903e5732a825fe52198213f24c12b03e5e9089f4eeb7cf49eb74f31ba865dc",
+      "source_bytes": 6522,
+      "notice_file": "glfw/src/platform.c.license.txt",
+      "notice_sha256": "23810674ed847427e1672b850952378c267522ee68c3a37dccd63f4815ab4aa1",
+      "notice_bytes": 1236,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "23810674ed847427e1672b850952378c267522ee68c3a37dccd63f4815ab4aa1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/platform.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/platform.h",
+      "source_git_blob_sha1": "398f463f5addc661008d68131c4292116bf60eeb",
+      "source_sha256": "40e9e4950b1c7ad49d251b8885b118f5fe9f44ab58111a883aebd8a701a5a4e3",
+      "source_bytes": 6446,
+      "notice_file": "glfw/src/platform.h.license.txt",
+      "notice_sha256": "23810674ed847427e1672b850952378c267522ee68c3a37dccd63f4815ab4aa1",
+      "notice_bytes": 1236,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "23810674ed847427e1672b850952378c267522ee68c3a37dccd63f4815ab4aa1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/posix_module.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/posix_module.c",
+      "source_git_blob_sha1": "de99bc6918cb1052e20163088d04154bf5e11610",
+      "source_sha256": "39adce2a7972f1d4d5733d2588b915456e2042471185b4d52dea88c1fe4dca71",
+      "source_bytes": 1836,
+      "notice_file": "glfw/src/posix_module.c.license.txt",
+      "notice_sha256": "7586ecd213650d22cb3c0351c7ce31caaf4176afe730609c6e444f9335c58a9d",
+      "notice_bytes": 1194,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1194,
+          "sha256": "7586ecd213650d22cb3c0351c7ce31caaf4176afe730609c6e444f9335c58a9d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/posix_poll.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/posix_poll.c",
+      "source_git_blob_sha1": "595cf71736e1c0a99132d0d79a046d3bff47f5d2",
+      "source_sha256": "10661b1ab39c51cdd419f71731d44d74f0a01ba64912546bc115194d26a46868",
+      "source_bytes": 3044,
+      "notice_file": "glfw/src/posix_poll.c.license.txt",
+      "notice_sha256": "8dcd1370efb1fbf5b4e7b664b2267e64826de4558e1722d6323c219b45e204a6",
+      "notice_bytes": 1194,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1194,
+          "sha256": "8dcd1370efb1fbf5b4e7b664b2267e64826de4558e1722d6323c219b45e204a6"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/posix_poll.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/posix_poll.h",
+      "source_git_blob_sha1": "a0ef3962530a056e496bf9098119223c8fbd452f",
+      "source_sha256": "b97b1079a3db8ce811a45d53dcdfba7b9bfe260f1cd3fa8e648990634dc8693c",
+      "source_bytes": 1292,
+      "notice_file": "glfw/src/posix_poll.h.license.txt",
+      "notice_sha256": "8dcd1370efb1fbf5b4e7b664b2267e64826de4558e1722d6323c219b45e204a6",
+      "notice_bytes": 1194,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1194,
+          "sha256": "8dcd1370efb1fbf5b4e7b664b2267e64826de4558e1722d6323c219b45e204a6"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/posix_thread.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/posix_thread.c",
+      "source_git_blob_sha1": "bab74d4f2d4b3cfc2cb99e6735d6d8eff4675a5a",
+      "source_sha256": "f81c8e10cc0c2c61cce554b5076818987b104a4bea99ac51df299ef4c0817d2b",
+      "source_bytes": 3245,
+      "notice_file": "glfw/src/posix_thread.c.license.txt",
+      "notice_sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/posix_thread.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/posix_thread.h",
+      "source_git_blob_sha1": "ce298a8b46646a8af817c48e27a56544edcb53e1",
+      "source_sha256": "3c28b9404812a7f483aee79bde48e74dd8bde3170fb97e8dfe493da930996c2f",
+      "source_bytes": 1674,
+      "notice_file": "glfw/src/posix_thread.h.license.txt",
+      "notice_sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/posix_time.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/posix_time.c",
+      "source_git_blob_sha1": "4d7bd7cea88b71da166086354d6db2a0aef1cc47",
+      "source_sha256": "ebf251fbf2ac71d224e5316e4d50ad18e13d7c6b70fea5c55f3f08085f5bfc9d",
+      "source_bytes": 2206,
+      "notice_file": "glfw/src/posix_time.c.license.txt",
+      "notice_sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/posix_time.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/posix_time.h",
+      "source_git_blob_sha1": "39faa0fc44e511028a302900a2fd8caf335fd48e",
+      "source_sha256": "62b5bf4a10e7e36553c6879783cffbf646453b371eaeb4338ab6df18bef26127",
+      "source_bytes": 1489,
+      "notice_file": "glfw/src/posix_time.h.license.txt",
+      "notice_sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "b3f02c16228e4770431ebcd63b2aa13ccc936ae30fee323f2357ba167c2d1d28"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/vulkan.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/vulkan.c",
+      "source_git_blob_sha1": "b93a14a6fe09096b1686c570bb5da9585a3cd6d7",
+      "source_sha256": "cf60b2af6813afa3587da9c18341659e4befe2552426735ed50992a7044ce357",
+      "source_bytes": 12872,
+      "notice_file": "glfw/src/vulkan.c.license.txt",
+      "notice_sha256": "23810674ed847427e1672b850952378c267522ee68c3a37dccd63f4815ab4aa1",
+      "notice_bytes": 1236,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1236,
+          "sha256": "23810674ed847427e1672b850952378c267522ee68c3a37dccd63f4815ab4aa1"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/wgl_context.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/wgl_context.c",
+      "source_git_blob_sha1": "dac695e358f336fd0db9150c7363f120b6ac1a37",
+      "source_sha256": "f0e71ebcee95b48c507d0f981052da64831a06f02ff21a0ca5cfdc79b52fb8f1",
+      "source_bytes": 26768,
+      "notice_file": "glfw/src/wgl_context.c.license.txt",
+      "notice_sha256": "4187bbadfeff6a9e3f611077fe9298668e16efe682c276c05ffc5e1345b54801",
+      "notice_bytes": 1240,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "4187bbadfeff6a9e3f611077fe9298668e16efe682c276c05ffc5e1345b54801"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_init.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_init.c",
+      "source_git_blob_sha1": "d526fe8a3667149ea91f50e53c507318e398359c",
+      "source_sha256": "ec4f7db6d48c8c0c4a9edaee648fa6e421f15fbb113d89b50a1c7be6ca9be732",
+      "source_bytes": 27810,
+      "notice_file": "glfw/src/win32_init.c.license.txt",
+      "notice_sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_joystick.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_joystick.c",
+      "source_git_blob_sha1": "6703485e00aefea6f70aecf4bbedf3b97e694387",
+      "source_sha256": "e1714124ebc5e790ba958fc7c120fa17a2839edcc55809480feeda8b464fb820",
+      "source_bytes": 26711,
+      "notice_file": "glfw/src/win32_joystick.c.license.txt",
+      "notice_sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_joystick.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_joystick.h",
+      "source_git_blob_sha1": "2d8f59d07f8caa305a3a7a01f9b5649a5d3450a7",
+      "source_sha256": "40ed90f3c54d345feed9672f8fb197eddb6e22987f8eaf2d8a3f7d129b1d2b66",
+      "source_bytes": 1870,
+      "notice_file": "glfw/src/win32_joystick.h.license.txt",
+      "notice_sha256": "568b4b6cd712e9ca4aadc7a54a0c1610dced26400c14c0f8123bbb3bb2e00545",
+      "notice_bytes": 1199,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1199,
+          "sha256": "568b4b6cd712e9ca4aadc7a54a0c1610dced26400c14c0f8123bbb3bb2e00545"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_module.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_module.c",
+      "source_git_blob_sha1": "ca5ce9cfa3643ee7c939779c4001e545af6c92e6",
+      "source_sha256": "559ffb520632d09ebd117725fe6936eaf0d07a59907930b8bf118e99dbe70581",
+      "source_bytes": 1842,
+      "notice_file": "glfw/src/win32_module.c.license.txt",
+      "notice_sha256": "ef654b286b0319deabbff347708b0d9a75012d668f0e95a2b44ac5979d951dfe",
+      "notice_bytes": 1194,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1194,
+          "sha256": "ef654b286b0319deabbff347708b0d9a75012d668f0e95a2b44ac5979d951dfe"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_monitor.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_monitor.c",
+      "source_git_blob_sha1": "87e5c206f0de2a7dfbbac86d4f8955c0116cfe22",
+      "source_sha256": "3d8f47e8d87ad5f0be75fce8453b77c924ae97cfb5299599bea3a844fe6e7603",
+      "source_bytes": 17073,
+      "notice_file": "glfw/src/win32_monitor.c.license.txt",
+      "notice_sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_platform.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_platform.h",
+      "source_git_blob_sha1": "5e9a66054c52d6323209922d42afc1b412f5c7d7",
+      "source_sha256": "505e9b111da133b5eb271f543a64ea72f16b3c1640b58adf12c9dca74d08f3bf",
+      "source_bytes": 23270,
+      "notice_file": "glfw/src/win32_platform.h.license.txt",
+      "notice_sha256": "de6a3e162defbd6a3a0d5109f4abe0158de54e5453816eee69c1129da68f5371",
+      "notice_bytes": 1280,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1280,
+          "sha256": "de6a3e162defbd6a3a0d5109f4abe0158de54e5453816eee69c1129da68f5371"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_thread.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_thread.c",
+      "source_git_blob_sha1": "6e418d7a552cc0a1fd5eccc86b52ccdaf3f20f85",
+      "source_sha256": "f1ea844894609ae2ead09b77e51b9ddcf1452a66b517b4b1331fd18bf839dc34",
+      "source_bytes": 3085,
+      "notice_file": "glfw/src/win32_thread.c.license.txt",
+      "notice_sha256": "653cd42dcf1481a50dd10e1bea27eccc48ad05f92e7f7052e63fad90f7b9ff69",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "653cd42dcf1481a50dd10e1bea27eccc48ad05f92e7f7052e63fad90f7b9ff69"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_thread.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_thread.h",
+      "source_git_blob_sha1": "ca96fae22ca101770b72c0fb4d687a80e0e0c3bf",
+      "source_sha256": "a44bf9b2e0cb95d3342a90058adadf9573919706672d434b257fbfaf37d841cc",
+      "source_bytes": 1956,
+      "notice_file": "glfw/src/win32_thread.h.license.txt",
+      "notice_sha256": "ea58e8618fca6853b4383a14978adcb3ec2e15cb9787b0cc25f072458f08dac3",
+      "notice_bytes": 1470,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1470,
+          "sha256": "ea58e8618fca6853b4383a14978adcb3ec2e15cb9787b0cc25f072458f08dac3"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_time.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_time.c",
+      "source_git_blob_sha1": "4a4b2cbb3888134aea28c5188e258866f7f801f9",
+      "source_sha256": "22942d9ad8e7aeb733584ce6acc9cce3f38d73bf98c7a330aead27d1328741a1",
+      "source_bytes": 1911,
+      "notice_file": "glfw/src/win32_time.c.license.txt",
+      "notice_sha256": "653cd42dcf1481a50dd10e1bea27eccc48ad05f92e7f7052e63fad90f7b9ff69",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "653cd42dcf1481a50dd10e1bea27eccc48ad05f92e7f7052e63fad90f7b9ff69"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_time.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_time.h",
+      "source_git_blob_sha1": "f72a5d04860178ff2c74fed40747f38b0d267499",
+      "source_sha256": "758ee634914ed1b7ffbac850267b462b87fd23206a2f40b36641ab06cb12c871",
+      "source_bytes": 1703,
+      "notice_file": "glfw/src/win32_time.h.license.txt",
+      "notice_sha256": "ea58e8618fca6853b4383a14978adcb3ec2e15cb9787b0cc25f072458f08dac3",
+      "notice_bytes": 1470,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1470,
+          "sha256": "ea58e8618fca6853b4383a14978adcb3ec2e15cb9787b0cc25f072458f08dac3"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/win32_window.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/win32_window.c",
+      "source_git_blob_sha1": "8f83a9a082298485c82986f21ab676258b0a5cd1",
+      "source_sha256": "5e41feabb38ee18de7cc1ceb9b8ab68e2985020af0cb6a7788b3c3ba5cb5152e",
+      "source_bytes": 80922,
+      "notice_file": "glfw/src/win32_window.c.license.txt",
+      "notice_sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef",
+      "notice_bytes": 1242,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1242,
+          "sha256": "ec5c93dd09bfbaec2f327f75997fb6dd7ef48152bc8c5643e195390d5c0816ef"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/window.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/window.c",
+      "source_git_blob_sha1": "5f92e97f9357fa14109a95ff0a535cec5e08bdea",
+      "source_sha256": "48e24362b5d28d91cbeb974b54fef3814d2ef153a41c1ff72cb929fae35503fa",
+      "source_bytes": 34512,
+      "notice_file": "glfw/src/window.c.license.txt",
+      "notice_sha256": "8d8064413644dc18660e9caeb661c86ac84e34c4db024783a574b2cc30cba513",
+      "notice_bytes": 1291,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1291,
+          "sha256": "8d8064413644dc18660e9caeb661c86ac84e34c4db024783a574b2cc30cba513"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/wl_init.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/wl_init.c",
+      "source_git_blob_sha1": "e6da57822883f4867cba744f467d43286a986118",
+      "source_sha256": "12c743a66d28bede0cf816d66756f2c5699c196d1d1fb0548a43821fefb7db07",
+      "source_bytes": 46900,
+      "notice_file": "glfw/src/wl_init.c.license.txt",
+      "notice_sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e",
+      "notice_bytes": 1192,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1192,
+          "sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/wl_monitor.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/wl_monitor.c",
+      "source_git_blob_sha1": "1ec5f5afa49c42ef7f180253b2a4913012507025",
+      "source_sha256": "31de35f3c4433e126084dd0e3e1a454f06b13aeb0ce3ea56305bfe121ab8c6a1",
+      "source_bytes": 8677,
+      "notice_file": "glfw/src/wl_monitor.c.license.txt",
+      "notice_sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e",
+      "notice_bytes": 1192,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1192,
+          "sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/wl_platform.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/wl_platform.h",
+      "source_git_blob_sha1": "405ea6334aa472e7e78a9bdbbf7f66ec0cfa5bb3",
+      "source_sha256": "fb838adf68bc70f3299d362cc03294ee7ed68920449762cf8201ca47160fb74d",
+      "source_bytes": 37316,
+      "notice_file": "glfw/src/wl_platform.h.license.txt",
+      "notice_sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e",
+      "notice_bytes": 1192,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1192,
+          "sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/wl_window.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/wl_window.c",
+      "source_git_blob_sha1": "fd8553a56a3391d4831dc7878d7eb6b2d7767aa4",
+      "source_sha256": "16c71a92a4a0bfe4711e6d2b4e651dde89d0d3c81f344047b980a4668c9dac8f",
+      "source_bytes": 112835,
+      "notice_file": "glfw/src/wl_window.c.license.txt",
+      "notice_sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e",
+      "notice_bytes": 1192,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1192,
+          "sha256": "bf889d4a234c574312bd8448e24a150f3aed8001aa0d2e723bf2ede63b95580e"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/x11_init.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/x11_init.c",
+      "source_git_blob_sha1": "b0acbf7f6c523d14a2810237a91e0f8cb0fb8104",
+      "source_sha256": "1e21738fd8dae202db64fd1d9a7d69bc008acd04dd8d78a20981c392380dc9f9",
+      "source_bytes": 69901,
+      "notice_file": "glfw/src/x11_init.c.license.txt",
+      "notice_sha256": "27773855349ab61bc22f2ad0e5a973857efab83801270da52a30a0cc75a6c5ec",
+      "notice_bytes": 1240,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "27773855349ab61bc22f2ad0e5a973857efab83801270da52a30a0cc75a6c5ec"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/x11_monitor.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/x11_monitor.c",
+      "source_git_blob_sha1": "abf9cbff54dcccfce2f3b005730e99c76a8bb5d3",
+      "source_sha256": "dfa9666d506b13709190e318f2a83d38073bec28ba08aa356dd611608a7cae52",
+      "source_bytes": 20331,
+      "notice_file": "glfw/src/x11_monitor.c.license.txt",
+      "notice_sha256": "27773855349ab61bc22f2ad0e5a973857efab83801270da52a30a0cc75a6c5ec",
+      "notice_bytes": 1240,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "27773855349ab61bc22f2ad0e5a973857efab83801270da52a30a0cc75a6c5ec"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/x11_platform.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/x11_platform.h",
+      "source_git_blob_sha1": "64915fca759d98bca479a75a64900599680de25b",
+      "source_sha256": "52787dd014ea4d26baa34e9c2823b9745fdf8ea4322cf108037429c7236dfb6f",
+      "source_bytes": 44819,
+      "notice_file": "glfw/src/x11_platform.h.license.txt",
+      "notice_sha256": "27773855349ab61bc22f2ad0e5a973857efab83801270da52a30a0cc75a6c5ec",
+      "notice_bytes": 1240,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "27773855349ab61bc22f2ad0e5a973857efab83801270da52a30a0cc75a6c5ec"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/x11_window.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/x11_window.c",
+      "source_git_blob_sha1": "f46a7e6cee3d61d2cd7ea035a80624708a63e242",
+      "source_sha256": "754d7553b140ef9890d397048eaf5ddd7b3179038d5e6b6a26d51bff6ec00f39",
+      "source_bytes": 107115,
+      "notice_file": "glfw/src/x11_window.c.license.txt",
+      "notice_sha256": "695accc7563367318dd6cd4ed5fd008bd8e7a87864d6175767fd700092813cb3",
+      "notice_bytes": 1347,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "27773855349ab61bc22f2ad0e5a973857efab83801270da52a30a0cc75a6c5ec"
+        },
+        {
+          "start": 12706,
+          "end": 12811,
+          "sha256": "31fdfce1cb850ff17ffc2a9bdf8eaa29518fa7c8bcd46cc44564e00fea1f5df9"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/glfw/src/xkb_unicode.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/glfw/src/xkb_unicode.c",
+      "source_git_blob_sha1": "7a4ee10a7b6134d1d331c1f416e3396355e71a07",
+      "source_sha256": "03d975ce3cec2ad05dc39114d5537422f1d12f6dbf3d2de46d6b800fd439b0bc",
+      "source_bytes": 22903,
+      "notice_file": "glfw/src/xkb_unicode.c.license.txt",
+      "notice_sha256": "d84802b16ef3ad8acdf89c0fab7be94a09b697d589d0720877664e80f873978f",
+      "notice_bytes": 1240,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1240,
+          "sha256": "d84802b16ef3ad8acdf89c0fab7be94a09b697d589d0720877664e80f873978f"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/jar_mod.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/jar_mod.h",
+      "source_git_blob_sha1": "12b8101c423a778f06a5bc172d4caca15b25a2e5",
+      "source_sha256": "d7254852ca8384669ce6fefc3eb8ec8d228a998b4df6b7a2682bc7409f2aced3",
+      "source_bytes": 52024,
+      "notice_file": "jar_mod.h.license.txt",
+      "notice_sha256": "b991b561b9d2194dc7cdfac0e76ca0a2d66ebafed35ddf5b3d795e770ca6f893",
+      "notice_bytes": 2824,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 2824,
+          "sha256": "b991b561b9d2194dc7cdfac0e76ca0a2d66ebafed35ddf5b3d795e770ca6f893"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/jar_xm.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/jar_xm.h",
+      "source_git_blob_sha1": "849fe62f4ae6e46bf4088a2327bcbe792f6c9c5d",
+      "source_sha256": "bb3385539985c36d7ea1b719e494890f339ce0c019c3dc73c03a242dd2ed1999",
+      "source_bytes": 102215,
+      "notice_file": "jar_xm.h.license.txt",
+      "notice_sha256": "82c865bd153c9cb4c4f26178fe63bbad490e0df49db75566946522d8d6bf5466",
+      "notice_bytes": 2048,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 2048,
+          "sha256": "82c865bd153c9cb4c4f26178fe63bbad490e0df49db75566946522d8d6bf5466"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/m3d.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/m3d.h",
+      "source_git_blob_sha1": "8bba18325a7114e970dd72cd28539227b7541ce7",
+      "source_sha256": "6f4a44c016b4d18cc996126af9a722672bdb0b45ec48d3879f426efc51c88149",
+      "source_bytes": 306683,
+      "notice_file": "m3d.h.license.txt",
+      "notice_sha256": "36d7ba0a29143f7cd1f81f3086d7a2f3cf089dac3e0df5baf4ad92c5020acc02",
+      "notice_bytes": 1808,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1507,
+          "sha256": "f302a28416939201865642d109e887b7f19bf710d5faff6b9251d58f1eb3ade6"
+        },
+        {
+          "start": 16341,
+          "end": 16410,
+          "sha256": "f809bb0c4fa628acc582462958630f02b4621ff6f6b553b40fb3659084bb8646"
+        },
+        {
+          "start": 26294,
+          "end": 26406,
+          "sha256": "abba7cdb14ba479a1856313c00fe09467d7d3b61d98586e0adf2b4475fe7b62b"
+        },
+        {
+          "start": 68948,
+          "end": 69062,
+          "sha256": "c6be09939038cca8002bd1c0bea552a5b3514fd9520f79ee267af87592c41428"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/miniaudio.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/miniaudio.h",
+      "source_git_blob_sha1": "c6d493ee81f553b8dd584e402453f130c20e0546",
+      "source_sha256": "ac7af4de748b7e26b777f37e01cee313a308a7296a3eb080e2906b320cc55c89",
+      "source_bytes": 4108168,
+      "notice_file": "miniaudio.h.license.txt",
+      "notice_sha256": "8202814681a1613460538c7580b1428f7f06a4822e72215447e41ebcfe8f562c",
+      "notice_bytes": 220493,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 315,
+          "sha256": "72090e7fe0213182ae64ed64b86f781a1162d101d339670a5f8fac8431443490"
+        },
+        {
+          "start": 317,
+          "end": 195811,
+          "sha256": "f5d97489ac34c40e3b503309307bd399faeceea64921d07e7e43631f265f7c27"
+        },
+        {
+          "start": 415693,
+          "end": 434588,
+          "sha256": "e6cc30a8e1da4998cd279d0ac132d2d9a2cb331df9877b0371a8c23434512670"
+        },
+        {
+          "start": 1578644,
+          "end": 1581446,
+          "sha256": "7ad8361b3132652336632d151635d1966c2e46617f405bea290fa33b512cd88d"
+        },
+        {
+          "start": 2929112,
+          "end": 2929370,
+          "sha256": "0465073ff374f7e9cbfd16a47aebc477183ba3a856fa51ad0f7c9813d8213296"
+        },
+        {
+          "start": 2939556,
+          "end": 2939670,
+          "sha256": "69b5695de6ce9b88712503bd824971a8760100ef7fedc1f279a2ca109425cf48"
+        },
+        {
+          "start": 4105564,
+          "end": 4108167,
+          "sha256": "2ca19125fe0d68a91a1fe137c3125e954c541709da15506aad859e23f2b2f43f"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/par_shapes.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/par_shapes.h",
+      "source_git_blob_sha1": "d5309137b70441492c5ff04fdc6bf911fde9e02b",
+      "source_sha256": "d91d7bcddb6241f9938fb973eda5384f77c4e262ee25ee39954bf5641f4fa46e",
+      "source_bytes": 72865,
+      "notice_file": "par_shapes.h.license.txt",
+      "notice_sha256": "8e6ae21a8560839353135f79e3424c94bfb1bb5393f535015ac0e1469609b640",
+      "notice_bytes": 2262,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1077,
+          "sha256": "f9fefbbc27eef3b0fe58967d704f6f3bdbf9f010c60730892d317688e75bcb82"
+        },
+        {
+          "start": 71681,
+          "end": 72864,
+          "sha256": "19bd25d9f3bf516e76224d1c0ff673af03a88d177feae9ae1f299472a274d19c"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/pep.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/pep.h",
+      "source_git_blob_sha1": "bc8a793b10237b2c5ecd1a497632cc9b45799c98",
+      "source_sha256": "0976413be04a56fbc48dc1d50b6816fdc3b1ab91ea9355acfa2dd78674fc326e",
+      "source_bytes": 38449,
+      "notice_file": "pep.h.license.txt",
+      "notice_sha256": "b8b66a1a1ac425130738bc51e3d4209a97fc2f65955ca29784f099a5adf1ac9d",
+      "notice_bytes": 838,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 838,
+          "sha256": "b8b66a1a1ac425130738bc51e3d4209a97fc2f65955ca29784f099a5adf1ac9d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/qoa.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/qoa.h",
+      "source_git_blob_sha1": "2d3a9d86d1aaeb7e6cc4e451c625629885588d0e",
+      "source_sha256": "f23a699fabc835c8ddf54974b5083ca6c281c997250de445f1a82968fe178d86",
+      "source_bytes": 24417,
+      "notice_file": "qoa.h.license.txt",
+      "notice_sha256": "b641e7cc7021f9aff7f9b959059078d8c5e13b87ee4fbb7c9dc0e424c00718b0",
+      "notice_bytes": 3869,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 3869,
+          "sha256": "b641e7cc7021f9aff7f9b959059078d8c5e13b87ee4fbb7c9dc0e424c00718b0"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/qoaplay.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/qoaplay.c",
+      "source_git_blob_sha1": "0ac6f6c0662d2b6a59d33ae72085270b10f72492",
+      "source_sha256": "328a9b0882149db0e0c66ce3e148419b3ff2f2041411fbf8b1c944bcd5db8f6e",
+      "source_bytes": 10241,
+      "notice_file": "qoaplay.c.license.txt",
+      "notice_sha256": "4481e5ba08670be05771cd62d773f6f9efd4c6f533c48af0bdfb4b746d254e57",
+      "notice_bytes": 1683,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1683,
+          "sha256": "4481e5ba08670be05771cd62d773f6f9efd4c6f533c48af0bdfb4b746d254e57"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/qoi.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/qoi.h",
+      "source_git_blob_sha1": "e09d3a43dc3ce04cdb2945f88b08beee1f691502",
+      "source_sha256": "7de6fca1a285b1c20d38f2723dec8b774eb9f144edb9710800a95feeea09375a",
+      "source_bytes": 18326,
+      "notice_file": "qoi.h.license.txt",
+      "notice_sha256": "daf45eb8ed3a50f5e6790588b37282ce129bc3fe0efb9590dbfa0063a4e61c0c",
+      "notice_bytes": 7445,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 7445,
+          "sha256": "daf45eb8ed3a50f5e6790588b37282ce129bc3fe0efb9590dbfa0063a4e61c0c"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/rlsw.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/rlsw.h",
+      "source_git_blob_sha1": "68639f34441a75d8c2a77f62abbd9aac9c66f278",
+      "source_sha256": "adccf6f161d55622a62cf4b45d17fc253b2a90b787e43f30e26d4dc5a7188cd3",
+      "source_bytes": 222438,
+      "notice_file": "rlsw.h.license.txt",
+      "notice_sha256": "b54f4755ff092c2a06fe4302a9f03467b13490f37fc4ba9f6aed04ff99c0dd64",
+      "notice_bytes": 4486,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 4486,
+          "sha256": "b54f4755ff092c2a06fe4302a9f03467b13490f37fc4ba9f6aed04ff99c0dd64"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/rltexgpu.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/rltexgpu.h",
+      "source_git_blob_sha1": "eb4d2b6b106a30907654a508308fb56d10f3367e",
+      "source_sha256": "ac6f2c6dae8f1571bbbc6bac2f244033594de5f578dbe16e1837be3dde459e17",
+      "source_bytes": 76007,
+      "notice_file": "rltexgpu.h.license.txt",
+      "notice_sha256": "247888ef1ebfe693a5be9247b6f943442ddb5b1fd943c7952dbab7733c2ef5ea",
+      "notice_bytes": 3820,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 3820,
+          "sha256": "247888ef1ebfe693a5be9247b6f943442ddb5b1fd943c7952dbab7733c2ef5ea"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/rprand.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/rprand.h",
+      "source_git_blob_sha1": "b71395415665f0c5fb06638dca41b208ffbe537c",
+      "source_sha256": "5e9bd407afc3a71f38e660055d04765379a205a2cfc3fff11a5adbef3858f6e4",
+      "source_bytes": 11855,
+      "notice_file": "rprand.h.license.txt",
+      "notice_sha256": "d8f19741a7b94168f31689639b469634255da1fd4be59913759e815916bba425",
+      "notice_bytes": 4363,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 2691,
+          "sha256": "c8749ab958e95a942746ff34827757a4573ae61b1961d0ffd69b9b4dbc7c372e"
+        },
+        {
+          "start": 9527,
+          "end": 10461,
+          "sha256": "0df889f9d529f46dd4e7910946438688916f8af59379633bd02fd0c4c0bd2208"
+        },
+        {
+          "start": 10886,
+          "end": 11620,
+          "sha256": "f074d64735880bfa5588bc206c41eb7a6979f6c385d1a30c23a1bb821134e553"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/sdefl.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/sdefl.h",
+      "source_git_blob_sha1": "bdc45b7ebe9a299852c4cd610d67124c3e49b42a",
+      "source_sha256": "a239c851da08bd9ca4613a298ba6596a67109984c60976246eadef5ad9907a08",
+      "source_bytes": 28109,
+      "notice_file": "sdefl.h.license.txt",
+      "notice_sha256": "634ef020a2bfe3800f345836e6ce4e5107db742e8f2f48a5cc3011e20211cb00",
+      "notice_bytes": 6187,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 6187,
+          "sha256": "634ef020a2bfe3800f345836e6ce4e5107db742e8f2f48a5cc3011e20211cb00"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/sinfl.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/sinfl.h",
+      "source_git_blob_sha1": "c8d0f96d0a49cd97e12d64a28371ee08a661fddd",
+      "source_sha256": "9d8911f11e6f8eaf71fe1fb8ecbff9402fe4f63a3771143d223dc9cccdc82255",
+      "source_bytes": 21703,
+      "notice_file": "sinfl.h.license.txt",
+      "notice_sha256": "f5be36ac99073d30d931980708caa303c4113160196a3da09126aea01c22e5fe",
+      "notice_bytes": 6187,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 6187,
+          "sha256": "f5be36ac99073d30d931980708caa303c4113160196a3da09126aea01c22e5fe"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/stb_image.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/stb_image.h",
+      "source_git_blob_sha1": "9eedabedc45b3e6fd88fae6f14a160b4d53272ec",
+      "source_sha256": "594c2fe35d49488b4382dbfaec8f98366defca819d916ac95becf3e75f4200b3",
+      "source_bytes": 283010,
+      "notice_file": "stb_image.h.license.txt",
+      "notice_sha256": "5d601c559bbdad03348f977b021faf2a66a55b0bfb0ff8ccb057f6b646f7d69c",
+      "notice_bytes": 9927,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 6391,
+          "sha256": "d3aa9f0136f307c80285b69bc54a5077e17219acad759a097ef6ee15a14b1ef5"
+        },
+        {
+          "start": 148424,
+          "end": 148691,
+          "sha256": "d5ea7ae449086cfcd48a5bfa0f28726fbbbe9f0f07064301a53624b0809760c5"
+        },
+        {
+          "start": 165843,
+          "end": 166251,
+          "sha256": "17b3bc39c3321118ca713fad51c0d093da266fef7c1d4d4db25ad21c56ea1f1d"
+        },
+        {
+          "start": 234455,
+          "end": 234635,
+          "sha256": "ab2a6344f0f8859bd5e5b0d93809a66e2bdb72d3800794a90ec6f172367a0871"
+        },
+        {
+          "start": 280336,
+          "end": 283009,
+          "sha256": "10ed5a55912965c9846c947486fc42a537c6e7f92dbabd68bf26963da320e46d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/stb_image_resize2.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/stb_image_resize2.h",
+      "source_git_blob_sha1": "079897658d44f9b50820a4879941ac5e6cc638c2",
+      "source_sha256": "173e654634f6ccaad98f603e686ea212eec1fe8ea6d2a5e5e8056efa10ae3880",
+      "source_bytes": 457839,
+      "notice_file": "stb_image_resize2.h.license.txt",
+      "notice_sha256": "31531a7e674d2b57cc5f93ffa2738f7545e591d4eb73da8a3073b037549360a2",
+      "notice_bytes": 24938,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 22263,
+          "sha256": "85feae3f055c5801d2ab795d595e00fa1e59ae3a360a37a806d3a16b7d758cfd"
+        },
+        {
+          "start": 455165,
+          "end": 457838,
+          "sha256": "10ed5a55912965c9846c947486fc42a537c6e7f92dbabd68bf26963da320e46d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/stb_image_write.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/stb_image_write.h",
+      "source_git_blob_sha1": "e4b32ed1bc32ef9c962acbf47a9d10af01939e08",
+      "source_sha256": "cbd5f0ad7a9cf4468affb36354a1d2338034f2c12473cf1a8e32053cb6914a05",
+      "source_bytes": 71221,
+      "notice_file": "stb_image_write.h.license.txt",
+      "notice_sha256": "deb787c2ed727c0f293cce6a82e5e2f4ed1fe5c1509087ba35b732d3e764e098",
+      "notice_bytes": 9575,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 6664,
+          "sha256": "874cace0b50429921e5a5b83dad359604e52d3eae64dab36dc5a3c04e27d722e"
+        },
+        {
+          "start": 45421,
+          "end": 45655,
+          "sha256": "79c6f867dbf410effd5b60f1d879ee8f7bbaa4c04a337bdc6692ddbd6589e0b4"
+        },
+        {
+          "start": 68547,
+          "end": 71220,
+          "sha256": "10ed5a55912965c9846c947486fc42a537c6e7f92dbabd68bf26963da320e46d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/stb_perlin.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/stb_perlin.h",
+      "source_git_blob_sha1": "47cb9a4371684ad8db1d914e902183dca5634efd",
+      "source_sha256": "17e688447a02776fe667e0b6a5d1155bf85c827a83f787ae2d44f57699274960",
+      "source_bytes": 17918,
+      "notice_file": "stb_perlin.h.license.txt",
+      "notice_sha256": "4a9b056832eb86509d07040e973d8476423212acf3f40ce298d95d81da4648e9",
+      "notice_bytes": 5732,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 2898,
+          "sha256": "0bfad383d4c7d48e816076bc6f6575716ca6a627599554aa67e104726d045088"
+        },
+        {
+          "start": 3695,
+          "end": 3852,
+          "sha256": "fec8de1d2019747c51b8fcd25d6d63d8c7aa861b2e0db81d7e536d088867ba8d"
+        },
+        {
+          "start": 15244,
+          "end": 17917,
+          "sha256": "10ed5a55912965c9846c947486fc42a537c6e7f92dbabd68bf26963da320e46d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/stb_rect_pack.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/stb_rect_pack.h",
+      "source_git_blob_sha1": "6a633ce666a8600d7d974996fea072faabe939b3",
+      "source_sha256": "6388366a30de57c1b4c29b6eed4ed1c7d758fc1443d2dd95cfce943370bb3aa1",
+      "source_bytes": 20199,
+      "notice_file": "stb_rect_pack.h.license.txt",
+      "notice_sha256": "4363a3a7befb541cb60981e940a37e214d10127751ec36efff0bdf154644e408",
+      "notice_bytes": 4710,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 2035,
+          "sha256": "0dc7e893edf2fc5aa7fae807509734317308741fb1dae4933344f004cee51191"
+        },
+        {
+          "start": 17525,
+          "end": 20198,
+          "sha256": "10ed5a55912965c9846c947486fc42a537c6e7f92dbabd68bf26963da320e46d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/stb_truetype.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/stb_truetype.h",
+      "source_git_blob_sha1": "491a854ac278687cf1b92fa707d6d3f7bb4ef3f2",
+      "source_sha256": "899e3c67ccf08c15ad333a47f1f0bc5972a1f0486f2a8fc88d9eccbfdd9d6477",
+      "source_bytes": 199176,
+      "notice_file": "stb_truetype.h.license.txt",
+      "notice_sha256": "ad390bc6e30fadd2e0c98b9a0518b36751f078960e480e091fe561799a7975e6",
+      "notice_bytes": 15195,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 12520,
+          "sha256": "c4b49713d79e048357e7b564d1a16794f0645e800ed1097e318b12744008da00"
+        },
+        {
+          "start": 196502,
+          "end": 199175,
+          "sha256": "10ed5a55912965c9846c947486fc42a537c6e7f92dbabd68bf26963da320e46d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/stb_vorbis.c",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/stb_vorbis.c",
+      "source_git_blob_sha1": "3e5c2504c08f76b9d04e4adfbce80818631e835e",
+      "source_sha256": "4c7cb2ff1f7011e9d67950446b7eb9ca044f2e464d76bfbb0b84dd2e23e65636",
+      "source_bytes": 192790,
+      "notice_file": "stb_vorbis.c.license.txt",
+      "notice_sha256": "460bbd470d5db4cfce2a9b264acfb12989729a42ff302dd5c61cffa6a021ab06",
+      "notice_bytes": 6225,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 3550,
+          "sha256": "ac8f4c87cbee15020b6553a66bd3ad43f3cec02cde6401fdc15d526d9a4bd528"
+        },
+        {
+          "start": 190116,
+          "end": 192789,
+          "sha256": "10ed5a55912965c9846c947486fc42a537c6e7f92dbabd68bf26963da320e46d"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/tinyobj_loader_c.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/tinyobj_loader_c.h",
+      "source_git_blob_sha1": "8d077d665aedb7c1eacce5bb89da8b9e506684ca",
+      "source_sha256": "df620962ec50da2c2ccccf98ed2b91354685cdadf87efdb4ecfe185d2a2c2de5",
+      "source_bytes": 46351,
+      "notice_file": "tinyobj_loader_c.h.license.txt",
+      "notice_sha256": "447196b1c95166e6339ad151ba242b1a9db2e5aba40e02076b4be0141777ca76",
+      "notice_bytes": 1168,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1168,
+          "sha256": "447196b1c95166e6339ad151ba242b1a9db2e5aba40e02076b4be0141777ca76"
+        }
+      ]
+    },
+    {
+      "kind": "verbatim-license-blocks",
+      "source_path": "src/external/vox_loader.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/vox_loader.h",
+      "source_git_blob_sha1": "2e7f297130e1e6fd6ac5399a7e0c1685ce13fecd",
+      "source_sha256": "162db65a6b513e3540b58be0d65290e069d1b410cdba17ad4ffa1e91b2ff9354",
+      "source_bytes": 20459,
+      "notice_file": "vox_loader.h.license.txt",
+      "notice_sha256": "2567605ff1ac3cdc2732732f37288d4d71a54b31bda4d382baf6131c1bec5c54",
+      "notice_bytes": 1857,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 1857,
+          "sha256": "2567605ff1ac3cdc2732732f37288d4d71a54b31bda4d382baf6131c1bec5c54"
+        }
+      ]
+    },
+    {
+      "kind": "complete-source-no-inline-notice",
+      "source_path": "src/external/win32_clipboard.h",
+      "source_url": "https://raw.githubusercontent.com/raysan5/raylib/02566453880e06bec97f5b8160fa6fe1e98397ca/src/external/win32_clipboard.h",
+      "source_git_blob_sha1": "ea0a34bd311873757ba00b850b7e5dd8419e161e",
+      "source_sha256": "e30beb608b6ae3230254d843a5a944900a86673cff21f38f315fac43d2bfa8e3",
+      "source_bytes": 13223,
+      "notice_file": "win32_clipboard.h.license.txt",
+      "notice_sha256": "e30beb608b6ae3230254d843a5a944900a86673cff21f38f315fac43d2bfa8e3",
+      "notice_bytes": 13223,
+      "ranges": [
+        {
+          "start": 0,
+          "end": 13223,
+          "sha256": "e30beb608b6ae3230254d843a5a944900a86673cff21f38f315fac43d2bfa8e3"
+        }
+      ]
+    }
+  ],
+  "files_without_inline_notice": [
+    "src/external/win32_clipboard.h"
+  ]
+}

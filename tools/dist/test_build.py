@@ -21,6 +21,7 @@ class PackagingTests(unittest.TestCase):
 
     def test_every_dependency_is_https_and_sha256_pinned(self):
         specs = list(build.LOCK["slang"]["assets"].values())
+        specs += list(build.LOCK["raylib"]["assets"].values())
         specs += [build.LOCK[key] for key in ("sdl3", "spirv-tools", "spirv-headers")]
         for spec in specs:
             self.assertTrue(spec["url"].startswith("https://"))

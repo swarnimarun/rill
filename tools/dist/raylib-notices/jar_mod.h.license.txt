@@ -1,0 +1,78 @@
+// jar_mod.h - v0.01 - public domain C0 - Joshua Reisenauer
+//
+// HISTORY:
+//
+//   v0.01  2016-03-12  Setup
+//
+//
+// USAGE:
+//
+// In ONE source file, put:
+//
+//    #define JAR_MOD_IMPLEMENTATION
+//    #include "jar_mod.h"
+//
+// Other source files should just include jar_mod.h
+//
+// SAMPLE CODE:
+// jar_mod_context_t modctx;
+// short samplebuff[4096];
+// bool bufferFull = false;
+// int intro_load(void)
+// {
+//     jar_mod_init(&modctx);
+//     jar_mod_load_file(&modctx, "file.mod");
+//     return 1;
+// }
+// int intro_unload(void)
+// {
+//     jar_mod_unload(&modctx);
+//     return 1;
+// }
+// int intro_tick(long counter)
+// {
+//     if(!bufferFull)
+//     {
+//         jar_mod_fillbuffer(&modctx, samplebuff, 4096, 0);
+//         bufferFull=true;
+//     }
+//     if(IsKeyDown(KEY_ENTER))
+//         return 1;
+//     return 0;
+// }
+//
+//
+// LISCENSE:
+//
+// Written by: Jean-François DEL NERO (http://hxc2001.com/) <Email : jeanfrancoisdelnero <> free.fr>
+// Adapted to jar_mod by: Joshua Adam Reisenauer <kd7tck@gmail.com>
+// This program is free software. It comes without any warranty, to the
+// extent permitted by applicable law. You can redistribute it and/or
+// modify it under the terms of the Do What The Fuck You Want To Public
+// License, Version 2, as published by Sam Hocevar. See
+// http://sam.zoy.org/wtfpl/COPYING for more details.
+///////////////////////////////////////////////////////////////////////////////////
+// HxCMOD Core API:
+// -------------------------------------------
+// int  jar_mod_init(jar_mod_context_t * modctx)
+//
+// - Initialize the jar_mod_context_t buffer. Must be called before doing anything else.
+//   Return 1 if success. 0 in case of error.
+// -------------------------------------------
+// mulong jar_mod_load_file(jar_mod_context_t * modctx, const char* filename)
+//
+// - "Load" a MOD from file, context must already be initialized.
+//   Return size of file in bytes.
+// -------------------------------------------
+// void jar_mod_fillbuffer( jar_mod_context_t * modctx, short * outbuffer, unsigned long nbsample, jar_mod_tracker_buffer_state * trkbuf )
+//
+// - Generate and return the next samples chunk to outbuffer.
+//   nbsample specify the number of stereo 16bits samples you want.
+//   The output format is by default signed 48000Hz 16-bit Stereo PCM samples, otherwise it is changed with jar_mod_setcfg().
+//   The output buffer size in bytes must be equal to ( nbsample * 2 * channels ).
+//   The optional trkbuf parameter can be used to get detailed status of the player. Put NULL/0 is unused.
+// -------------------------------------------
+// void jar_mod_unload( jar_mod_context_t * modctx )
+// - "Unload" / clear the player status.
+// -------------------------------------------
+///////////////////////////////////////////////////////////////////////////////////

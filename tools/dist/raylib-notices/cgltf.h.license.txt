@@ -1,0 +1,148 @@
+/**
+ * cgltf - a single-file glTF 2.0 parser written in C99.
+ *
+ * Version: 1.15
+ *
+ * Website: https://github.com/jkuhlmann/cgltf
+ *
+ * Distributed under the MIT License, see notice at the end of this file.
+ *
+ * Building:
+ * Include this file where you need the struct and function
+ * declarations. Have exactly one source file where you define
+ * `CGLTF_IMPLEMENTATION` before including this file to get the
+ * function definitions.
+ *
+ * Reference:
+ * `cgltf_result cgltf_parse(const cgltf_options*, const void*,
+ * cgltf_size, cgltf_data**)` parses both glTF and GLB data. If
+ * this function returns `cgltf_result_success`, you have to call
+ * `cgltf_free()` on the created `cgltf_data*` variable.
+ * Note that contents of external files for buffers and images are not
+ * automatically loaded. You'll need to read these files yourself using
+ * URIs in the `cgltf_data` structure.
+ *
+ * `cgltf_options` is the struct passed to `cgltf_parse()` to control
+ * parts of the parsing process. You can use it to force the file type
+ * and provide memory allocation as well as file operation callbacks.
+ * Should be zero-initialized to trigger default behavior.
+ *
+ * `cgltf_data` is the struct allocated and filled by `cgltf_parse()`.
+ * It generally mirrors the glTF format as described by the spec (see
+ * https://github.com/KhronosGroup/glTF/tree/master/specification/2.0).
+ *
+ * `void cgltf_free(cgltf_data*)` frees the allocated `cgltf_data`
+ * variable.
+ *
+ * `cgltf_result cgltf_load_buffers(const cgltf_options*, cgltf_data*,
+ * const char* gltf_path)` can be optionally called to open and read buffer
+ * files using the `FILE*` APIs. The `gltf_path` argument is the path to
+ * the original glTF file, which allows the parser to resolve the path to
+ * buffer files.
+ *
+ * `cgltf_result cgltf_load_buffer_base64(const cgltf_options* options,
+ * cgltf_size size, const char* base64, void** out_data)` decodes
+ * base64-encoded data content. Used internally by `cgltf_load_buffers()`.
+ * This is useful when decoding data URIs in images.
+ *
+ * `cgltf_result cgltf_parse_file(const cgltf_options* options, const
+ * char* path, cgltf_data** out_data)` can be used to open the given
+ * file using `FILE*` APIs and parse the data using `cgltf_parse()`.
+ *
+ * `cgltf_result cgltf_validate(cgltf_data*)` can be used to do additional
+ * checks to make sure the parsed glTF data is valid.
+ *
+ * `cgltf_node_transform_local` converts the translation / rotation / scale properties of a node
+ * into a mat4.
+ *
+ * `cgltf_node_transform_world` calls `cgltf_node_transform_local` on every ancestor in order
+ * to compute the root-to-node transformation.
+ *
+ * `cgltf_accessor_unpack_floats` reads in the data from an accessor, applies sparse data (if any),
+ * and converts them to floating point. Assumes that `cgltf_load_buffers` has already been called.
+ * By passing null for the output pointer, users can find out how many floats are required in the
+ * output buffer.
+ *
+ * `cgltf_accessor_unpack_indices` reads in the index data from an accessor. Assumes that
+ * `cgltf_load_buffers` has already been called. By passing null for the output pointer, users can
+ * find out how many indices are required in the output buffer. Returns 0 if the accessor is
+ * sparse or if the output component size is less than the accessor's component size.
+ *
+ * `cgltf_num_components` is a tiny utility that tells you the dimensionality of
+ * a certain accessor type. This can be used before `cgltf_accessor_unpack_floats` to help allocate
+ * the necessary amount of memory. `cgltf_component_size` and `cgltf_calc_size` exist for
+ * similar purposes.
+ *
+ * `cgltf_accessor_read_float` reads a certain element from a non-sparse accessor and converts it to
+ * floating point, assuming that `cgltf_load_buffers` has already been called. The passed-in element
+ * size is the number of floats in the output buffer, which should be in the range [1, 16]. Returns
+ * false if the passed-in element_size is too small, or if the accessor is sparse.
+ *
+ * `cgltf_accessor_read_uint` is similar to its floating-point counterpart, but limited to reading
+ * vector types and does not support matrix types. The passed-in element size is the number of uints
+ * in the output buffer, which should be in the range [1, 4]. Returns false if the passed-in
+ * element_size is too small, or if the accessor is sparse.
+ *
+ * `cgltf_accessor_read_index` is similar to its floating-point counterpart, but it returns size_t
+ * and only works with single-component data types.
+ *
+ * `cgltf_copy_extras_json` allows users to retrieve the "extras" data that can be attached to many
+ * glTF objects (which can be arbitrary JSON data). This is a legacy function, consider using
+ * cgltf_extras::data directly instead. You can parse this data using your own JSON parser
+ * or, if you've included the cgltf implementation using the integrated JSMN JSON parser.
+ */
+
+/*
+ * -- jsmn.h start --
+ * Source: https://github.com/zserge/jsmn
+ * License: MIT
+ */
+
+/*
+ * -- jsmn.c start --
+ * Source: https://github.com/zserge/jsmn
+ * License: MIT
+ *
+ * Copyright (c) 2010 Serge A. Zaitsev
+
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+
+ * The above copyright notice and this permission notice shall be included in
+ * all copies or substantial portions of the Software.
+
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN
+ * THE SOFTWARE.
+ */
+
+/* cgltf is distributed under MIT license:
+ *
+ * Copyright (c) 2018-2021 Johannes Kuhlmann
+
+ * Permission is hereby granted, free of charge, to any person obtaining a copy
+ * of this software and associated documentation files (the "Software"), to deal
+ * in the Software without restriction, including without limitation the rights
+ * to use, copy, modify, merge, publish, distribute, sublicense, and/or sell
+ * copies of the Software, and to permit persons to whom the Software is
+ * furnished to do so, subject to the following conditions:
+
+ * The above copyright notice and this permission notice shall be included in all
+ * copies or substantial portions of the Software.
+
+ * THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+ * IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY,
+ * FITNESS FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE
+ * AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
+ * LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
+ * OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
+ * SOFTWARE.
+ */

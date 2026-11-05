@@ -1,0 +1,67 @@
+import std.raylib as ray;
+
+fn objects(frame: i32) -> bool {
+    let phase = frame % 120;
+    let bounce = if phase < 60 {
+        phase
+    } else {
+        120 - phase
+    };
+    let height = f32_add(f32(1), f32_div(f32(bounce), f32(30)));
+    ray.RillRaylib_DrawPlane(f32(0), f32(0), f32(0), f32(12), f32(12), u8(90), u8(100), u8(115), u8(255))
+    && ray.RillRaylib_DrawCube(f32(-1), f32(1), f32(0), f32(2), f32(2), f32(2), u8(245), u8(130), u8(40), u8(255))
+    && ray.RillRaylib_DrawCube(f32(2), height, f32(1), f32(1), f32(1), f32(1), u8(50), u8(190), u8(220), u8(255))
+}
+
+fn draw(frame: i32) -> bool {
+    if ray.RillRaylib_BeginDrawing() {
+        let cleared = ray.RillRaylib_ClearBackground(u8(20), u8(26), u8(38), u8(255));
+        let started = cleared && ray.RillRaylib_BeginMode3D();
+        let geometry = if started {
+            let drawn = objects(frame);
+            let ended = ray.RillRaylib_EndMode3D();
+            drawn && ended
+        } else {
+            false
+        };
+        let overlay = geometry
+        && ray.RillRaylib_DrawRectangle(12, 12, 616, 42, u8(30), u8(38), u8(52), u8(235))
+        && ray.RillRaylib_DrawText(c"Rill + raylib | 3D scene + 2D text | Escape closes", 24, 24, 18, u8(235), u8(240), u8(245), u8(255));
+        let ended = ray.RillRaylib_EndDrawing();
+        overlay && ended
+    } else {
+        false
+    }
+}
+
+fn run() -> bool {
+    let mut ok = ray.RillRaylib_SetTargetFPS(60)
+    && ray.RillRaylib_SetCamera(f32(7), f32(6), f32(7), f32(0), f32(1), f32(0),
+        f32(0), f32(1), f32(0), f32(45), true);
+    let mut frame = 0;
+    let mut running = true;
+    while ok && running && frame < 180 {
+        let closing = ray.RillRaylib_WindowShouldClose();
+        ok <- closing >= 0;
+        running <- closing == 0;
+        if ok && running {
+            ok <- draw(frame);
+            frame <- frame + 1;
+        };
+    };
+    ok
+}
+
+fn main() {
+    if ray.RillRaylib_InitWindow(640, 480, c"Rill Raylib scene") {
+        let ok = run();
+        let closed = ray.RillRaylib_CloseWindow();
+        if ok && closed {
+            0
+        } else {
+            1
+        }
+    } else {
+        ray.RillRaylib_Status()
+    }
+}

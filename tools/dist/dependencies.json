@@ -31,5 +31,23 @@
     "revision": "496543121ce6419f23d6fa5d7194ba66c36212d2",
     "url": "https://codeload.github.com/KhronosGroup/SPIRV-Headers/tar.gz/496543121ce6419f23d6fa5d7194ba66c36212d2",
     "sha256": "a9bb9c48713245eacf97cc539b6f1d45405a92d8813f8b82e635f0a085ee9898"
+  },
+  "raylib": {
+    "version": "6.2",
+    "revision": "02566453880e06bec97f5b8160fa6fe1e98397ca",
+    "assets": {
+      "aarch64-apple-darwin": {
+        "url": "https://github.com/raysan5/raylib/releases/download/6.2/raylib-6.2_macos.tar.gz",
+        "sha256": "100437734a44d56ed9d2a1c4b249dbfc6d6cc3477a45e306f9f56fe5f1e2b4ef"
+      },
+      "x86_64-apple-darwin": {
+        "url": "https://github.com/raysan5/raylib/releases/download/6.2/raylib-6.2_macos.tar.gz",
+        "sha256": "100437734a44d56ed9d2a1c4b249dbfc6d6cc3477a45e306f9f56fe5f1e2b4ef"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/raysan5/raylib/releases/download/6.2/raylib-6.2_linux_amd64.tar.gz",
+        "sha256": "586bbc32f3596d439382b1c5dbc6c1c573eb7e1d00fe92be7d4deb116883720d"
+      }
+    }
   }
 }

@@ -19,6 +19,7 @@ pub(super) fn source(name: &str) -> Option<&'static str> {
         "std.sdl" => Some(include_str!("../../stdlib/sdl.rill")),
         "std.shader" => Some(include_str!("../../stdlib/shader.rill")),
         "std.slang" => Some(include_str!("../../stdlib/slang.rill")),
+        "std.raylib" => Some(include_str!("../../stdlib/raylib.rill")),
         _ => None,
     }
 }

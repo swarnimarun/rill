@@ -1,5 +1,5 @@
 cmake_minimum_required(VERSION 3.20)
-project(rill_slang_sdk VERSION 0.1.0 LANGUAGES CXX)
+project(rill_sdk VERSION 0.1.0 LANGUAGES C CXX)
 
 include(GNUInstallDirs)
 set(SLANG_ROOT "" CACHE PATH "Root of a compatible Slang SDK installation")
@@ -37,10 +37,45 @@ install(TARGETS rill_slang
     RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
 install(FILES include/rill/slang.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/rill")
 
+set(RAYLIB_ROOT "" CACHE PATH "Root of an optional Raylib installation")
+if(RAYLIB_ROOT)
+    find_path(RAYLIB_INCLUDE_DIR raylib.h PATHS "${RAYLIB_ROOT}/include"
+        NO_DEFAULT_PATH REQUIRED)
+    find_library(RAYLIB_LIBRARY NAMES raylib PATHS "${RAYLIB_ROOT}/lib"
+        NO_DEFAULT_PATH REQUIRED)
+    add_library(rill_raylib SHARED raylib.c)
+    target_compile_features(rill_raylib PRIVATE c_std_11)
+    target_compile_definitions(rill_raylib PRIVATE RILL_RAYLIB_BUILD USE_LIBTYPE_SHARED)
+    target_include_directories(rill_raylib PRIVATE "${RAYLIB_INCLUDE_DIR}" include)
+    target_link_libraries(rill_raylib PRIVATE "${RAYLIB_LIBRARY}")
+    set_target_properties(rill_raylib PROPERTIES C_EXTENSIONS NO
+        C_VISIBILITY_PRESET hidden)
+    if(APPLE)
+        set_target_properties(rill_raylib PROPERTIES
+            INSTALL_RPATH "@loader_path/../../raylib/lib" INSTALL_NAME_DIR "@rpath")
+    elseif(UNIX)
+        set_target_properties(rill_raylib PROPERTIES
+            INSTALL_RPATH "$ORIGIN/../../raylib/lib")
+        target_link_libraries(rill_raylib PRIVATE m)
+    endif()
+    install(TARGETS rill_raylib
+        LIBRARY DESTINATION "${CMAKE_INSTALL_LIBDIR}"
+        RUNTIME DESTINATION "${CMAKE_INSTALL_BINDIR}")
+    install(FILES include/rill/raylib.h DESTINATION "${CMAKE_INSTALL_INCLUDEDIR}/rill")
+endif()
+
 include(CTest)
 if(BUILD_TESTING)
     find_package(Python3 COMPONENTS Interpreter REQUIRED)
     add_test(NAME slang_sdk
         COMMAND "${Python3_EXECUTABLE}" "${CMAKE_CURRENT_SOURCE_DIR}/test_slang.py"
             "$<TARGET_FILE:rill_slang>")
+    if(TARGET rill_raylib)
+        add_executable(raylib_sdk_tests test_raylib.c)
+        target_compile_features(raylib_sdk_tests PRIVATE c_std_11)
+        target_include_directories(raylib_sdk_tests PRIVATE include "${RAYLIB_INCLUDE_DIR}")
+        target_link_libraries(raylib_sdk_tests PRIVATE rill_raylib "${RAYLIB_LIBRARY}")
+        set_target_properties(raylib_sdk_tests PROPERTIES C_EXTENSIONS NO)
+        add_test(NAME raylib_sdk COMMAND raylib_sdk_tests)
+    endif()
 endif()

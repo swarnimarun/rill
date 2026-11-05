@@ -92,6 +92,13 @@ def licenses(source, destination):
             found = True
     if not found:
         raise ValueError(f"no license notices found in {source}")
+    # Upstream source archives may keep dependency notices below their root.
+    for path in source.rglob("*"):
+        if path.is_file() and any(term in path.name.upper() for term in ("LICENSE", "COPYING", "NOTICE", "COPYRIGHT")):
+            target = destination / path.relative_to(source)
+            if not target.exists():
+                target.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copy2(path, target)
 
 
 def relocate_sdl_metadata(prefix):
@@ -105,7 +112,68 @@ def relocate_sdl_metadata(prefix):
                             for line in lines))
 
 
+def verify_raylib_notices(notices_dir, manifest_path):
+    """Verify the retained notices against their immutable source inventory."""
+    notices_dir = Path(notices_dir).resolve(strict=True)
+    value = json.loads(Path(manifest_path).read_text())
+    if (value.get("version") != 1 or value.get("revision") != LOCK["raylib"]["revision"]
+            or value.get("release") != LOCK["raylib"]["version"]):
+        raise ValueError("Raylib notice inventory does not match the SDK lock")
+    files = value.get("files")
+    if not isinstance(files, list) or not 1 <= len(files) <= 4096:
+        raise ValueError("invalid Raylib notice inventory")
+    allowed = {"README.md"}
+    for entry in files:
+        name = entry.get("notice_file", "")
+        source = entry.get("source_path", "")
+        for relative in (name, source):
+            if (not isinstance(relative, str) or "\\" in relative
+                    or any(part in ("", ".", "..") for part in relative.split("/"))):
+                raise ValueError("invalid Raylib notice path")
+        if name in allowed or not source.startswith("src/external/"):
+            raise ValueError("duplicate or invalid Raylib notice path")
+        allowed.add(name)
+        expected_url = f"https://raw.githubusercontent.com/raysan5/raylib/{value['revision']}/{source}"
+        if entry.get("source_url") != expected_url:
+            raise ValueError("Raylib notice source is not pinned")
+        path = notices_dir
+        for part in name.split("/"):
+            path = path / part
+            if path.is_symlink():
+                raise ValueError("symlinked Raylib notice")
+        try:
+            data = path.read_bytes()
+        except OSError as error:
+            raise ValueError(f"missing Raylib notice {name}") from error
+        if len(data) != entry.get("notice_bytes") or hashlib.sha256(data).hexdigest() != entry.get("notice_sha256"):
+            raise ValueError(f"Raylib notice checksum mismatch: {name}")
+        source_size = entry.get("source_bytes")
+        ranges = entry.get("ranges")
+        if type(source_size) is not int or source_size < 1 or not isinstance(ranges, list) or not ranges:
+            raise ValueError("invalid Raylib notice source ranges")
+        cursor, previous = 0, 0
+        for span in ranges:
+            start, end = span.get("start"), span.get("end")
+            if type(start) is not int or type(end) is not int or not previous <= start < end <= source_size:
+                raise ValueError("invalid Raylib notice source range")
+            block = data[cursor:cursor + end - start]
+            if hashlib.sha256(block).hexdigest() != span.get("sha256"):
+                raise ValueError("Raylib notice block checksum mismatch")
+            cursor += end - start
+            previous = end
+            if span is not ranges[-1]:
+                if data[cursor:cursor + 2] != b"\n\n":
+                    raise ValueError("invalid Raylib notice block separator")
+                cursor += 2
+        if cursor != len(data):
+            raise ValueError("unaccounted Raylib notice bytes")
+    for path in notices_dir.rglob("*"):
+        if path.is_symlink() or (path.is_file() and path.relative_to(notices_dir).as_posix() not in allowed):
+            raise ValueError("unlisted or symlinked Raylib notice file")
+
+
 def build(work, output, jobs, binary=None):
+    verify_raylib_notices(REPO / "tools/dist/raylib-notices", REPO / "tools/dist/raylib-notices.json")
     target = host_target()
     name = f"rill-{VERSION}-{target}"
     output.mkdir(parents=True, exist_ok=True)
@@ -115,6 +183,7 @@ def build(work, output, jobs, binary=None):
     downloads = work / "downloads"
     downloads.mkdir(parents=True, exist_ok=True)
     specs = {"slang": LOCK["slang"]["assets"][target],
+             "raylib": LOCK["raylib"]["assets"][target],
              **{key: LOCK[key] for key in ("sdl3", "spirv-tools", "spirv-headers")}}
     archives = {key: fetch(spec, downloads) for key, spec in specs.items()}
     # A unique stage prevents overlapping package builds from sharing object
@@ -127,6 +196,7 @@ def build(work, output, jobs, binary=None):
         sdk.mkdir(parents=True)
         sources = {key: unpack(path, stage / key) for key, path in archives.items()}
         shutil.copytree(sources["slang"], sdk / "slang", symlinks=True)
+        shutil.copytree(sources["raylib"], sdk / "raylib", symlinks=True)
         rpath = "@loader_path" if sys.platform == "darwin" else "$ORIGIN"
         cmake(sources["sdl3"], stage / "sdl-build", sdk / "sdl3", jobs, [
             "-DSDL_SHARED=ON", "-DSDL_STATIC=OFF", "-DSDL_TESTS=OFF",
@@ -145,7 +215,8 @@ def build(work, output, jobs, binary=None):
         (sdk / "spirv/bin").mkdir(parents=True)
         shutil.copy2(spirv_build / "tools/spirv-val", sdk / "spirv/bin/spirv-val")
         cmake(REPO / "tools/sdk", stage / "sdk-build", sdk / "sdk", jobs,
-              [f"-DSLANG_ROOT={sdk / 'slang'}", "-DCMAKE_INSTALL_LIBDIR=lib"])
+              [f"-DSLANG_ROOT={sdk / 'slang'}", f"-DRAYLIB_ROOT={sdk / 'raylib'}",
+               "-DCMAKE_INSTALL_LIBDIR=lib"])
         test_env = os.environ.copy()
         test_env["PATH"] = str(sdk / "spirv/bin") + os.pathsep + test_env.get("PATH", "")
         run("ctest", "--test-dir", stage / "sdk-build", "--output-on-failure", env=test_env)
@@ -160,8 +231,10 @@ def build(work, output, jobs, binary=None):
             "tools": {"slangc": "slang/bin/slangc", "spirv-val": "spirv/bin/spirv-val"},
             "packages": {
                 "sdl3": {"include_dirs": ["sdl3/include"], "library_dirs": ["sdl3/lib"], "libraries": ["SDL3"]},
-                "rill-slang": {"include_dirs": ["sdk/include"], "library_dirs": ["sdk/lib"], "libraries": ["rill_slang"]}},
-            "runtime_dirs": ["slang/lib", "sdl3/lib", "sdk/lib"]}
+                "raylib": {"include_dirs": ["raylib/include"], "library_dirs": ["raylib/lib"], "libraries": ["raylib"]},
+                "rill-slang": {"include_dirs": ["sdk/include"], "library_dirs": ["sdk/lib"], "libraries": ["rill_slang"]},
+                "rill-raylib": {"include_dirs": ["sdk/include"], "library_dirs": ["sdk/lib"], "libraries": ["rill_raylib"]}},
+            "runtime_dirs": ["slang/lib", "sdl3/lib", "raylib/lib", "sdk/lib"]}
         (sdk / "toolchain.json").write_text(json.dumps(marker, indent=2) + "\n")
         share = prefix / "share/rill"
         share.mkdir(parents=True)
@@ -173,6 +246,8 @@ def build(work, output, jobs, binary=None):
         notices = share / "licenses"
         for key, source in sources.items():
             licenses(source, notices / key)
+        shutil.copytree(REPO / "tools/dist/raylib-notices", notices / "raylib/third-party")
+        shutil.copy2(REPO / "tools/dist/raylib-notices.json", notices / "raylib/third-party/raylib-notices.json")
         # Keep the source lock with the package for attribution and rebuilding.
         shutil.copy2(REPO / "tools/dist/dependencies.json", share / "dependencies.json")
         run(sys.executable, REPO / "tools/dist/smoke.py", prefix)
