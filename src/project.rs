@@ -11,11 +11,15 @@ use std::{
 const MANIFEST: &str = "rill.json";
 const MAX_MANIFEST: u64 = 65_536;
 
+mod recipe;
+pub(super) use recipe::PreparedRecipe;
+
 pub(super) struct Project {
     pub(super) name: String,
     pub(super) root: PathBuf,
     pub(super) entry: PathBuf,
     output: PathBuf,
+    recipe: recipe::Recipe,
 }
 
 pub fn create(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
@@ -138,6 +142,10 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
         options.push("--watch".into());
         options.push(project.root.join(MANIFEST).into_os_string());
     }
+    options.extend([
+        OsString::from("--project-root"),
+        project.root.clone().into_os_string(),
+    ]);
     if action == "build" {
         let explicit = explicit_output(&options)?;
         let output = explicit.clone().unwrap_or_else(|| project.output.clone());
@@ -155,6 +163,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
         .arg(&project.entry)
         .args(options)
         .current_dir(&project.root);
+    rill::toolchain::configure_runtime(&mut command)?;
     #[cfg(unix)]
     if action == "watch" {
         use std::os::unix::process::CommandExt;
@@ -195,13 +204,17 @@ impl Project {
             .as_object()
             .ok_or("E-PROJECT-MANIFEST: expected a JSON object")?;
         reject_duplicate_fields(&text)?;
+        let version = fields
+            .get("version")
+            .and_then(serde_json::Value::as_u64)
+            .filter(|version| matches!(version, 1 | 2))
+            .ok_or("E-PROJECT-MANIFEST: version must be the integer 1 or 2")?;
         for field in fields.keys() {
-            if !matches!(field.as_str(), "version" | "name" | "entry" | "output") {
+            if !matches!(field.as_str(), "version" | "name" | "entry" | "output")
+                && !(version == 2 && matches!(field.as_str(), "native" | "shaders"))
+            {
                 return Err(format!("E-PROJECT-MANIFEST: unknown field {field:?}"));
             }
-        }
-        if fields.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
-            return Err("E-PROJECT-MANIFEST: version must be the integer 1".into());
         }
         let string = |field: &str| {
             fields
@@ -227,14 +240,66 @@ impl Project {
         } else {
             PathBuf::from("build").join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
         };
+        let recipe = recipe::Recipe::load(&root, fields)?;
         let project = Self {
             name: name.to_owned(),
             root,
             entry,
             output,
+            recipe,
         };
         project.validate_output(&project.output)?;
+        project
+            .recipe
+            .validate_output(&project.root.join(&project.output))?;
         Ok(project)
+    }
+
+    pub(super) fn has_recipes(&self) -> bool {
+        self.recipe.has_native() || self.recipe.shaders.is_some()
+    }
+
+    pub(super) fn has_native(&self) -> bool {
+        self.recipe.has_native()
+    }
+
+    pub(super) fn resolve_recipe(&self) -> Result<rill::c_import::Resolved, String> {
+        self.recipe.resolve()
+    }
+
+    pub(super) fn prepare_recipe(
+        &self,
+        command: &str,
+        compiler: &OsStr,
+        zig_cc: bool,
+        cflags: &[OsString],
+    ) -> Result<PreparedRecipe, String> {
+        self.recipe.prepare(command, compiler, zig_cc, cflags)
+    }
+
+    pub(super) fn prepare_shaders(&self, command: &str) -> Result<(), String> {
+        self.recipe.prepare_shaders(command)
+    }
+
+    pub(super) fn configure_runtime(&self, command: &mut Command) {
+        command.env("RILL_PROJECT_ROOT", &self.root);
+        if let Some(shaders) = &self.recipe.shaders {
+            command.env("RILL_PROJECT_SHADER_DIR", shaders.output());
+        }
+    }
+
+    pub(super) fn watch_inputs(&self) -> Result<Vec<PathBuf>, String> {
+        let mut paths = vec![self.root.join(MANIFEST)];
+        paths.extend(self.recipe.inputs()?);
+        Ok(paths)
+    }
+
+    pub(super) fn watch_exclusions(&self) -> Vec<PathBuf> {
+        self.recipe
+            .shaders
+            .as_ref()
+            .map(|shaders| vec![shaders.output().to_path_buf()])
+            .unwrap_or_default()
     }
 
     fn validate_output(&self, output: &Path) -> Result<(), String> {
@@ -290,6 +355,7 @@ impl Project {
 
     fn prepare_output(&self, output: &Path) -> Result<(), String> {
         self.validate_output(output)?;
+        self.recipe.validate_output(&self.root.join(output))?;
         if let Some(parent) = output.parent() {
             fs::create_dir_all(self.root.join(parent))
                 .map_err(|e| format!("E-PROJECT-IO: cannot create output directory: {e}"))?;
@@ -435,11 +501,17 @@ fn reject_duplicate_fields(text: &str) -> Result<(), String> {
     let bytes = text.as_bytes();
     let mut index = 0;
     let mut depth = 0;
-    let mut seen = BTreeSet::new();
+    let mut seen = Vec::new();
     while index < bytes.len() {
         match bytes[index] {
-            b'{' | b'[' => depth += 1,
-            b'}' | b']' => depth -= 1,
+            b'{' | b'[' => {
+                depth += 1;
+                seen.push(BTreeSet::new());
+            }
+            b'}' | b']' => {
+                depth -= 1;
+                seen.pop();
+            }
             b'"' => {
                 let start = index;
                 index += 1;
@@ -450,9 +522,9 @@ fn reject_duplicate_fields(text: &str) -> Result<(), String> {
                     index += 1;
                 }
                 let after = text[index + 1..].trim_start();
-                if depth == 1 && after.starts_with(':') {
+                if depth > 0 && after.starts_with(':') {
                     let field: String = serde_json::from_str(&text[start..=index]).unwrap();
-                    if !seen.insert(field.clone()) {
+                    if !seen.last_mut().unwrap().insert(field.clone()) {
                         return Err(format!("E-PROJECT-MANIFEST: duplicate field {field:?}"));
                     }
                 }

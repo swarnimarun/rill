@@ -63,6 +63,58 @@ compiler command fails the project command. This format adds no registry,
 dependency downloader, build scripts, library ABI, test runner or stable package
 interface.
 
+## Native and shader recipes
+
+Version 2 retains the required name and entry fields and accepts optional native
+and shader recipes. Version 1 continues to reject those additional fields.
+
+```json
+{
+  "version": 2,
+  "name": "engine-3d",
+  "entry": "src/main.rill",
+  "output": "build/engine-3d",
+  "native": {
+    "sources": ["native/renderer.c"],
+    "include_dirs": ["native"],
+    "packages": ["sdl3"],
+    "libraries": ["m"]
+  },
+  "shaders": "rill.shaders.json"
+}
+```
+
+Every native field is optional and accepts at most 64 unique strings. Sources
+must name existing `.c` files, include directories must exist, and all native
+and shader manifest paths stay inside the project. Package and library names
+use the same validation as source `@pkg_config` and `@link` declarations.
+Unknown fields and duplicate keys reject, including keys inside `native`.
+Recipes invoke compiler tools with structured arguments and do not execute
+shell commands or project build scripts.
+
+`project check` checks the native C sources without publishing objects and
+compiles/validates shaders in a temporary directory. `build`, `run` and every
+watch candidate rebuild native objects in a unique temporary directory and
+prepare the shader artifacts. Objects precede dependency libraries at link
+time and remain present until linking or execution finishes. Native compilation
+still runs after a generated-C cache hit. A failed native compilation does not
+replace an existing executable. Shader publication preserves the previous
+complete artifact directory if a shader build fails.
+
+`shaders` selects the manifest used by `rill shader`. See
+[shader tooling](shaders.md) for targets and validation rules. Native run/watch
+processes receive absolute `RILL_PROJECT_ROOT` and `RILL_PROJECT_SHADER_DIR`
+environment variables. Programs can locate shader assets through the latter
+even when the watcher uses a temporary executable path. Directly running a
+built executable does not set these variables; applications should also support
+an installation-relative asset path. Raw source commands can apply the same
+recipe with `--project-root <directory>`, and the source must match its entry.
+
+Native recipes reject `--interpret`. Project recipes cannot combine with a
+saved `--native-config` recipe, since each would otherwise define a separate
+native configuration. Shader compilation and native headers do not establish
+GPU resource lifetimes or a Rill shader type system.
+
 Run the checked-in module example with:
 
 ```sh
@@ -84,10 +136,13 @@ rill project watch my-tool --once
 
 `watch` rebuilds changed project input and restarts the native process. Project
 watch follows the entry file and its transitive local imports, and also observes
-`rill.json`. Add native inputs or other assets using repeated `--watch <path>`.
-Unused source libraries do not trigger rebuilding. It uses the entry and options
-resolved when the command started. Restart `project watch` after
-changing the manifest's entry or output recipe. This mode does not preserve
+`rill.json`. Version 2 automatically watches native source/header directories,
+the shader manifest and shader source/include inputs. Generated shader output
+is excluded, including custom output directories. Add other assets using repeated
+`--watch <path>`. Unused source libraries do not trigger rebuilding. Native and
+shader recipes reload after manifest edits, while entry/compiler options remain
+those selected at startup. Restart `project watch` after changing the entry or
+compiler options. This mode does not preserve
 process state or replace live function bodies.
 
 Project build/run/watch enable checked generated-C reuse by default, using

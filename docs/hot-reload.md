@@ -32,7 +32,8 @@ rill project watch my-tool --watch native --watch assets/player.png
 ```
 
 An explicit file can have any extension. An explicit directory recursively
-observes `.rill`, `.rillcfg`, `.h`, `.c` and `rill.json` files. Hidden directories,
+observes `.rill`, `.rillcfg`, C/header files, shader source/include files and JSON
+manifests. Hidden directories,
 `target`, `build` and `node_modules` are skipped; nested symlinks are skipped and
 explicit symlink inputs reject. Source discovery uses the ordinary module
 loader's path rules. Watch limits traversal to depth 64, 4,096 files,
@@ -41,8 +42,10 @@ limits, not new language limits. `--interval-ms` accepts 10 through 60,000 and
 defaults to 200. Usual native compiler and linker options pass without shell
 parsing. Interpret mode is not a watch option.
 
-Project watch also observes `rill.json`. The command resolves its entry and
-options at startup. Restart watch after changing that recipe. Project
+Project watch also observes `rill.json`. Version 2 recipes add native and shader
+inputs automatically and reload those recipes after edits. Generated shader
+output is excluded. The command resolves its entry and compiler options at
+startup, so restart watch after changing those. Project
 build/run/watch reuse checked generated C for exact unchanged pure source
 graphs. Changed graphs recheck all imported declarations; C compilation and
 linking always run. See [incremental builds](build-performance.md).

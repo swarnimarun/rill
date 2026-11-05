@@ -89,8 +89,27 @@ impl Config {
         self.validate()?;
         let mut result = Resolved::default();
         if !self.packages.is_empty() {
-            result.cflags = pkg_config("--cflags", &self.packages)?;
-            result.link_args = pkg_config("--libs", &self.packages)?;
+            // Keep adjacent system packages in one pkg-config invocation so its
+            // complete ordered dependency graph survives. Bundle boundaries are
+            // inserted in the source's package order.
+            let mut system = Vec::new();
+            for package in &self.packages {
+                if let Some(bundled) = crate::toolchain::package(package)? {
+                    if !system.is_empty() {
+                        result.cflags.extend(pkg_config("--cflags", &system)?);
+                        result.link_args.extend(pkg_config("--libs", &system)?);
+                        system.clear();
+                    }
+                    result.cflags.extend(bundled.cflags);
+                    result.link_args.extend(bundled.link_args);
+                } else {
+                    system.push(package.clone());
+                }
+            }
+            if !system.is_empty() {
+                result.cflags.extend(pkg_config("--cflags", &system)?);
+                result.link_args.extend(pkg_config("--libs", &system)?);
+            }
         }
         // Source links supplement pkg-config's dependency graph. Preserve its
         // ordered output, including repeated libraries needed by static cycles.

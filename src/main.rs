@@ -7,6 +7,7 @@ mod fingerprint;
 mod import_worker;
 mod native_headers;
 mod project;
+mod shader;
 mod watch;
 
 use std::{
@@ -59,11 +60,41 @@ fn run() -> Result<(), String> {
     if command == OsStr::new("docs") {
         return docgen::run(args);
     }
+    if command == OsStr::new("shader") {
+        return shader::run(args);
+    }
     let path = args.next().ok_or_else(usage)?;
     if !matches!(command.to_str(), Some("check" | "run" | "emit-c" | "build")) {
         return Err(usage());
     }
     let options = BuildOptions::parse(command.to_str().unwrap(), args)?;
+    let project = options
+        .project_root
+        .as_deref()
+        .map(project::Project::load)
+        .transpose()?;
+    if let Some(project) = &project {
+        let entry = std::fs::canonicalize(&path)
+            .map_err(|e| format!("E-PROJECT-IO: cannot open entry: {e}"))?;
+        if entry
+            != project
+                .root
+                .join(&project.entry)
+                .canonicalize()
+                .map_err(|e| format!("E-PROJECT-IO: {e}"))?
+        {
+            return Err("E-PROJECT-MANIFEST: source must match the selected project entry; restart watch after changing entry".into());
+        }
+        if options.native_config.is_some() && project.has_recipes() {
+            return Err("E-PROJECT-NATIVE: saved native configuration cannot be combined with project recipes".into());
+        }
+        if options.interpret && project.has_native() {
+            return Err(
+                "E-PROJECT-NATIVE: --interpret cannot execute native project recipes".into(),
+            );
+        }
+        project.prepare_shaders(command.to_str().unwrap())?;
+    }
     if options.native_config.is_some() {
         options.report_cache(if options.incremental {
             "bypass (saved native configuration)"
@@ -84,6 +115,12 @@ fn run() -> Result<(), String> {
     if options.simd == Simd::Neon {
         arguments.push("-DRILL_SIMD_NEON=1".into());
     }
+    let recipe = project
+        .as_ref()
+        .map(project::Project::resolve_recipe)
+        .transpose()?
+        .unwrap_or_default();
+    arguments.extend(recipe.cflags);
     // Even a frontend hit must validate today's C options. Native compilation
     // and linking below always use the current compiler and environment.
     rill::c_import::validate_compile_args(&arguments)?;
@@ -113,12 +150,29 @@ fn run() -> Result<(), String> {
         // and compiler identity therefore suffice before native preparation.
         if let Some(c) = cache.lookup(&graph) {
             options.report_cache("hit");
+            let native = project
+                .as_ref()
+                .map(|project| {
+                    project.prepare_recipe(
+                        command.to_str().unwrap(),
+                        &compiler,
+                        options.zig_cc,
+                        &arguments,
+                    )
+                })
+                .transpose()?;
+            let mut links = native
+                .as_ref()
+                .map(|native| native.objects.clone())
+                .unwrap_or_default();
+            links.extend(recipe.link_args);
+            links.extend(options.link_args.iter().cloned());
             return execute_c(
                 command.to_str().unwrap(),
                 &c,
                 &compiler,
                 &arguments,
-                &options.link_args,
+                &links,
                 &options,
                 || Ok(()),
             );
@@ -137,11 +191,27 @@ fn run() -> Result<(), String> {
         || !program.native.links.is_empty()
         || !program.native.packages.is_empty();
     let cflags = prepared.cflags.clone();
-    let mut link_args = prepared.link_args.clone();
+    let native = project
+        .as_ref()
+        .map(|project| {
+            project.prepare_recipe(
+                command.to_str().unwrap(),
+                &compiler,
+                options.zig_cc,
+                &cflags,
+            )
+        })
+        .transpose()?;
+    let mut link_args = native
+        .as_ref()
+        .map(|native| native.objects.clone())
+        .unwrap_or_default();
+    link_args.extend(prepared.link_args.iter().cloned());
+    link_args.extend(recipe.link_args);
     link_args.extend(options.link_args.iter().cloned());
     match command.to_str() {
         Some("check") => {
-            if native_source {
+            if native_source || project.as_ref().is_some_and(project::Project::has_native) {
                 rill::c_import::validate_c(
                     &rill::backend::emit(program)?,
                     &compiler,
@@ -247,7 +317,12 @@ fn execute_c(
             let binary = directory.0.join("program");
             build_c(c, compiler, options.zig_cc, cflags, link_args, &binary)?;
             publish()?;
-            let status = Command::new(&binary)
+            let mut native = Command::new(&binary);
+            rill::toolchain::configure_runtime(&mut native)?;
+            if let Some(root) = &options.project_root {
+                project::Project::load(root)?.configure_runtime(&mut native);
+            }
+            let status = native
                 .status()
                 .map_err(|e| format!("failed to run native program: {e}"))?;
             if !status.success() {
@@ -540,6 +615,7 @@ struct BuildOptions {
     incremental: bool,
     cache_dir: Option<PathBuf>,
     cache_status: bool,
+    project_root: Option<PathBuf>,
     #[cfg(unix)]
     timeout_ms: Option<u64>,
 }
@@ -601,8 +677,19 @@ impl BuildOptions {
         let mut incremental = None;
         let mut cache_dir = None;
         let mut cache_status = false;
+        let mut project_root = None;
         while let Some(arg) = args.next() {
             match arg.as_os_str() {
+                arg if arg == OsStr::new("--project-root") => {
+                    if project_root.is_some() {
+                        return Err("--project-root may be specified only once".into());
+                    }
+                    let path = args.next().ok_or("--project-root requires a directory")?;
+                    if path.is_empty() {
+                        return Err("--project-root requires a nonempty directory".into());
+                    }
+                    project_root = Some(PathBuf::from(path));
+                }
                 arg if matches!(arg.to_str(), Some("--incremental" | "--no-incremental")) => {
                     if incremental.is_some() {
                         return Err(
@@ -758,6 +845,7 @@ impl BuildOptions {
             incremental: incremental.unwrap_or(cache_dir.is_some()),
             cache_dir,
             cache_status,
+            project_root,
             #[cfg(unix)]
             timeout_ms,
         })
@@ -774,5 +862,6 @@ fn usage() -> String {
     let mut help = String::from("usage: rill lsp\n       rill fmt <source.rill> [--check]\n       rill <check|emit-c> <source.rill> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--c-arg <arg>]...\n       rill run <source.rill> [--interpret | --native] [compiler options]\n       rill build <source.rill> -o <executable> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--simd scalar|neon] [--c-arg <arg>]... [--link-arg <arg>]...\n       rill import-c --header <header> [--function <name>]... [--constant <name>]... [-o <bindings.rill>] [--pkg-config <package>]... [--link <library>]... [--cc <compiler> | --zig-cc] [--c-arg <arg>]... [--clang-resource-dir <path>] [--timeout-ms <1..600000>]\n       rill import-c <selection> --config-out <native.rillcfg> --binding-module <logical.name> --cc <compiler> [--link-arg <validated-input>]...\n       rill import-c --config <native.rillcfg> --cc <compiler> [-o <bindings.rill>]\n       rill import-c --inspect-config <native.rillcfg>\n       rill <check|emit-c|build|run> <source.rill> --native-config <native.rillcfg> --cc <compiler> [--timeout-ms <1..600000>]");
     help.push_str("\n       rill new <directory>\n       rill project <check|build|run|watch|docs> [directory] [options]\n       rill watch <source.rill> [--interval-ms <10..60000>] [--watch <path>]... [--once] [compiler options]\n       rill docs [project-directory] [-o <directory>] [--language] [--open]");
     help.push_str("\n       incremental options: [--incremental | --no-incremental] [--cache-dir <directory>] [--cache-status]\n       project build/run/watch enable incremental frontend caching by default; check always checks source");
+    help.push_str("\n       rill shader <check|build|inspect> [rill.shaders.json]\n       source commands accept --project-root <directory> to apply a versioned project recipe");
     help
 }

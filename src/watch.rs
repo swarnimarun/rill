@@ -22,6 +22,7 @@ struct Options {
     paths: Vec<PathBuf>,
     interval: Duration,
     once: bool,
+    project_root: Option<PathBuf>,
 }
 
 impl Options {
@@ -49,7 +50,7 @@ impl Options {
                 // named --watch is never reinterpreted as a watcher option.
                 Some(
                     "--cc" | "--c-arg" | "--link-arg" | "--opt-level" | "--simd"
-                    | "--native-config" | "--timeout-ms" | "--cache-dir",
+                    | "--native-config" | "--timeout-ms" | "--cache-dir" | "--project-root",
                 ) => {
                     let value = args.next().ok_or_else(|| {
                         format!("E-WATCH: {} requires a value", arg.to_string_lossy())
@@ -65,13 +66,14 @@ impl Options {
         // Reuse the real driver validation before starting any compiler.
         let mut check_args = compiler_args.clone();
         check_args.extend([OsString::from("-o"), OsString::from("unused")]);
-        super::BuildOptions::parse("build", check_args.into_iter())?;
+        let checked = super::BuildOptions::parse("build", check_args.into_iter())?;
         Ok(Self {
             source,
             compiler_args,
             paths,
             interval: Duration::from_millis(interval.unwrap_or(200)),
             once,
+            project_root: checked.project_root,
         })
     }
 }
@@ -82,7 +84,11 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     let options = Options::parse(args)?;
     let directory = super::RunDirectory::create()?;
     let compiler = std::env::current_exe().map_err(|e| format!("E-WATCH: {e}"))?;
-    let mut inputs = Inputs::new(&options.source, &options.paths)?;
+    let mut inputs = Inputs::new_project(
+        &options.source,
+        &options.paths,
+        options.project_root.as_deref(),
+    )?;
     let mut snapshot = inputs.initial.take().expect("initial watch snapshot");
     let mut supervisor = process::Supervisor::new()?;
     let mut generation = 0_u64;
@@ -110,7 +116,12 @@ pub fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
             return Err("E-WATCH: cancelled".into());
         }
         if let Some(binary) = build(generation)? {
-            supervisor.spawn(&mut Command::new(&binary))?;
+            let mut native = Command::new(&binary);
+            rill::toolchain::configure_runtime(&mut native)?;
+            if let Some(root) = &options.project_root {
+                crate::project::Project::load(root)?.configure_runtime(&mut native);
+            }
+            supervisor.spawn(&mut native)?;
             if let Some(previous) = previous_binary.take() {
                 let _ = fs::remove_file(previous);
             }
@@ -173,11 +184,19 @@ fn pause(duration: Duration) {
     }
 }
 
+#[cfg(test)]
 fn snapshot(paths: &[PathBuf]) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
+    snapshot_excluding(paths, &[])
+}
+
+fn snapshot_excluding(
+    paths: &[PathBuf],
+    excluded: &[PathBuf],
+) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
     let mut files = BTreeMap::new();
     let mut bytes = 0;
     for path in paths {
-        visit(path, true, 0, &mut files, &mut bytes)?;
+        visit(path, true, 0, &mut files, &mut bytes, excluded)?;
     }
     Ok(files)
 }
@@ -189,18 +208,42 @@ struct Inputs {
     aliases: Vec<(PathBuf, PathBuf)>,
     broken_imports: bool,
     initial: Option<BTreeMap<PathBuf, Vec<u8>>>,
+    project_root: Option<PathBuf>,
+    requested: Vec<PathBuf>,
+    excluded: Vec<PathBuf>,
 }
 
 impl Inputs {
+    #[cfg(test)]
     fn new(entry: &Path, extras: &[PathBuf]) -> Result<Self, String> {
-        let (initial, broken_imports, aliases) = source_snapshot(entry, extras)?;
+        Self::new_project(entry, extras, None)
+    }
+
+    fn new_project(
+        entry: &Path,
+        extras: &[PathBuf],
+        project_root: Option<&Path>,
+    ) -> Result<Self, String> {
+        let requested = extras.to_vec();
+        let mut extras = extras.to_vec();
+        let mut excluded = Vec::new();
+        if let Some(root) = project_root {
+            let project = crate::project::Project::load(root)?;
+            extras.extend(project.watch_inputs()?);
+            excluded = project.watch_exclusions();
+        }
+        let (initial, broken_imports, aliases) =
+            source_snapshot_excluding(entry, &extras, &excluded)?;
         Ok(Self {
             entry: entry.into(),
-            extras: extras.into(),
+            extras,
             sources: initial.keys().cloned().collect(),
             aliases,
             broken_imports,
             initial: Some(initial),
+            project_root: project_root.map(Path::to_path_buf),
+            requested,
+            excluded,
         })
     }
 
@@ -216,7 +259,7 @@ impl Inputs {
         }
         let mut paths = self.extras.clone();
         paths.extend(self.sources.iter().cloned());
-        let next = snapshot(&paths)?;
+        let next = snapshot_excluding(&paths, &self.excluded)?;
         if &next == previous {
             return Ok(next);
         }
@@ -226,7 +269,19 @@ impl Inputs {
     }
 
     fn discover(&mut self) -> Result<BTreeMap<PathBuf, Vec<u8>>, String> {
-        let (next, broken, aliases) = source_snapshot(&self.entry, &self.extras)?;
+        if let Some(root) = &self.project_root {
+            // A malformed edit must leave the old process alive and retain
+            // the manifest in the watch set so a subsequent repair retries.
+            if let Ok(project) = crate::project::Project::load(root) {
+                if let Ok(paths) = project.watch_inputs() {
+                    self.extras = self.requested.clone();
+                    self.extras.extend(paths);
+                    self.excluded = project.watch_exclusions();
+                }
+            }
+        }
+        let (next, broken, aliases) =
+            source_snapshot_excluding(&self.entry, &self.extras, &self.excluded)?;
         self.sources = next.keys().cloned().collect();
         self.broken_imports = broken;
         self.aliases = aliases;
@@ -234,8 +289,17 @@ impl Inputs {
     }
 }
 
+#[cfg(test)]
 fn source_snapshot(entry: &Path, extra_paths: &[PathBuf]) -> Result<Discovery, String> {
-    let mut files = snapshot(extra_paths)?;
+    source_snapshot_excluding(entry, extra_paths, &[])
+}
+
+fn source_snapshot_excluding(
+    entry: &Path,
+    extra_paths: &[PathBuf],
+    excluded: &[PathBuf],
+) -> Result<Discovery, String> {
+    let mut files = snapshot_excluding(extra_paths, excluded)?;
     let mut bytes = files.values().map(Vec::len).sum::<usize>();
     let mut broken = false;
     let mut aliases = Vec::new();
@@ -275,7 +339,7 @@ fn source_snapshot(entry: &Path, extra_paths: &[PathBuf]) -> Result<Discovery, S
                 .parent()
                 .filter(|p| !p.as_os_str().is_empty())
                 .unwrap_or(Path::new("."));
-            visit(root, true, 0, &mut files, &mut bytes)?;
+            visit(root, true, 0, &mut files, &mut bytes, excluded)?;
         }
     }
     Ok((files, broken, aliases))
@@ -289,7 +353,11 @@ fn visit(
     depth: usize,
     files: &mut BTreeMap<PathBuf, Vec<u8>>,
     bytes: &mut usize,
+    excluded: &[PathBuf],
 ) -> Result<(), String> {
+    if excluded.iter().any(|root| path.starts_with(root)) {
+        return Ok(());
+    }
     let failure = |error| format!("E-WATCH-IO: {}: {error}", path.display());
     let metadata = match fs::symlink_metadata(path) {
         Ok(metadata) => metadata,
@@ -318,14 +386,15 @@ fn visit(
             }) {
                 continue;
             }
-            visit(&entry.path(), false, depth + 1, files, bytes)?;
+            visit(&entry.path(), false, depth + 1, files, bytes, excluded)?;
         }
     } else if metadata.is_file()
         && (explicit
             || path.file_name() == Some(OsStr::new("rill.json"))
+            || crate::shader::supported_input(path)
             || matches!(
                 path.extension().and_then(OsStr::to_str),
-                Some("rill" | "rillcfg" | "h" | "c")
+                Some("rill" | "rillcfg" | "h" | "c" | "hpp" | "inl" | "inc" | "json")
             ))
     {
         let path = fs::canonicalize(path).map_err(failure)?;
@@ -353,6 +422,53 @@ fn visit(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn project_inputs_reload_recipes_and_exclude_nested_shader_output() {
+        let directory = super::super::RunDirectory::create().unwrap();
+        let root = directory.0.canonicalize().unwrap();
+        let entry = root.join("main.rill");
+        fs::write(&entry, "fn main() { 42 }").unwrap();
+        fs::create_dir(root.join("shaders")).unwrap();
+        fs::write(root.join("shaders/main.metal"), "kernel void clear() {}").unwrap();
+        fs::write(root.join("rill.shaders.json"), r#"{"version":1,"output":"shaders/compiled","shaders":[{"name":"clear","language":"metal","stage":"compute","entry":"clear","source":"shaders/main.metal","target":"msl-source"}]}"#).unwrap();
+        let manifest = root.join("rill.json");
+        fs::write(
+            &manifest,
+            r#"{"version":2,"name":"watch","entry":"main.rill","shaders":"rill.shaders.json"}"#,
+        )
+        .unwrap();
+        let mut inputs = Inputs::new_project(&entry, &[], Some(&root)).unwrap();
+        let first = inputs.initial.take().unwrap();
+        fs::create_dir(root.join("shaders/compiled")).unwrap();
+        fs::write(
+            root.join("shaders/compiled/manifest.json"),
+            vec![b'x'; MAX_FILE_BYTES as usize + 1],
+        )
+        .unwrap();
+        assert_eq!(inputs.read(&first).unwrap(), first);
+        let mut second = first;
+        for extension in ["slangh", "hlsli", "glsli"] {
+            fs::write(
+                root.join(format!("shaders/lighting.{extension}")),
+                "// new include",
+            )
+            .unwrap();
+            let next = inputs.read(&second).unwrap();
+            assert_ne!(
+                next, second,
+                "new {extension} include must trigger a rebuild"
+            );
+            second = next;
+        }
+        fs::create_dir(root.join("native")).unwrap();
+        fs::write(root.join("native/new.c"), "int answer(void) { return 1; }").unwrap();
+        fs::write(&manifest, r#"{"version":2,"name":"watch","entry":"main.rill","native":{"sources":["native/new.c"]},"shaders":"rill.shaders.json"}"#).unwrap();
+        let third = inputs.read(&second).unwrap();
+        assert!(third.contains_key(&root.join("native/new.c")));
+        fs::write(root.join("native/new.c"), "int answer(void) { return 2; }").unwrap();
+        assert_ne!(inputs.read(&third).unwrap(), third);
+    }
 
     #[test]
     fn content_changes_additions_deletions_and_explicit_assets_are_detected() {

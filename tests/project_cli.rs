@@ -139,7 +139,7 @@ fn manifests_reject_unknown_duplicate_and_invalid_values() {
     let tree = Tree::new();
     let root = tree.scaffold();
     for manifest in [
-        r#"{"version":2,"name":"app","entry":"src/main.rill"}"#,
+        r#"{"version":3,"name":"app","entry":"src/main.rill"}"#,
         r#"{"version":1.0,"name":"app","entry":"src/main.rill"}"#,
         r#"{"version":1,"name":"app","entry":"src/main.rill","command":"touch bad"}"#,
         r#"{"version":1,"name":"app","entry":"src/main.rill","version":1}"#,

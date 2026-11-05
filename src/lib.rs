@@ -20,6 +20,7 @@ pub mod reload;
 pub mod source;
 pub mod source_map;
 pub mod syntax;
+pub mod toolchain;
 pub mod typed;
 
 /// Parse and check a program before it reaches a backend.
