@@ -11,7 +11,7 @@ import std.alloc as alloc;
 import std.cli as cli;
 ```
 
-The catalogue now contains 15 modules. New source utilities use braces and
+The catalogue now contains 18 modules. New source utilities use braces and
 semicolons, explicit errors and caller-selected storage. See the
 [standard library guide](../docs/standard-library.md) for complete signatures,
 edge cases and runnable examples.
@@ -28,10 +28,19 @@ edge cases and runnable examples.
 | `std.json_input`, `std.json_output` | Bounded byte parsing and serialization |
 | `std.cli` | Supplied token classification and integer parsing |
 | `std.reload` | Explicit host generation context |
+| `std.sdl` | Header-checked scalar SDL3 calls with explicit raw-resource cleanup |
+| `std.shader` | Shader stage, target and resource-count metadata |
+| `std.slang` | Stateless Slang compilation through the bundled native SDK bridge |
+
+The graphics bindings require native execution. `std.shader` is pure Rill.
+See [the distribution guide](../docs/distribution.md) for signatures, SDK lookup
+and runtime resource obligations, and [shader projects](../docs/shaders.md) for
+validated build-time assets.
 
 The `_ops` helpers are separate because the current owner path rejects generic
-functions, even unused imports. The other new utility modules are monomorphic
-and can coexist with owner programs. No implicit prelude is introduced.
+functions, even unused imports. The pure monomorphic utility modules can coexist
+with owner programs. Native SDL/Slang bindings retain the owner backend's
+foreign-operation restrictions. No implicit prelude is introduced.
 Importing `std.bytes` or `std.binary` selects the owner subset through their
 declarations; keep those imports separate from `_ops` modules even if unused.
 

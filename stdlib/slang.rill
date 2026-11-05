@@ -1,0 +1,9 @@
+//! Stateless Slang SDK bridge. Calls compile files and write diagnostics to stderr.
+//! Paths are direct static C-string arguments; no C++ object layout crosses Rill.
+@include("rill/slang.h");
+@pkg_config("rill-slang");
+
+/// Return zero on successful compilation, nonzero on input/compiler/I/O failure.
+export extern fn RillSlang_compile_spirv(source: cstr, entry: cstr, stage: i32, output: cstr) -> i32;
+/// Emit compiler-checked MSL source. SDL/Metal still validates it on device.
+export extern fn RillSlang_compile_msl(source: cstr, entry: cstr, stage: i32, output: cstr) -> i32;

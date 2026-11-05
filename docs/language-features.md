@@ -20,17 +20,22 @@ prerequisites and acceptance cases for missing control flow and other additions.
 | Enums | Generic algebraic types, exhaustive nested/literal patterns, compact tagged unions, tag-only nullary enums and checked phantom products | Recursive owning containers, GADTs and general existential packages |
 | Static polymorphism | Generic functions and types, concrete reachable specialization, immutable local value schemes and specialized callbacks | Traits, coherent implementations, associated types, higher-rank APIs and const generics |
 | Functions | Named function values, lambdas, immutable Copy captures, currying, pipelines and composition | Mutable/owned/borrowed captures, affine call capabilities and explicit dynamic erasure |
-| Numbers and vectors | Checked `i32` arithmetic, booleans, explicit `u8x16` operations, portable scalar C and selected AArch64 NEON operations | General integer/float arithmetic, explicit wrapping/saturating operations, target-sized integers and broader SIMD |
+| Numbers and vectors | Checked `i32` arithmetic, explicit binary32 arithmetic and predicates, booleans, explicit `u8x16` operations, portable scalar C and selected AArch64 NEON operations | Float literals/operator syntax, wider numeric types, explicit wrapping/saturating operations, target-sized integers and broader SIMD |
 | Equality | `i32`/`bool`/`unit`, same-type native scalar/pointer equality and byte-content `str == str`/`!=` | Structural record/enum equality and generic equality constraints |
 | Memory and borrowing | Hosted owned `i32` boxes and fixed-length owned bytes, recoverable allocation, restricted moves/returns, owner-bearing enums, call-scoped `read`/`inout` and disjoint field loans | Custom allocators, growable vectors/strings, borrowed slices, stored/returned references, general initialization and cleanup |
 | C interop | Target-header checks, automatic referenced-header imports, explicit externs, scalar calls/constants, exact nullable raw pointer transport and experimental explicit i32 C exports | Pointer dereference/arithmetic, aggregate ABI adapters, callbacks, wider/stable C exports and checked foreign lifetime/resource contracts |
-| Modules and libraries | Local file modules, explicit exports, 15 bundled modules covering checked math, Option/Result, text, buffers, binary data, ranges, allocation, JSON, CLI and reload, local project manifests and reusable native bindings | Growable containers/runtime strings, OS services, dependency packages, opaque interfaces, canonical interface serialization and stable ABI versions |
+| Modules and libraries | Local file modules, explicit exports, 18 bundled modules covering checked math, Option/Result, text, buffers, binary data, ranges, allocation, JSON, CLI, reload, SDL, shader metadata and the Slang bridge, local project manifests and reusable native bindings | Growable containers/runtime strings, broader OS services, dependency packages, opaque interfaces, canonical interface serialization and stable ABI versions |
 | Metaprogramming | Bounded compiler specialization and generated C declarations from supported header inputs | Source-level constant evaluation, hygienic macros, reflection, checked builders and bounded `comptime` |
 | Effects and concurrency | Explicit supported allocation and mutation operations | Effect checking, transitive allocation policies, tasks, atomics, thread safety, cancellation, transactions and search |
 
-Unsigned and floating values currently serve native transport, explicit
-conversion from `i32` and same-type equality. The `u8`/`u32`/`u64`/`f32`
-types do not yet provide a general arithmetic vocabulary. Raw pointers have
+Unsigned values currently serve native transport, explicit conversion from
+`i32` and same-type equality. Binary32 values also support explicit `f32_add`,
+`f32_sub`, `f32_mul`, `f32_div`, `f32_neg`, `f32_lt`, `f32_le`, `f32_gt`,
+`f32_ge` and `f32_is_finite` operations in both evaluators and C backends.
+Use `f32_div(f32(1), f32(10))` for a fractional value. Float literals and
+ordinary float arithmetic/ordering operators are not accepted yet. See
+[the graphics feature audit](graphics-feature-audit.md) for numeric semantics
+and renderer requirements. Raw pointers have
 no checked Rill lifetime, dereference or automatic foreign-resource cleanup.
 See [C interop](c-interop.md) before extending that boundary.
 

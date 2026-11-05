@@ -1,0 +1,35 @@
+{
+  "version": 1,
+  "slang": {
+    "version": "2026.21",
+    "assets": {
+      "aarch64-apple-darwin": {
+        "url": "https://github.com/shader-slang/slang/releases/download/v2026.21/slang-2026.21-macos-aarch64.tar.gz",
+        "sha256": "c3d3c959ba3e0c8fdb6c2a5cf6a471ed097ed19c41820af9fb21625779794fb2"
+      },
+      "x86_64-apple-darwin": {
+        "url": "https://github.com/shader-slang/slang/releases/download/v2026.21/slang-2026.21-macos-x86_64.tar.gz",
+        "sha256": "a6bc9ba38c5d3a092ae868595ba9c838663682b3e16de40d5786bd38964970ba"
+      },
+      "x86_64-unknown-linux-gnu": {
+        "url": "https://github.com/shader-slang/slang/releases/download/v2026.21/slang-2026.21-linux-x86_64-glibc-2.28.tar.gz",
+        "sha256": "7b8800e7115668bfb073456ada3b20fa40718d7be41e7beec7c46c31351ba569"
+      }
+    }
+  },
+  "sdl3": {
+    "version": "3.4.20",
+    "url": "https://github.com/libsdl-org/SDL/releases/download/release-3.4.20/SDL3-3.4.20.tar.gz",
+    "sha256": "f3bb06f55bed9557227a700af2ea62e49497ebdf58037732a731a5fb3ef8581f"
+  },
+  "spirv-tools": {
+    "version": "2026.4",
+    "url": "https://codeload.github.com/KhronosGroup/SPIRV-Tools/tar.gz/refs/tags/v2026.4",
+    "sha256": "92df4c377603f086c3d2a1eb2bd9b8f883a73ca890fb939d78a0cecdcc01686c"
+  },
+  "spirv-headers": {
+    "revision": "496543121ce6419f23d6fa5d7194ba66c36212d2",
+    "url": "https://codeload.github.com/KhronosGroup/SPIRV-Headers/tar.gz/496543121ce6419f23d6fa5d7194ba66c36212d2",
+    "sha256": "a9bb9c48713245eacf97cc539b6f1d45405a92d8813f8b82e635f0a085ee9898"
+  }
+}

@@ -16,6 +16,9 @@ pub(super) fn source(name: &str) -> Option<&'static str> {
         "std.alloc" => Some(include_str!("../../stdlib/alloc.rill")),
         "std.result" => Some(include_str!("../../stdlib/result.rill")),
         "std.cli" => Some(include_str!("../../stdlib/cli.rill")),
+        "std.sdl" => Some(include_str!("../../stdlib/sdl.rill")),
+        "std.shader" => Some(include_str!("../../stdlib/shader.rill")),
+        "std.slang" => Some(include_str!("../../stdlib/slang.rill")),
         _ => None,
     }
 }

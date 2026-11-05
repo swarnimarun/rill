@@ -4,6 +4,12 @@ Rill is an experimental compiler for the language described in [PLAN.md](PLAN.md
 It currently implements a small sequential subset. It is not yet a stable
 language; see [phase status](docs/phase-status.md) and [remaining work](docs/blockers/remaining-phases.md).
 
+The `v0.1.0-alpha` setup includes [bundled graphics tools](docs/distribution.md),
+[shader project commands](docs/shaders.md) and a [3D engine example](examples/engine-3d).
+Rill controls its scene, meshes, camera and transforms; a C11 adapter handles
+SDL3 GPU descriptors and resource cleanup. See the [graphics feature audit](docs/graphics-feature-audit.md)
+for the implemented subset and remaining work.
+
 Coming from Rust? Start with the [migration guide](docs/rust-to-rill.md),
 including control-flow alternatives, checked examples and library boundaries.
 

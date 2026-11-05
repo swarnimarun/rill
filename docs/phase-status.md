@@ -340,3 +340,24 @@ of each operand in both interpreter/C representations. UTF-8 and embedded NUL
 bytes compare by exact contents. Independent typed checks still reject mixed
 operands, ordering and aggregate equality. Record/enum helpers and guarded
 search examples are checked; derived aggregate equality remains a proposal.
+
+## Graphics tooling and alpha distribution setup
+
+Explicit IEEE binary32 value operations now run through both checked evaluators
+and C backends. Float literals and overloaded numeric operators remain open.
+The [graphics audit](graphics-feature-audit.md) distinguishes implemented
+renderer needs from missing slices, aggregate foreign calls, resource ownership
+and GPU type/effect rules.
+
+The [3D engine example](../examples/engine-3d) puts scene/camera/mesh/transform
+logic in Rill and descriptor packing, uploads and explicit GPU cleanup in C11.
+It uses compiled Slang MSL and validated SPIR-V. [Shader commands](shaders.md),
+version-2 [project recipes](projects.md) and rebuild/restart watch track these
+inputs without executing manifest shell commands. Stateful GPU pipeline or
+native function replacement across active GPU resources remains future work.
+
+The catalogue has 18 modules, including scalar SDL bindings, pure shader
+metadata and a stateless Slang C ABI bridge. The [distribution setup](distribution.md)
+pins Slang/SDL/SPIR-V dependencies and prepares `v0.1.0-alpha` archives and a
+manually gated GitHub release workflow. Publication remains the user's action.
+These increments do not complete a PLAN phase or establish a stable language.

@@ -516,3 +516,20 @@ representations and the checked interpreters. See [search and equality](search-a
 for complete examples and the exact loop-body behavior after finding a match.
 Ordinary record/enum equality and abrupt exits remain unsupported; explicit
 helpers work today and broader rules remain documented proposals.
+
+## Graphics continuation, 5 November
+
+The latest local work adds explicit f32 arithmetic, external shader projects,
+version-2 native/shader recipes and a Rill-driven SDL3 raster engine. Read the
+[graphics audit](graphics-feature-audit.md), [shader guide](shaders.md),
+[engine guide](../examples/engine-3d/README.md) and
+[distribution setup](distribution.md) before extending those boundaries.
+The alpha version is `0.1.0-alpha`. The distribution includes pinned Slang,
+SDL3 and SPIR-V validation plus the stateless Slang SDK bridge. Windows packages
+and Linux/Intel-host verification are separate from the local macOS arm64 work.
+
+The user explicitly instructed agents not to push or publish. Keep local commits
+and prepared release assets; let the user push tags and run publication later.
+A working GPU renderer does not make foreign pointers owned or establish GPU
+resource proofs. Project watch restarts processes. Stateful pipeline replacement
+still needs layout compatibility, quiescence and resource migration design.

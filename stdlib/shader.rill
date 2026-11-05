@@ -1,0 +1,29 @@
+//! Host-side shader metadata. These values do not prove GPU resource safety.
+export type Stage = Vertex | Fragment | Compute;
+export type Target = Spirv | Msl;
+export type Resources = {
+    samplers: i32;
+    storage_textures: i32;
+    storage_buffers: i32;
+    uniform_buffers: i32
+}
+
+/// Use this with the SDK's RillSlang_compile entry points.
+export fn stage_code(stage: Stage) -> i32 {
+    match stage {
+        Vertex => 0
+        | Fragment => 1
+        | Compute => 2
+    }
+}
+
+/// Reject negative counts before converting them to SDL's unsigned fields.
+export fn valid_resources(read resources: Resources) -> bool {
+    resources.samplers >= 0 && resources.storage_textures >= 0
+        && resources.storage_buffers >= 0 && resources.uniform_buffers >= 0
+}
+
+/// A CPU decision only; actual device-format support must be queried by the host.
+export fn target_for_backend(metal: bool) -> Target {
+    if metal { Msl } else { Spirv }
+}

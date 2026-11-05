@@ -1,0 +1,104 @@
+name: Build alpha distributions
+
+on:
+  push:
+    tags: [v0.1.0-alpha]
+  workflow_dispatch:
+    inputs:
+      publish:
+        description: Publish assets to the existing v0.1.0-alpha tag
+        type: boolean
+        default: false
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+          - os: macos-15
+            target: aarch64-apple-darwin
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    env:
+      RUSTUP_TOOLCHAIN: 1.99.1
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/setup-python@v7.1.0
+        with:
+          python-version: '3.13'
+      - name: Install Linux build dependencies
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y clang libclang-dev cmake ninja-build pkg-config \
+            libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
+            libxfixes-dev libxss-dev libwayland-dev libxkbcommon-dev \
+            libegl1-mesa-dev libgl1-mesa-dev libasound2-dev libpulse-dev \
+            libudev-dev libdbus-1-dev libdecor-0-dev
+      - name: Select Rust toolchain
+        run: rustup toolchain install 1.99.1 --profile minimal --component rustfmt --component clippy
+      - name: Verify release version
+        run: |
+          python3 -c 'import tomllib; assert tomllib.load(open("Cargo.toml","rb"))["package"]["version"] == "0.1.0-alpha"'
+      - name: Verify compiler and packaging
+        run: |
+          cargo fmt --all -- --check
+          cargo clippy --all-targets -- -D warnings
+          cargo test --locked --no-fail-fast
+          python3 -m unittest discover -s tools/dist -p 'test_*.py'
+      - name: Build default SDK distribution
+        run: python3 tools/dist/build.py --jobs 4
+      - name: Verify extracted and relocated archive
+        run: |
+          mkdir -p "$RUNNER_TEMP/relocated rill"
+          tar -xzf target/dist/rill-0.1.0-alpha-${{ matrix.target }}.tar.gz -C "$RUNNER_TEMP/relocated rill"
+          python3 tools/dist/smoke.py "$RUNNER_TEMP/relocated rill/rill-0.1.0-alpha-${{ matrix.target }}"
+      - uses: actions/upload-artifact@v7.0.2
+        with:
+          name: rill-0.1.0-alpha-${{ matrix.target }}
+          path: |
+            target/dist/*.tar.gz
+            target/dist/*.sha256
+          if-no-files-found: error
+
+  publish:
+    # Tag pushes only build artifacts. Publication requires a separate, explicit
+    # manual dispatch on the exact release tag with publish=true.
+    if: github.event_name == 'workflow_dispatch' && inputs.publish && github.ref == 'refs/tags/v0.1.0-alpha'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    environment: github-release
+    steps:
+      - uses: actions/checkout@v7.0.1
+        with:
+          persist-credentials: false
+      - uses: actions/download-artifact@v8.0.2
+        with:
+          pattern: rill-0.1.0-alpha-*
+          path: assets
+          merge-multiple: true
+      - name: Check archive digests
+        working-directory: assets
+        run: sha256sum --check *.sha256
+      - name: Publish prerelease assets
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          if ! gh release view v0.1.0-alpha >/dev/null 2>&1; then
+            gh release create v0.1.0-alpha --verify-tag --prerelease \
+              --title 'Rill v0.1.0-alpha' --notes-file docs/releases/v0.1.0-alpha.md
+          fi
+          gh release upload v0.1.0-alpha assets/*.tar.gz assets/*.sha256
