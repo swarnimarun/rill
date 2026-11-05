@@ -849,6 +849,20 @@ mod native {
             );
             return;
         }
+        #[cfg(target_os = "macos")]
+        let discovered_sdk = if std::env::var_os("SDKROOT").is_none() {
+            let output = Command::new("xcrun")
+                .arg("--show-sdk-path")
+                .output()
+                .expect("discover macOS SDK for configured SDL fixture");
+            success(&output);
+            let path = String::from_utf8(output.stdout).expect("UTF-8 macOS SDK path");
+            let path = path.trim();
+            assert!(!path.is_empty(), "xcrun returned an empty SDK path");
+            Some(OsString::from(path))
+        } else {
+            None
+        };
         let root = Path::new(env!("CARGO_MANIFEST_DIR"));
         let source = fs::read_to_string(root.join("examples/sdl3-direct/main.rill"))
             .unwrap()
@@ -878,6 +892,12 @@ mod native {
                     "--binding-module",
                     "sdl",
                 ]);
+            #[cfg(target_os = "macos")]
+            if let Some(sdk) = &discovered_sdk {
+                // Save the SDK in the recipe so materialization and execution
+                // replay the same target headers without changing process env.
+                capture.args(["--c-arg", "-isysroot", "--c-arg"]).arg(sdk);
+            }
             for name in ["SDL_INIT_VIDEO", "SDL_EVENT_QUIT"] {
                 capture.args(["--constant", name]);
             }
