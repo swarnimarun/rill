@@ -470,3 +470,19 @@ C callers, O0/O3 recursion/traps, source reorder, bundled reload hooks and the
 remaining limitations. This is a bounded P5 prerequisite. Native loading,
 dispatch replacement, quiescence, state migration and full phase gates remain
 open.
+
+## Standard library foundations
+
+The bundled catalogue expands from six to 15 source modules. New utilities
+cover checked/saturating i32 math, Option/Result Copy helpers, ASCII and static
+text bytes, atomic checked buffer writes, overlap-safe copies, signed endian
+encoding and half-open range cursors. Existing Result/allocation sources and
+canonical identities remain unchanged. Utilities allocate no storage; callers
+provide owned buffers explicitly.
+
+Generic `_ops` imports remain separate from owner-compatible monomorphic
+utilities. Importing bytes/binary selects the owner subset even without a
+runtime allocation. The [guide](standard-library.md),
+[catalogue](../stdlib/README.md) and [blockers](blockers/standard-library.md)
+describe that boundary and the remaining runtime containers/OS work.
+This is a source-library increment, not a completed P2/P3 phase or stable release.

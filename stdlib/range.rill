@@ -1,0 +1,59 @@
+//! Half-open integer cursors. Bounds are values, not references into storage.
+import std.option as option;
+import std.result as result;
+import std.int as integer;
+
+/// Remaining values are start <= value < end. Reversed bounds are empty.
+export type Range = {
+    start: i32;
+    end: i32
+}
+
+/// Construct a cursor while preserving both written endpoints.
+export fn new(start: i32, end: i32) -> Range {
+    record Range {
+        start = start;
+        end = end
+    }
+}
+
+/// Empty and reversed ranges yield no values from either end.
+export fn is_empty(read range: Range) -> bool {
+    range.start >= range.end
+}
+
+/// Test membership in the cursor's remaining half-open interval.
+export fn contains(read range: Range, value: i32) -> bool {
+    value >= range.start && value < range.end
+}
+
+/// Remove and return the first remaining value, or None without mutation.
+export fn next(inout range: Range) -> option.Option < i32 > {
+    if range.start < range.end {
+        let value = range.start;
+        range.start <- range.start + 1;
+        option.Some(value)
+    } else {
+        option.None
+    }
+}
+
+/// Remove and return the last remaining value, or None without mutation.
+export fn next_back(inout range: Range) -> option.Option < i32 > {
+    if range.start < range.end {
+        range.end <- range.end - 1;
+        option.Some(range.end)
+    } else {
+        option.None
+    }
+}
+
+/// Count remaining values, reporting integer.Overflow if the count exceeds MAX.
+export fn len_checked(read range: Range) -> result.Result < i32, integer.Error > {
+    if is_empty(range) {
+        result.Ok(0)
+    }
+    else {
+        integer.checked_sub(range.end, range.start)
+    }
+}

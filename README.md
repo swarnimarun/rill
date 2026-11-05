@@ -32,6 +32,10 @@ boundary needed before native function replacement.
 The bundled [CLI parser](examples/cli/README.md) classifies supplied string
 tokens and returns checked integers with typed errors. Runtime argv and general
 I/O remain open. `std.reload` supplies explicit generation-context helpers.
+The [standard library catalogue](stdlib/README.md) now includes checked i32
+math, Option/Result helpers, ASCII/text utilities, owned-buffer operations,
+endian encoding and range cursors. See the [utility guide](docs/standard-library.md)
+and [examples](examples/stdlib) for allocation behavior and owner compatibility.
 The [feature matrix](docs/language-features.md) covers current records, enums,
 polymorphism, low-level operations and the compiler work still required.
 

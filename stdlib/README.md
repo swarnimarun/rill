@@ -11,6 +11,30 @@ import std.alloc as alloc;
 import std.cli as cli;
 ```
 
+The catalogue now contains 15 modules. New source utilities use braces and
+semicolons, explicit errors and caller-selected storage. See the
+[standard library guide](../docs/standard-library.md) for complete signatures,
+edge cases and runnable examples.
+
+| Modules | Purpose |
+| --- | --- |
+| `std.option`, `std.result` | Type-only Option and Result, including supported owner payloads |
+| `std.option_ops`, `std.result_ops` | Opt-in generic helpers for Copy values and callbacks |
+| `std.int` | Checked/saturating i32 arithmetic and bounds utilities |
+| `std.ascii`, `std.text` | Locale-free byte classification and static-string search/spans |
+| `std.bytes`, `std.binary` | Checked owned-buffer operations and signed endian encoding |
+| `std.range` | Half-open integer cursors with checked length |
+| `std.alloc` | Explicit recoverable system allocation |
+| `std.json_input`, `std.json_output` | Bounded byte parsing and serialization |
+| `std.cli` | Supplied token classification and integer parsing |
+| `std.reload` | Explicit host generation context |
+
+The `_ops` helpers are separate because the current owner path rejects generic
+functions, even unused imports. The other new utility modules are monomorphic
+and can coexist with owner programs. No implicit prelude is introduced.
+Importing `std.bytes` or `std.binary` selects the owner subset through their
+declarations; keep those imports separate from `_ops` modules even if unused.
+
 The default alias is the final segment, such as `json_input` or `result`.
 `std` is reserved for the shipped catalogue. Local files cannot shadow bundled
 modules, and unknown `std` imports report `E-MODULE-STDLIB` without searching

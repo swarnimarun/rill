@@ -1,0 +1,72 @@
+//! Portable signed i32 encoding in exactly four two's-complement bytes.
+//! Offsets need no alignment; functions allocate no storage and retain no loan.
+import std.bytes as bytes;
+import std.result as result;
+
+fn low_byte(value: i32) -> i32 {
+    let remainder = value % 256;
+    if remainder < 0 { remainder + 256 } else { remainder }
+}
+
+// Arithmetic floor division keeps the sign-extension bits of negative values.
+fn next_byte(value: i32) -> i32 {
+    let quotient = value / 256;
+    if value % 256 < 0 { quotient - 1 } else { quotient }
+}
+
+/// Write a signed integer in little-endian order, returning the byte count 4.
+/// Invalid ranges leave the complete buffer unchanged.
+export fn write_i32_le(inout buffer: SystemBytes, offset: i32, value: i32) -> result.Result<i32, bytes.Error> {
+    if !bytes.valid_range(buffer, offset, 4) { result.Err(bytes.InvalidRange) } else {
+        let b0 = low_byte(value);
+        let n1 = next_byte(value);
+        let b1 = low_byte(n1);
+        let n2 = next_byte(n1);
+        let b2 = low_byte(n2);
+        let b3 = low_byte(next_byte(n2));
+        owned_bytes_set(inout buffer, offset, b0);
+        owned_bytes_set(inout buffer, offset + 1, b1);
+        owned_bytes_set(inout buffer, offset + 2, b2);
+        owned_bytes_set(inout buffer, offset + 3, b3);
+        result.Ok(4)
+    }
+}
+
+/// Write a signed integer in big-endian order, returning the byte count 4.
+/// Invalid ranges leave the complete buffer unchanged.
+export fn write_i32_be(inout buffer: SystemBytes, offset: i32, value: i32) -> result.Result<i32, bytes.Error> {
+    if !bytes.valid_range(buffer, offset, 4) { result.Err(bytes.InvalidRange) } else {
+        let b0 = low_byte(value);
+        let n1 = next_byte(value);
+        let b1 = low_byte(n1);
+        let n2 = next_byte(n1);
+        let b2 = low_byte(n2);
+        let b3 = low_byte(next_byte(n2));
+        owned_bytes_set(inout buffer, offset, b3);
+        owned_bytes_set(inout buffer, offset + 1, b2);
+        owned_bytes_set(inout buffer, offset + 2, b1);
+        owned_bytes_set(inout buffer, offset + 3, b0);
+        result.Ok(4)
+    }
+}
+
+// Interpret the most-significant byte as signed before multiplying, so every
+// intermediate remains within i32 even for MIN and arbitrary high input bytes.
+fn decode(high: i32, b2: i32, b1: i32, b0: i32) -> i32 {
+    let signed = if high >= 128 { high - 256 } else { high };
+    ((signed * 256 + b2) * 256 + b1) * 256 + b0
+}
+
+/// Read four little-endian bytes as a signed integer. No input bytes change.
+export fn read_i32_le(read buffer: SystemBytes, offset: i32) -> result.Result<i32, bytes.Error> {
+    if !bytes.valid_range(buffer, offset, 4) { result.Err(bytes.InvalidRange) } else {
+        result.Ok(decode(owned_bytes_get(buffer, offset + 3), owned_bytes_get(buffer, offset + 2), owned_bytes_get(buffer, offset + 1), owned_bytes_get(buffer, offset)))
+    }
+}
+
+/// Read four big-endian bytes as a signed integer. No input bytes change.
+export fn read_i32_be(read buffer: SystemBytes, offset: i32) -> result.Result<i32, bytes.Error> {
+    if !bytes.valid_range(buffer, offset, 4) { result.Err(bytes.InvalidRange) } else {
+        result.Ok(decode(owned_bytes_get(buffer, offset), owned_bytes_get(buffer, offset + 1), owned_bytes_get(buffer, offset + 2), owned_bytes_get(buffer, offset + 3)))
+    }
+}

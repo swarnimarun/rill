@@ -1,0 +1,36 @@
+import std.ascii as ascii;
+import std.text as text;
+import std.int as integer;
+import std.range as range;
+import std.option as option;
+import std.result as result;
+import std.bytes as bytes;
+import std.binary as binary;
+
+fn main() {
+    let span = text.trim_ascii(" \tRill\r\n");
+    let mut cursor = range.new(0, 4);
+    let mut total = 0;
+    while !range.is_empty(cursor) {
+        match range.next(inout cursor) {
+            option.Some(value) => { total <- total + value; }
+            | option.None => ()
+        };
+    };
+    let answer = match integer.checked_add(total, 36) {
+        result.Ok(value) => value | result.Err(_) => 0
+    };
+    let mut output = system_bytes_zeroed_abort(12);
+    let written = match binary.write_i32_le(inout output, 2, answer) {
+        result.Ok(count) => count | result.Err(_) => 0
+    };
+    let copied = match bytes.copy_within(inout output, 2, 6, 4) {
+        result.Ok(count) => count | result.Err(_) => 0
+    };
+    let restored = match binary.read_i32_le(output, 6) {
+        result.Ok(value) => value | result.Err(_) => 0
+    };
+    if text.span_equal(" \tRill\r\n", span, "Rill") && ascii.to_lower(82) == 114 && written == 4 && copied == 4 {
+        restored
+    } else { 0 }
+}

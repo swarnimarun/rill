@@ -1,0 +1,38 @@
+//! Generic helpers for Copy values. Import std.option alone for owner payloads.
+import std.option as option;
+
+/// Return whether the option contains a value.
+export fn is_some(value) {
+    match value { option.Some(_) => true | option.None => false }
+}
+
+/// Return whether the option is absent.
+export fn is_none(value) { !is_some(value) }
+
+/// Use fallback for None. Ordinary argument evaluation computes fallback eagerly.
+export fn unwrap_or(value, fallback) {
+    match value { option.Some(item) => item | option.None => fallback }
+}
+
+/// Invoke fallback() only when the option is None.
+export fn unwrap_or_else(value, fallback) {
+    match value { option.Some(item) => item | option.None => fallback() }
+}
+
+/// Transform a present value; do not invoke transform for None.
+export fn map(value, transform) {
+    match value {
+        option.Some(item) => option.Some(transform(item))
+        | option.None => option.None
+    }
+}
+
+/// Invoke a present-value callback that returns another Option.
+export fn and_then(value, transform) {
+    match value { option.Some(item) => transform(item) | option.None => option.None }
+}
+
+/// Invoke fallback() only for None, returning its Option.
+export fn or_else(value, fallback) {
+    match value { option.Some(item) => option.Some(item) | option.None => fallback() }
+}

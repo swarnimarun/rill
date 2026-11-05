@@ -48,6 +48,11 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
         "docs/docs-command.md"
     ),
     chapter!("stdlib", "Standard library", "stdlib/README.md"),
+    chapter!(
+        "standard-library",
+        "Library utilities",
+        "docs/standard-library.md"
+    ),
     chapter!("native-builds", "Native builds", "docs/native-builds.md"),
     chapter!(
         "build-performance",

@@ -1,0 +1,10 @@
+import std.int as integer;
+import std.result_ops as result_ops;
+import std.option_ops as option_ops;
+
+fn main() {
+    let answer = result_ops.and_then(integer.checked_add(20, 1), fn(value) {
+        integer.checked_mul(value, 2)
+    });
+    option_ops.unwrap_or(result_ops.ok(answer), 0)
+}

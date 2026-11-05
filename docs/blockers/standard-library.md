@@ -98,3 +98,42 @@ The initial `u8x16` subset has a scalar fallback and an explicitly selected
 NEON path; broader SIMD and runtime capability selection remain open. See
 [SIMD limitations](simd.md). These steps do not by themselves complete P2/P3
 or make the language stable.
+
+## Utility expansion and remaining contracts
+
+The bundled library supplies source-level numeric, Option/Result, text, buffer,
+binary and range utilities, plus the existing allocation/JSON/CLI/reload modules.
+A complete systems library still depends on compiler contracts that this source
+increment does not provide.
+
+### Evidence and prerequisites
+
+- [Owner checking](../../src/check/ownership.rs) rejects quantified functions
+  in owner programs, including unused declarations. Generic Copy helpers must
+  remain in opt-in modules. Generalize checked move/Copy obligations, borrowed
+  generic signatures and cleanup before combining owner values with those
+  helpers. Existing standard allocation imports must remain monomorphic.
+- [Owned allocation](owned-allocation.md) supports fixed-length SystemBytes and
+  one-i32 boxes. Owned records, general partial initialization, reallocation,
+  stored borrows and allocator identity remain open. Growable vectors, maps,
+  owned strings and slices need those obligations and failure/cleanup tests;
+  fixed byte storage must not be presented as a hidden growable container.
+- Static `str` has program lifetime and byte access. Returning a runtime string
+  or decoded substring needs owned UTF-8 storage or a checked borrowed view,
+  explicit code-point boundaries and invalidation rules. Byte spans alone do
+  not establish those lifetime or encoding guarantees.
+- [C interop](../c-interop.md) transports supported scalars and raw pointers but
+  does not establish pointer dereference, output buffer validity, retention or
+  foreign-resource cleanup. File/network/process/argv adapters must use exact
+  target interfaces and checked lifetime/resource wrappers. Do not guess an ABI
+  or synthesize OS success values to populate a library namespace.
+- Time and randomness need specified clocks, units, platform availability,
+  entropy failures and deterministic/testing alternatives. Effects, blocking,
+  error representation and resource teardown need acceptance evidence before
+  standard defaults can promise those facilities.
+
+Next work should implement and test these prerequisites in dependency order,
+then add usable vertical slices: a growable byte/string container with injected
+allocation failure, a resource-safe file stream, and checked argument input.
+Preserve explicit imports, bounded work and ordinary backend agreement. The
+authoritative acceptance gates remain [PLAN.md section 19](../../PLAN.md#19-dependency-ordered-delivery-plan).

@@ -1,0 +1,109 @@
+//! Checked operations on caller-owned byte buffers. These functions allocate
+//! no storage and retain no reference. All explicit errors precede all writes.
+import std.result as result;
+import std.option as option;
+
+export type Error = InvalidRange | InvalidByte
+
+/// Whether [offset, offset + count) fits, including an empty end range.
+/// Negative or overflowing caller ranges return false without indexing.
+export fn valid_range(read buffer: SystemBytes, offset: i32, count: i32) -> bool {
+    let length = owned_bytes_len(buffer);
+    offset >= 0 && offset <= length && count >= 0 && count <= length - offset
+}
+
+/// Fill a complete checked range with a byte value from 0 through 255.
+/// InvalidRange takes precedence over InvalidByte; errors leave bytes unchanged.
+export fn fill(inout buffer: SystemBytes, offset: i32, count: i32, value: i32) -> result.Result<i32, Error> {
+    if !valid_range(buffer, offset, count) { result.Err(InvalidRange) } else {
+        if value < 0 || value > 255 { result.Err(InvalidByte) } else {
+            let mut pos = 0;
+            while pos < count {
+                owned_bytes_set(inout buffer, offset + pos, value);
+                pos <- pos + 1;
+            };
+            result.Ok(count)
+        }
+    }
+}
+
+/// Copy between distinct buffer roots after validating both complete ranges.
+/// Ordinary source loan checks reject using the same root as both arguments.
+export fn copy(inout destination: SystemBytes, dst_offset: i32, read source: SystemBytes, src_offset: i32, count: i32) -> result.Result<i32, Error> {
+    if !valid_range(destination, dst_offset, count) || !valid_range(source, src_offset, count) {
+        result.Err(InvalidRange)
+    } else {
+        let mut pos = 0;
+        while pos < count {
+            let value = owned_bytes_get(source, src_offset + pos);
+            owned_bytes_set(inout destination, dst_offset + pos, value);
+            pos <- pos + 1;
+        };
+        result.Ok(count)
+    }
+}
+
+/// Copy within one buffer with memmove semantics, including overlapping ranges.
+/// Both ranges are validated before the first write. No temporary allocation.
+export fn copy_within(inout buffer: SystemBytes, src_offset: i32, dst_offset: i32, count: i32) -> result.Result<i32, Error> {
+    if !valid_range(buffer, src_offset, count) || !valid_range(buffer, dst_offset, count) {
+        result.Err(InvalidRange)
+    } else {
+        if src_offset < dst_offset {
+            let mut pos = count;
+            while pos > 0 {
+                pos <- pos - 1;
+                let value = owned_bytes_get(buffer, src_offset + pos);
+                owned_bytes_set(inout buffer, dst_offset + pos, value);
+            };
+        } else {
+            let mut pos = 0;
+            while pos < count {
+                let value = owned_bytes_get(buffer, src_offset + pos);
+                owned_bytes_set(inout buffer, dst_offset + pos, value);
+                pos <- pos + 1;
+            };
+        };
+        result.Ok(count)
+    }
+}
+
+/// Copy the exact bytes of a static UTF-8 string, including embedded NUL.
+/// Returns its byte length, with no terminator or implicit resize.
+export fn write_str(inout buffer: SystemBytes, offset: i32, text: str) -> result.Result<i32, Error> {
+    let count = byte_len(text);
+    if !valid_range(buffer, offset, count) { result.Err(InvalidRange) } else {
+        let mut pos = 0;
+        while pos < count {
+            owned_bytes_set(inout buffer, offset + pos, byte_at(text, pos));
+            pos <- pos + 1;
+        };
+        result.Ok(count)
+    }
+}
+
+/// Compare complete buffers by length and byte contents; shared aliases work.
+export fn equal(read left: SystemBytes, read right: SystemBytes) -> bool {
+    let length = owned_bytes_len(left);
+    if length != owned_bytes_len(right) { false } else {
+        let mut pos = 0;
+        let mut same = true;
+        while pos < length && same {
+            same <- owned_bytes_get(left, pos) == owned_bytes_get(right, pos);
+            pos <- pos + 1;
+        };
+        same
+    }
+}
+
+/// Return the first matching byte offset, or None. Invalid bytes return an error.
+export fn find(read buffer: SystemBytes, value: i32) -> result.Result<option.Option<i32>, Error> {
+    if value < 0 || value > 255 { result.Err(InvalidByte) } else {
+        let length = owned_bytes_len(buffer);
+        let mut pos = 0;
+        while pos < length && owned_bytes_get(buffer, pos) != value {
+            pos <- pos + 1;
+        };
+        result.Ok(if pos == length { option.None } else { option.Some(pos) })
+    }
+}
