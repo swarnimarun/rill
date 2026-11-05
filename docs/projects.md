@@ -8,6 +8,7 @@ rill new my-tool
 rill project check my-tool
 rill project run my-tool
 rill project build my-tool
+rill project docs my-tool
 ./my-tool/build/my-tool
 ```
 
@@ -88,3 +89,21 @@ Unused source libraries do not trigger rebuilding. It uses the entry and options
 resolved when the command started. Restart `project watch` after
 changing the manifest's entry or output recipe. This mode does not preserve
 process state or replace live function bodies.
+
+
+## HTML documentation
+
+```sh
+rill project docs my-tool
+rill project docs my-tool -o public/reference --open
+```
+
+The docs command validates the manifest and generates language guides, project
+README/docs Markdown and parsed source API pages. Output defaults to
+`build/docs` under the project root; relative `-o` paths use that same root.
+It does not compile or execute the project or import native headers. The
+self-contained site has search, page/section links and local assets, and can
+be opened from disk or copied to a static host. See
+[the docs command contract](docs-command.md) for source comments, safe output
+regeneration and limits. `rill docs` also detects the current project;
+`rill docs --language` generates only the bundled language manual.

@@ -11,9 +11,10 @@ use std::{
 const MANIFEST: &str = "rill.json";
 const MAX_MANIFEST: u64 = 65_536;
 
-struct Project {
-    root: PathBuf,
-    entry: PathBuf,
+pub(super) struct Project {
+    pub(super) name: String,
+    pub(super) root: PathBuf,
+    pub(super) entry: PathBuf,
     output: PathBuf,
 }
 
@@ -97,9 +98,14 @@ pub fn create(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
 pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
     let action = args
         .next()
-        .ok_or("usage: rill project <check|build|run|watch> [directory] [options]")?;
-    if !matches!(action.to_str(), Some("check" | "build" | "run" | "watch")) {
-        return Err("usage: rill project <check|build|run|watch> [directory] [options]".into());
+        .ok_or("usage: rill project <check|build|run|watch|docs> [directory] [options]")?;
+    if !matches!(
+        action.to_str(),
+        Some("check" | "build" | "run" | "watch" | "docs")
+    ) {
+        return Err(
+            "usage: rill project <check|build|run|watch|docs> [directory] [options]".into(),
+        );
     }
     let mut remaining = args.peekable();
     let directory = if remaining
@@ -110,8 +116,21 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
     } else {
         PathBuf::from(".")
     };
-    let project = Project::load(&directory)?;
     let mut options: Vec<OsString> = remaining.collect();
+    if action == "docs"
+        && options.len() == 1
+        && matches!(options[0].to_str(), Some("--help" | "-h"))
+    {
+        return crate::docgen::run(options.into_iter());
+    }
+    let project = Project::load(&directory)?;
+    if action == "docs" {
+        // Invoke the same docs driver with the already validated project root.
+        // No compiler flags or executable output paths apply to documentation.
+        let mut args = vec![project.root.into_os_string()];
+        args.extend(options);
+        return crate::docgen::run(args.into_iter());
+    }
     if action == "watch" {
         options.push("--watch".into());
         options.push(project.root.join(MANIFEST).into_os_string());
@@ -155,7 +174,7 @@ pub fn run(mut args: impl Iterator<Item = OsString>) -> Result<(), String> {
 }
 
 impl Project {
-    fn load(directory: &Path) -> Result<Self, String> {
+    pub(super) fn load(directory: &Path) -> Result<Self, String> {
         let root = directory
             .canonicalize()
             .map_err(|e| format!("E-PROJECT-IO: cannot open {}: {e}", directory.display()))?;
@@ -206,6 +225,7 @@ impl Project {
             PathBuf::from("build").join(format!("{name}{}", std::env::consts::EXE_SUFFIX))
         };
         let project = Self {
+            name: name.to_owned(),
             root,
             entry,
             output,

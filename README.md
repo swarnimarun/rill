@@ -30,6 +30,20 @@ I/O remain open. `std.reload` supplies explicit generation-context helpers.
 The [feature matrix](docs/language-features.md) covers current records, enums,
 polymorphism, low-level operations and the compiler work still required.
 
+Generate searchable, addressable HTML documentation without running project
+code or native dependency tools:
+
+```sh
+cargo run -- docs --language
+cargo run -- docs my-tool
+cargo run -- project docs my-tool --open
+```
+
+Output defaults to `build/docs/index.html`. Use `-o <directory>` to change it.
+The site includes bundled language guides, project Markdown and source API
+pages with section/symbol links. Search and assets work offline. See the
+[docs command guide](docs/docs-command.md).
+
 Install a Rust toolchain and a C11 compiler, then run:
 
 ```sh

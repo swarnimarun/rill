@@ -439,3 +439,19 @@ No phase gate or Rust/Zig feature parity follows from this tooling increment.
 Fresh [verification](verification/2026-11-04-project-cli-reload.md) records this
 work separately from historical counts, including the configured SDL SDK setup
 failure and its passing environment-only retest.
+
+
+## Searchable documentation command
+
+`rill docs [project-directory]` and `rill project docs` generate a local HTML
+reference with bundled language guides, project README/docs Markdown and parsed
+source API pages. Source comments and written signatures remain source-level
+information; this tooling does not infer interfaces or invoke native imports.
+The reader uses stable heading/symbol links and offline section search. Output
+is staged and replaces only a managed generated directory; unrelated files and
+symlinked outputs reject. Missing generated files can be repaired.
+
+See [the docs command guide](docs-command.md) for `--language`, `-o`, `--open`,
+portable URLs, file discovery and bounds. This adds tooling only, with no
+language or phase completion claim. Fresh checks are recorded in the
+[documentation verification](verification/2026-11-04-docs-command.md).

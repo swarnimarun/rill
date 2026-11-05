@@ -1,5 +1,6 @@
 #[cfg(unix)]
 mod config_driver;
+mod docgen;
 #[cfg(all(feature = "c-import", unix))]
 mod import_worker;
 mod native_headers;
@@ -52,6 +53,9 @@ fn run() -> Result<(), String> {
     }
     if command == OsStr::new("watch") {
         return watch::run(args);
+    }
+    if command == OsStr::new("docs") {
+        return docgen::run(args);
     }
     let path = args.next().ok_or_else(usage)?;
     if !matches!(command.to_str(), Some("check" | "run" | "emit-c" | "build")) {
@@ -620,6 +624,6 @@ impl BuildOptions {
 
 fn usage() -> String {
     let mut help = String::from("usage: rill lsp\n       rill fmt <source.rill> [--check]\n       rill <check|emit-c> <source.rill> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--c-arg <arg>]...\n       rill run <source.rill> [--interpret | --native] [compiler options]\n       rill build <source.rill> -o <executable> [--cc <compiler> | --zig-cc] [--opt-level <0|1|2|3|s|z>] [--simd scalar|neon] [--c-arg <arg>]... [--link-arg <arg>]...\n       rill import-c --header <header> [--function <name>]... [--constant <name>]... [-o <bindings.rill>] [--pkg-config <package>]... [--link <library>]... [--cc <compiler> | --zig-cc] [--c-arg <arg>]... [--clang-resource-dir <path>] [--timeout-ms <1..600000>]\n       rill import-c <selection> --config-out <native.rillcfg> --binding-module <logical.name> --cc <compiler> [--link-arg <validated-input>]...\n       rill import-c --config <native.rillcfg> --cc <compiler> [-o <bindings.rill>]\n       rill import-c --inspect-config <native.rillcfg>\n       rill <check|emit-c|build|run> <source.rill> --native-config <native.rillcfg> --cc <compiler> [--timeout-ms <1..600000>]");
-    help.push_str("\n       rill new <directory>\n       rill project <check|build|run|watch> [directory] [options]\n       rill watch <source.rill> [--interval-ms <10..60000>] [--watch <path>]... [--once] [compiler options]");
+    help.push_str("\n       rill new <directory>\n       rill project <check|build|run|watch|docs> [directory] [options]\n       rill watch <source.rill> [--interval-ms <10..60000>] [--watch <path>]... [--once] [compiler options]\n       rill docs [project-directory] [-o <directory>] [--language] [--open]");
     help
 }
