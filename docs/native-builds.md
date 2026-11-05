@@ -63,3 +63,16 @@ defaults and automatic SDK/resource discovery do not modify their recorded
 compiler arguments. Their current supported optimization profiles remain O0
 and O2. See [configuration contracts](c-interop.md) before creating or replaying
 a saved configuration.
+
+
+## Current scalar loop benchmark
+
+Run `python3 scripts/bench-native-loop.py --rill target/debug/rill` after
+building the compiler. It compares one fixed 5,000,000-iteration checked i32
+kernel with equivalent C and Rust, checks checksum `998162` on every run and
+excludes process startup and printing. C/Rill use `-O3`; Rust retains overflow
+checks at `opt-level=3`. An arm64 macOS local rerun measured 23.246 ms for Rill,
+23.227 ms for C and 23.242 ms for Rust, with overlapping observed ranges.
+These are scalar-kernel measurements under concurrent test load, without a
+whole-language or Zig comparison. See the
+[full method and evidence](verification/2026-11-04-project-cli-reload.md#native-scalar-loop-observation).
