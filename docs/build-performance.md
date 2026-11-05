@@ -86,6 +86,36 @@ for all three over 5,000,000 iterations, with identical expected checksums.
 See the [method, ranges and limitations](verification/2026-11-04-project-cli-reload.md#native-scalar-loop-observation).
 This does not measure large-library build latency or whole-program performance.
 
+## Measured compile and build latency
+
+Fresh [compile/build measurements](verification/2026-11-04-build-speed.md)
+separate checking, C emission and native compilation. Reproduce them with:
+
+```sh
+cargo build --locked --release --bin rill
+python3 scripts/bench-build.py --debug-rill target/debug/rill
+```
+
+Warm local medians on arm64 macOS with the release compiler and Apple Clang 17
+are below. Each phase has one warmup and five samples. Times include process
+startup; program execution is checked separately, outside the timed interval.
+These are full repeated builds with warm filesystem caches, not incremental
+cache hits or cold-machine measurements.
+
+| Workload | Check | Emit C, including checking | Full build O0 | Full build O3 |
+| --- | ---: | ---: | ---: | ---: |
+| Factorial | 4.2 ms | 3.8 ms | 74.6 ms | 77.4 ms |
+| Standard-library utilities | 12.5 ms | 18.3 ms | 100.1 ms | 118.7 ms |
+| 5,000 unused declarations, two emitted functions | 77.4 ms | 115.6 ms | 189.5 ms | 188.9 ms |
+| 900 leaves, 963 emitted functions including grouping helpers | 31.4 ms | 50.6 ms | 214.7 ms | 293.5 ms |
+
+Checking/emission and full builds are separately timed commands; medians should
+not be added or subtracted as exact stage accounting. The synthetic functions
+have small homogeneous i32 bodies, not representative large application code.
+Native-header imports, GPU compilation, compiler memory and cross-target builds
+are outside this measurement. The full record includes ranges, smaller sizes,
+the debug-compiler comparison and C-only compile/link timings.
+
 ## Current limits and next build work
 
 The compiler currently flattens a checked import graph and emits one C
@@ -95,6 +125,11 @@ package compilation. The module loader currently bounds an entry graph to 256
 modules, 64 levels and 1 MiB per source file. Other checker/specialization budgets
 can reject larger inputs explicitly. No support for an arbitrarily massive
 library follows from the lookup improvement.
+The typed backend currently caps a program at 1,024 reachable function
+instances, including concrete specializations and generated helper functions.
+Unused source declarations still require checking but do not consume that
+reachable-instance budget. Exceeding it reports `E-TYPED-INSTANCES` rather than
+silently switching to a representation with different limits.
 
 The next separate-compilation work needs these contracts, in this order:
 
