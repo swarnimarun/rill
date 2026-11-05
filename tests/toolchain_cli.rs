@@ -73,3 +73,51 @@ fn dangling_adjacent_sdk_reports_error_instead_of_switching_provider() {
         "{output:?}"
     );
 }
+
+#[cfg(unix)]
+#[test]
+fn installed_symlink_selects_the_real_executables_sdk() {
+    use std::os::unix::fs::PermissionsExt;
+    let tree = Tree::new("alias");
+    let package = tree.0.join("versioned");
+    fs::create_dir_all(package.join("bin")).unwrap();
+    fs::create_dir_all(package.join("libexec/rill/bin")).unwrap();
+    fs::create_dir(tree.0.join("launch")).unwrap();
+    let real = package.join("bin/rill");
+    if fs::hard_link(env!("CARGO_BIN_EXE_rill"), &real).is_err() {
+        fs::copy(env!("CARGO_BIN_EXE_rill"), &real).unwrap();
+    }
+    let compiler = package.join("libexec/rill/bin/compiler");
+    fs::write(
+        &compiler,
+        "#!/bin/sh\necho selected-versioned-sdk >&2\nexit 99\n",
+    )
+    .unwrap();
+    fs::set_permissions(&compiler, fs::Permissions::from_mode(0o755)).unwrap();
+    fs::write(package.join("libexec/rill/toolchain.json"), serde_json::json!({
+        "version":1, "rill":env!("CARGO_PKG_VERSION"), "tools":{"slangc":"bin/compiler"}, "packages":{}, "runtime_dirs":[]
+    }).to_string()).unwrap();
+    fs::write(
+        tree.0.join("shader.slang"),
+        "[shader(\"compute\")][numthreads(1,1,1)] void main() {}",
+    )
+    .unwrap();
+    fs::write(tree.0.join("rill.shaders.json"), serde_json::json!({
+        "version":1, "shaders":[{"name":"test", "language":"slang", "stage":"compute", "entry":"main", "source":"shader.slang", "target":"msl"}]
+    }).to_string()).unwrap();
+    let alias = tree.0.join("launch/rill");
+    std::os::unix::fs::symlink("../versioned/bin/rill", &alias).unwrap();
+    let output = Command::new(alias)
+        .env_remove("RILL_TOOLCHAIN_ROOT")
+        .env_remove("RILL_SLANGC")
+        .env_remove("SLANGC")
+        .args(["shader", "check"])
+        .arg(tree.0.join("rill.shaders.json"))
+        .output()
+        .unwrap();
+    assert!(!output.status.success());
+    assert!(
+        String::from_utf8_lossy(&output.stderr).contains("selected-versioned-sdk"),
+        "{output:?}"
+    );
+}

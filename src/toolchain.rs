@@ -77,6 +77,8 @@ impl Bundle {
         }
         let executable = std::env::current_exe()
             .map_err(|e| format!("E-TOOLCHAIN: cannot locate Rill executable: {e}"))?;
+        let executable = fs::canonicalize(&executable)
+            .map_err(|e| format!("E-TOOLCHAIN: cannot resolve Rill executable: {e}"))?;
         let Some(prefix) = executable.parent().and_then(Path::parent) else {
             return Ok(None);
         };

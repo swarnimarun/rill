@@ -42,7 +42,7 @@ jobs:
           sudo apt-get update
           sudo apt-get install -y clang libclang-dev cmake ninja-build pkg-config \
             libx11-dev libxext-dev libxrandr-dev libxcursor-dev libxi-dev \
-            libxfixes-dev libxss-dev libwayland-dev libxkbcommon-dev \
+            libxfixes-dev libxss-dev libxinerama-dev libwayland-dev libxkbcommon-dev \
             libegl1-mesa-dev libgl1-mesa-dev libasound2-dev libpulse-dev \
             libudev-dev libdbus-1-dev libdecor-0-dev
       - name: Select Rust toolchain
@@ -56,6 +56,7 @@ jobs:
           cargo clippy --all-targets -- -D warnings
           cargo test --locked --no-fail-fast
           python3 -m unittest discover -s tools/dist -p 'test_*.py'
+          python3 -m unittest discover -s tools/install -p 'test_*.py'
       - name: Build default SDK distribution
         run: python3 tools/dist/build.py --jobs 4
       - name: Verify extracted and relocated archive
@@ -63,12 +64,19 @@ jobs:
           mkdir -p "$RUNNER_TEMP/relocated rill"
           tar -xzf target/dist/rill-0.1.0-alpha-${{ matrix.target }}.tar.gz -C "$RUNNER_TEMP/relocated rill"
           python3 tools/dist/smoke.py "$RUNNER_TEMP/relocated rill/rill-0.1.0-alpha-${{ matrix.target }}"
+      - name: Prepare installer asset
+        if: matrix.target == 'x86_64-unknown-linux-gnu'
+        run: |
+          cp tools/install/install.sh target/dist/install.sh
+          cd target/dist
+          sha256sum install.sh > install.sh.sha256
       - uses: actions/upload-artifact@v7.0.2
         with:
           name: rill-0.1.0-alpha-${{ matrix.target }}
           path: |
             target/dist/*.tar.gz
             target/dist/*.sha256
+            target/dist/install.sh
           if-no-files-found: error
 
   publish:
@@ -101,4 +109,4 @@ jobs:
             gh release create v0.1.0-alpha --verify-tag --prerelease \
               --title 'Rill v0.1.0-alpha' --notes-file docs/releases/v0.1.0-alpha.md
           fi
-          gh release upload v0.1.0-alpha assets/*.tar.gz assets/*.sha256
+          gh release upload v0.1.0-alpha assets/*.tar.gz assets/*.sha256 assets/install.sh
