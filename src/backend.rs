@@ -162,6 +162,12 @@ static rl_value rl_compare(int op, rl_value a, rl_value b) {
     if (a.tag != b.tag) rl_trap();
     if (op >= 2 && a.tag != 0) rl_trap();
     int v = 0;
+    if (a.tag == 4) {
+        if (op > 1) rl_trap();
+        v = a.len == b.len;
+        for (size_t i = 0; v && i < a.len; ++i) v = a.text[i] == b.text[i];
+        return rl_make(1, op == 0 ? v : !v);
+    }
     if (a.tag >= 8 && a.tag <= 12) {
         if (op > 1) rl_trap();
         v = a.tag == 11 ? a.real == b.real : a.tag == 12 ? a.pointer == b.pointer : a.wide == b.wide;

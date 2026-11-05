@@ -1,0 +1,9 @@
+import std.text as text;
+import std.option as option;
+
+fn main() {
+    match text.find("stone", "one") {
+        option.Some(offset) => offset
+        | option.None => -1
+    }
+}

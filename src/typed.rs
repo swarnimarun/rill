@@ -1894,8 +1894,10 @@ fn verify_expr(
                 And | Or if left == Type::Bool && right == Type::Bool => Type::Bool,
                 Eq | Ne
                     if left == right
-                        && (matches!(left, Type::Int | Type::Bool | Type::Unit)
-                            || left.is_raw()) =>
+                        && (matches!(
+                            left,
+                            Type::Int | Type::Bool | Type::Unit | Type::StaticStr
+                        ) || left.is_raw()) =>
                 {
                     Type::Bool
                 }
@@ -3145,7 +3147,14 @@ mod tests {
         };
         let body = ExprNode {
             ty: Type::Bool,
-            kind: ExprKind::Binary(BinaryOp::Eq, Box::new(string()), Box::new(string())),
+            kind: ExprKind::Binary(
+                BinaryOp::Eq,
+                Box::new(string()),
+                Box::new(ExprNode {
+                    ty: Type::Int,
+                    kind: ExprKind::Int(1),
+                }),
+            ),
         };
         let program = TypedMain {
             logical: Default::default(),
@@ -3161,6 +3170,70 @@ mod tests {
             }],
         };
         assert!(verify(&program).unwrap_err().contains("invalid binary"));
+    }
+
+    #[test]
+    fn string_equality_verification_checks_operands_operator_and_result() {
+        let program = parser::parse("fn main() { \"a\" == \"b\" }").unwrap();
+        let checked = check::analyze(&program).unwrap();
+        let original = lower_main(&checked).unwrap();
+        verify(&original).unwrap();
+        assert_eq!(
+            evaluate(&original).unwrap(),
+            crate::interpreter::Value::Bool(false)
+        );
+
+        let mut inequality = original.clone();
+        let ExprKind::Binary(op, _, _) = &mut inequality.functions[inequality.entry]
+            .body
+            .value_expr_mut()
+            .unwrap()
+            .kind
+        else {
+            panic!("binary body")
+        };
+        *op = BinaryOp::Ne;
+        verify(&inequality).unwrap();
+        assert_eq!(
+            evaluate(&inequality).unwrap(),
+            crate::interpreter::Value::Bool(true)
+        );
+
+        let mut ordering = original.clone();
+        let ExprKind::Binary(op, _, _) = &mut ordering.functions[ordering.entry]
+            .body
+            .value_expr_mut()
+            .unwrap()
+            .kind
+        else {
+            panic!("binary body")
+        };
+        *op = BinaryOp::Lt;
+        assert!(verify(&ordering).unwrap_err().contains("invalid binary"));
+
+        let mut result = original;
+        let function = &mut result.functions[result.entry];
+        function.result = Type::Int.into();
+        function.body.value_expr_mut().unwrap().ty = Type::Int;
+        let error = verify(&result).unwrap_err();
+        assert!(error.contains("incorrect expression type"), "{error}");
+    }
+
+    #[test]
+    fn nonreturning_string_equality_preserves_the_call_depth_trap() {
+        for body in ["never() == \"a\"", "\"a\" != never()"] {
+            let source = format!("fn never() -> str {{ never() }} fn main() {{ {body} }}");
+            let program = parser::parse(&source).unwrap();
+            let checked = check::analyze(&program).unwrap();
+            let typed = lower_main(&checked).unwrap();
+            verify(&typed).unwrap();
+            assert_eq!(evaluate(&typed).unwrap_err(), "runtime trap");
+            assert_eq!(
+                crate::interpreter::run_reference(&program).unwrap_err(),
+                "runtime trap"
+            );
+            emit_c(&typed).unwrap();
+        }
     }
 
     #[test]

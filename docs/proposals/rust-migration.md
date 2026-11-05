@@ -56,6 +56,35 @@ For each candidate, bring a small real Rill program, the current verbose form,
 the proposed shorter form and the exact semantic difference. Prioritize a
 bounded independently testable change over a broad compatibility claim.
 
+## Structural equality after strings
+
+String `==`/`!=` is a bounded content-comparison increment. Record and enum
+operators remain a separate proposal. Today an explicit helper can compare
+record fields, or match enum tags and compare active payloads. An implicit
+derived comparison could remove repeated code, but needs these decisions:
+
+- Preserve nominal type identity. Two records with the same field shape are
+  not automatically the same type.
+- Admit only independently verified finite Copy layouts whose leaves already
+  have equality. Owners, buffers, callables and unknown payloads need separate
+  contracts. Do not silently copy owners or ignore an unsupported field.
+- Preserve each leaf's semantics, including byte-content strings, float NaNs
+  and signed zero, and raw-pointer identity where admitted. Bytewise `memcmp`
+  of a C struct would compare padding and give incorrect float/string results.
+- Compare enum tags before active payloads; never read an inactive union member.
+  Define record field and recursive payload traversal without hidden allocation
+  or an unbounded host recursion path.
+- Evaluate operands once in source order. Express equality obligations for
+  generic functions explicitly; a generic field cannot be guessed comparable
+  because one specialization happens to work.
+- Extend source checking, independent typed verification, both interpreters and
+  both C representations together. Add malformed-layout/proof tests and O0/O3
+  comparisons for nested records/enums, Unicode/NUL strings, floating leaves,
+  unequal tags, unsupported owners and side effects.
+
+Decision status: useful follow-up, requiring a separate design. The current
+explicit helper remains the supported route for aggregate comparisons.
+
 ## Diagnostics work
 
 Contextual rejection help and bounded spelling suggestions can help immediately

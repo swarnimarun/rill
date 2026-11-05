@@ -45,6 +45,11 @@ const RUNTIME_BODY: &str = r#"static void rl_enter(void) { if (rl_call_depth >= 
 static void rl_leave(void) { --rl_call_depth; }
 static int32_t rl_byte_len(rl_str s) { if (s.len > INT32_MAX) rl_trap(); return (int32_t)s.len; }
 static int32_t rl_byte_at(rl_str s, int32_t i) { if (i < 0 || (size_t)i >= s.len) rl_trap(); return (int32_t)s.data[i]; }
+static int rl_str_equal(rl_str a, rl_str b) {
+    if (a.len != b.len) return 0;
+    for (size_t i = 0; i < a.len; ++i) if (a.data[i] != b.data[i]) return 0;
+    return 1;
+}
 static int32_t rl_checked(int op, int32_t x, int32_t y) {
     int64_t n = 0;
     switch (op) {
@@ -1024,6 +1029,12 @@ impl Emitter<'_> {
                         BinaryOp::Rem => format!("rl_checked(4, {left_temp}, {right_temp})"),
                         BinaryOp::Eq if left.ty == Type::Unit => "1".into(),
                         BinaryOp::Ne if left.ty == Type::Unit => "0".into(),
+                        BinaryOp::Eq if left.ty == Type::StaticStr => {
+                            format!("rl_str_equal({left_temp}, {right_temp})")
+                        }
+                        BinaryOp::Ne if left.ty == Type::StaticStr => {
+                            format!("!rl_str_equal({left_temp}, {right_temp})")
+                        }
                         BinaryOp::Eq => format!("{left_temp} == {right_temp}"),
                         BinaryOp::Ne => format!("{left_temp} != {right_temp}"),
                         BinaryOp::Lt => format!("{left_temp} < {right_temp}"),

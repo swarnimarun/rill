@@ -1895,13 +1895,14 @@ fn analyze_inner(program: &Program, require_main: bool) -> Result<CheckedProgram
             Type::Int
                 | Type::Bool
                 | Type::Unit
+                | Type::StaticStr
                 | Type::CU8
                 | Type::CU32
                 | Type::CU64
                 | Type::CF32
                 | Type::CPointer { .. }
         ) {
-            return Err("E-TYPE: equality requires a concrete primitive type".into());
+            return Err("E-TYPE: equality requires a concrete primitive type or str; compare record and enum fields explicitly with a helper or match".into());
         }
     }
     for ty in &checker.pointer_types {
@@ -2288,7 +2289,9 @@ mod tests {
         assert!(checked("extern fn byte_len(x: i32) -> i32; let main = 0")
             .unwrap_err()
             .contains("E-NAME"));
-        assert!(checked("let main = \"a\" == \"a\"")
+        assert!(checked("let main = \"a\" == \"a\"").is_ok());
+        assert!(checked("let main = \"a\" != \"b\"").is_ok());
+        assert!(checked("let main = \"a\" == 1")
             .unwrap_err()
             .contains("E-TYPE"));
         assert!(checked("extern fn f(x: cstr) -> unit; let main = f(\"a\")")

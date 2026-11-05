@@ -61,6 +61,11 @@ yet. `std.cli` parses string tokens supplied by a caller, not process argv.
 
 `!condition`, `&&` and `||` work on booleans. `&&` and `||` short-circuit.
 There are no implicit truthy integers. Equality uses `==`; mutation uses `<-`.
+Strings support byte-content `==` and `!=`, including embedded NUL bytes.
+`std.text.equal` remains available. Record and enum operators still reject;
+compare fields or use explicit matches. The
+[search/equality guide](search-and-equality.md) provides checked examples,
+including guarded loop suffixes after a match is found.
 Local bindings currently infer their types, so `let x: i32 = 1;` rejects.
 Closed function parameter/result annotations can constrain an inferred local.
 

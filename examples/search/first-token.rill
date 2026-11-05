@@ -1,0 +1,40 @@
+type Search = { found: i32; visited: i32; unmatched: i32; next_index: i32 }
+
+fn scan(limit: i32, token_at, target: str) -> Search {
+    let mut index = 0;
+    let mut found = -1;
+    let mut visited = 0;
+    let mut unmatched = 0;
+    while index < limit && found < 0 {
+        let token = token_at(index);
+        visited <- visited + 1;
+        if token == target {
+            found <- index;
+        };
+        if found < 0 {
+            unmatched <- unmatched + 1;
+        };
+        index <- index + 1;
+    };
+    record Search {
+        found = found;
+        visited = visited;
+        unmatched = unmatched;
+        next_index = index
+    }
+}
+
+fn tokens(index: i32) -> str {
+    if index == 0 { "zero" } else {
+        if index == 1 { "one" } else {
+            if index == 2 { "two" } else {
+                if index == 3 { "one" } else { "end" }
+            }
+        }
+    }
+}
+
+fn main() {
+    let result = scan(5, tokens, "one");
+    result.found
+}

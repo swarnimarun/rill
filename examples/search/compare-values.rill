@@ -1,0 +1,25 @@
+type Label = { name: str; code: i32 }
+type Entry = Absent | Present(Label)
+
+fn same_label(read left: Label, read right: Label) -> bool {
+    left.name == right.name && left.code == right.code
+}
+
+fn same_entry(left: Entry, right: Entry) -> bool {
+    match left {
+        Absent => match right { Absent => true | Present(_) => false }
+        | Present(a) => match right {
+            Absent => false
+            | Present(b) => same_label(a, b)
+        }
+    }
+}
+
+fn main() {
+    let first = record Label { name = "one"; code = 1 };
+    let second = record Label { name = "one"; code = 1 };
+    let different = record Label { name = "two"; code = 2 };
+    same_entry(Present(first), Present(second)) &&
+    !same_entry(Present(first), Present(different)) &&
+    same_entry(Absent, Absent) && !same_entry(Absent, Present(first))
+}
