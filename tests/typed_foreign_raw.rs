@@ -826,7 +826,7 @@ fn typed_evaluator_matches_reference_reached_raw_operation_error_precedence() {
         ("fn main() { u8(1 / 0) }", Err(RAW)),
         ("fn main() { u32(1 / 0) }", Err(RAW)),
         ("fn main() { u64(1 / 0) }", Err(RAW)),
-        ("fn main() { f32(1 / 0) }", Err(RAW)),
+        ("fn main() { f32(1 / 0) }", Err("runtime trap")),
         ("extern fn use_pointer(p: ptr<RFHandle>) -> i32; fn main() { use_pointer(c_null()) }", Err(RAW)),
         ("extern fn pointer(n: i32) -> ptr<RFHandle>; fn main() { is_null(pointer(1 / 0)) }", Err(RAW)),
         ("extern fn pointer() -> ptr<RFHandle>; fn main() { pointer() }", Err("E-INTERP-FFI: cannot call C function pointer in the interpreter")),

@@ -31,7 +31,7 @@ static float rl_ffi_float(rl_value v) { if (v.tag != 11) rl_trap(); return v.rea
 static const void *rl_ffi_pointer(rl_value v) { if (v.tag != 12) rl_trap(); return v.pointer; }
 static rl_value rl_ffi_convert(int tag, rl_value v) {
     if (v.tag != 0) rl_trap();
-    if (tag == 11) return rl_ffi_f((float)v.value);
+    if (tag == 11) { volatile float result = (float)v.value; return rl_ffi_f(result); }
     if (v.value < 0 || (tag == 8 && v.value > UINT8_MAX)) rl_trap();
     return rl_ffi_u(tag, (uint64_t)v.value);
 }
@@ -292,6 +292,20 @@ fn emit_checked_reference(checked: &crate::check::CheckedProgram<'_>) -> Result<
     }
     let mut out = program.native.preamble()?;
     out.push_str(&format!("#define RL_CAP {capacity}\n{RUNTIME}"));
+    out.push_str(crate::floats::RUNTIME);
+    let mut pending = program
+        .functions
+        .iter()
+        .map(|function| &function.body)
+        .collect::<Vec<_>>();
+    while let Some(expr) = pending.pop() {
+        if matches!(expr, Expr::Call(name, _) if name == "f32" || crate::floats::FloatOp::named(name).is_some())
+        {
+            out.push_str(crate::floats::STRICT);
+            break;
+        }
+        pending.extend(crate::check::callable_children(expr));
+    }
     out.push_str("_Static_assert(CHAR_BIT == 8, \"Rill strings require 8-bit bytes\");\n");
     out.push_str("_Static_assert(sizeof(rl_node) <= 64 && sizeof(rl_value) <= 64 * (RL_CAP + 1), \"unsupported target value layout\");\n");
     crate::c_import::abi::emit_declarations(
@@ -373,7 +387,7 @@ fn emit_checked_reference(checked: &crate::check::CheckedProgram<'_>) -> Result<
         }
         writeln!(out, "rl_leave(); return {result};\n}}").unwrap();
     }
-    out.push_str("\nstatic void rl_print(rl_value v) { if (v.tag == 0) printf(\"%\" PRId32, v.value); else if (v.tag >= 8 && v.tag <= 10) printf(\"%\" PRIu64, v.wide); else if (v.tag == 11) printf(\"%.9g\", (double)v.real); else if (v.tag == 12) printf(\"%p\", (void *)v.pointer); else if (v.tag == 1) fputs(v.value ? \"true\" : \"false\", stdout); else if (v.tag == 2) fputs(\"()\", stdout); else if (v.tag == 4) fwrite(v.text, 1, v.len, stdout); else if (v.tag == 6) { fputs(\"u8x16[\", stdout); for (int32_t i = 0; i < 16; ++i) { if (i) fputs(\", \", stdout); printf(\"%u\", rl_vget(v, i)); } fputc(']', stdout); } else if (v.tag == 5) { fputs(\"bytes[\", stdout); for (int32_t i = 0; i < v.value; ++i) { if (i) fputs(\", \", stdout); printf(\"%\" PRId32, rl_bytes_get(v, rl_make(0, i)).value); } fputc(']', stdout); } else if (v.tag == 3) { switch (v.value) {\n");
+    out.push_str("\nstatic void rl_print(rl_value v) { if (v.tag == 0) printf(\"%\" PRId32, v.value); else if (v.tag >= 8 && v.tag <= 10) printf(\"%\" PRIu64, v.wide); else if (v.tag == 11) rl_print_f32(v.real); else if (v.tag == 12) printf(\"%p\", (void *)v.pointer); else if (v.tag == 1) fputs(v.value ? \"true\" : \"false\", stdout); else if (v.tag == 2) fputs(\"()\", stdout); else if (v.tag == 4) fwrite(v.text, 1, v.len, stdout); else if (v.tag == 6) { fputs(\"u8x16[\", stdout); for (int32_t i = 0; i < 16; ++i) { if (i) fputs(\", \", stdout); printf(\"%u\", rl_vget(v, i)); } fputc(']', stdout); } else if (v.tag == 5) { fputs(\"bytes[\", stdout); for (int32_t i = 0; i < v.value; ++i) { if (i) fputs(\", \", stdout); printf(\"%\" PRId32, rl_bytes_get(v, rl_make(0, i)).value); } fputc(']', stdout); } else if (v.tag == 3) { switch (v.value) {\n");
     for ty in &program.types {
         for variant in &ty.variants {
             let (index, arity) = constructors[&variant.name];
@@ -682,6 +696,20 @@ impl Emitter<'_, '_> {
                 .unwrap();
             }
             Expr::Call(name, args) => {
+                if let Some(op) = crate::floats::FloatOp::named(name) {
+                    let mut values = Vec::new();
+                    for arg in args {
+                        values.push(format!("rl_ffi_float({})", self.expr(arg, env)?));
+                    }
+                    let call = op.c_call(&values);
+                    let value = if op.predicate() {
+                        format!("rl_make(1, {call})")
+                    } else {
+                        format!("rl_ffi_f({call})")
+                    };
+                    writeln!(self.out, "rl_value {result} = {value};").unwrap();
+                    return Ok(result);
+                }
                 if [
                     "u8x16_load",
                     "u8x16_lane",

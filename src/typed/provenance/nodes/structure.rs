@@ -202,6 +202,7 @@ fn child_count(node: TypedNodeRef<'_>) -> usize {
             | ExprKind::TryAlloc { .. }
             | ExprKind::ForeignCall(_, _)
             | ExprKind::ForeignConst(_)
+            | ExprKind::Float(_, _)
             | ExprKind::ForeignConvert(_, _)
             | ExprKind::NullPointer
             | ExprKind::IsNull(_)
@@ -349,6 +350,7 @@ fn child_at(node: TypedNodeRef<'_>, index: usize) -> Option<(TypedChildRole, Typ
             | ExprKind::TryAlloc { .. }
             | ExprKind::ForeignCall(_, _)
             | ExprKind::ForeignConst(_)
+            | ExprKind::Float(_, _)
             | ExprKind::ForeignConvert(_, _)
             | ExprKind::NullPointer
             | ExprKind::IsNull(_)
@@ -488,6 +490,7 @@ fn copy_operation(kind: &ExprKind) -> Result<(), String> {
             | BinaryOp::Or => Ok(()),
         },
         ExprKind::ForeignCall(_, _)
+        | ExprKind::Float(_, _)
         | ExprKind::ForeignConst(_)
         | ExprKind::ForeignConvert(_, _)
         | ExprKind::NullPointer
@@ -829,6 +832,7 @@ pub(super) fn fingerprint(
                 ExprKind::If(_, _, _) => ExpressionFingerprint::If,
                 ExprKind::While(_, _) => ExpressionFingerprint::While,
                 ExprKind::ForeignCall(_, _)
+                | ExprKind::Float(_, _)
                 | ExprKind::ForeignConst(_)
                 | ExprKind::ForeignConvert(_, _)
                 | ExprKind::NullPointer
@@ -1506,6 +1510,7 @@ mod tests {
             ExprKind::OwnerWrite(LocalId(0), Box::new(int(1))),
             ExprKind::ForeignCall(ForeignFunctionId(0), vec![]),
             ExprKind::ForeignConst(ForeignConstantId(0)),
+            ExprKind::Float(crate::typed::FloatOp::IsFinite, vec![]),
             ExprKind::ForeignConvert(crate::typed::ForeignConvert::U32, Box::new(int(1))),
             ExprKind::NullPointer,
             ExprKind::IsNull(Box::new(int(1))),

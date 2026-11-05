@@ -643,7 +643,6 @@ fn raw_operations_reject_before_operand_execution_but_still_verify_children() {
         "fn main() { u8(1 / 0) }",
         "fn main() { u32(2147483647 + 1) }",
         "fn main() { u64(1 / 0) }",
-        "fn main() { f32(1 / 0) }",
         "fn get(p: ptr<i32>) { p } fn main() { is_null(get({ 1 / 0; c_null() })) }",
     ] {
         let p = parser::parse(source).unwrap();

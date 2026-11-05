@@ -1462,9 +1462,9 @@ impl<'a> IrBuilder<'a> {
             ExprKind::Record { fields, .. } => {
                 self.children(fields.iter().map(|(_, value)| value))?
             }
-            ExprKind::Constructor { fields, .. } | ExprKind::Vector(_, fields) => {
-                self.children(fields.iter())?
-            }
+            ExprKind::Constructor { fields, .. }
+            | ExprKind::Vector(_, fields)
+            | ExprKind::Float(_, fields) => self.children(fields.iter())?,
             ExprKind::Int(_)
             | ExprKind::Str(_)
             | ExprKind::Bool(_)

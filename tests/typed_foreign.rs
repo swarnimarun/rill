@@ -588,7 +588,6 @@ fn runtime_raw_values_use_checked_typed_transport() {
         "fn main() { u8(1 / 0) }",
         "fn main() { u32(1 / 0) }",
         "fn main() { u64(1 / 0) }",
-        "fn main() { f32(1 / 0) }",
     ] {
         let program = rill::parser::parse(source).unwrap();
         let expected = Err("E-FFI: raw C values require native C emission".to_string());

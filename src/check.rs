@@ -1075,6 +1075,24 @@ impl Checker {
                         _ => Type::CF32,
                     });
                 }
+                if let Some(operation) = crate::floats::FloatOp::named(n) {
+                    if args.len() != operation.arity() {
+                        return Err(format!(
+                            "E-ARITY: {n} expects {} arguments, got {}",
+                            operation.arity(),
+                            args.len()
+                        ));
+                    }
+                    for argument in args {
+                        let ty = self.infer(argument, locals)?;
+                        self.unify(ty, Type::CF32)?;
+                    }
+                    return Ok(if operation.predicate() {
+                        Type::Bool
+                    } else {
+                        Type::CF32
+                    });
+                }
                 if n == "c_null" {
                     if !args.is_empty() {
                         return Err("E-ARITY: c_null expects no arguments".into());

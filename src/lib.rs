@@ -7,6 +7,7 @@ mod diagnostics;
 mod display;
 #[cfg(any(test, target_os = "macos", target_os = "linux"))]
 mod fingerprint;
+mod floats;
 pub mod formatter;
 pub mod functions;
 pub mod interpreter;

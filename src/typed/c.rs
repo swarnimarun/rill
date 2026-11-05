@@ -143,6 +143,17 @@ fn emit_mode(
         DEPTH
     });
     out.push_str(RUNTIME_BODY);
+    out.push_str(crate::floats::RUNTIME);
+    if program.functions.iter().any(|function| {
+        super::any_computation(&function.body, &|kind| {
+            matches!(
+                kind,
+                ExprKind::Float(..) | ExprKind::ForeignConvert(super::ForeignConvert::F32, _)
+            )
+        })
+    }) {
+        out.push_str(crate::floats::STRICT);
+    }
     crate::c_import::abi::emit_declarations(
         &program.native.config,
         &program.native.functions,
@@ -466,7 +477,7 @@ fn collect_expr(expr: &ExprNode, output: &mut BTreeSet<usize>) {
                 }
             }
         }
-        ExprKind::Vector(_, args) => {
+        ExprKind::Vector(_, args) | ExprKind::Float(_, args) => {
             for arg in args {
                 collect_expr(arg, output);
             }
@@ -566,7 +577,7 @@ fn contains_owner(expr: &ExprNode) -> bool {
         ExprKind::ForeignCall(_, args) => args
             .iter()
             .any(|arg| matches!(arg, ForeignArg::Value(value) if contains_owner(value))),
-        ExprKind::Vector(_, args) => args.iter().any(contains_owner),
+        ExprKind::Vector(_, args) | ExprKind::Float(_, args) => args.iter().any(contains_owner),
         ExprKind::CopyMatch { value, arms } => {
             contains_owner(value) || arms.iter().any(|a| contains_owner(&a.body))
         }
@@ -741,6 +752,13 @@ impl Emitter<'_> {
                 writeln!(self.out, "int {result} = ({input} == NULL);").unwrap();
             }
             ExprKind::Vector(op, args) => return self.vector(&result, &ty, *op, args),
+            ExprKind::Float(op, args) => {
+                let mut values = Vec::new();
+                for arg in args {
+                    values.push(emit_value!(self.expr(arg)));
+                }
+                writeln!(self.out, "{ty} {result} = {};", op.c_call(&values)).unwrap();
+            }
             ExprKind::Record { fields, .. } => return self.record(&result, &ty, fields),
             ExprKind::FieldRead(place) => {
                 let value = self.field_place(place);

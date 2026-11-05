@@ -96,7 +96,10 @@ impl Emitter<'_> {
             ForeignConvert::U32 | ForeignConvert::U64 => {
                 writeln!(self.out, "if ({input} < 0) rl_trap();").unwrap()
             }
-            ForeignConvert::F32 => {}
+            ForeignConvert::F32 => {
+                writeln!(self.out, "{ty} {result} = rl_f32_from_i32({input});").unwrap();
+                return EmitOutcome::Value(result.to_owned());
+            }
         }
         writeln!(self.out, "{ty} {result} = ({ty}){input};").unwrap();
         EmitOutcome::Value(result.to_owned())

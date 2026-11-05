@@ -13,9 +13,7 @@ pub struct Closure {
     bound: Vec<Value>,
 }
 
-// Source expressions contain only reflexive scalar/string data. Their public
-// AST currently derives PartialEq, so the closure supplies the matching marker.
-impl Eq for Closure {}
+// Captured f32 values can be NaN, so closure values have no reflexive Eq marker.
 
 #[derive(Clone, Debug, PartialEq)]
 enum ClosureKind {

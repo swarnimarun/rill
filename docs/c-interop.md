@@ -85,7 +85,12 @@ pointer context and `is_null(pointer)` for a null test. This subset provides
 no general pointer dereference, pointer arithmetic or C aggregate storage.
 `u8(n)`, `u32(n)`, `u64(n)` and `f32(n)` explicitly convert an `i32` expression
 for foreign calls; unsigned conversions reject negative or out-of-range inputs.
-They do not imply a general numeric language or an implicit integer/bool cast.
+`f32(n)` is also a pure binary32 conversion in the evaluators. Explicit
+`f32_add`/`f32_sub`/`f32_mul`/`f32_div`/`f32_neg` arithmetic and
+`f32_lt`/`f32_le`/`f32_gt`/`f32_ge`/`f32_is_finite` predicates accept only
+`f32` operands. There are no implicit numeric casts. Float literals and
+ordinary float arithmetic/ordering operators remain unsupported. See
+[binary32 semantics](graphics-feature-audit.md#binary32-value-operations).
 
 A `cstr` argument is a direct NUL-free UTF-8 literal such as `c"Rill"`, with
 program-lifetime storage. Supported escapes are `\n`, `\r`, `\t`, `\\` and `\"`.
@@ -123,8 +128,11 @@ unsupported Copy layouts. Malformed typed IR is an error, not a reason to select
 fallback. Owner programs still reject foreign declarations, headers and raw C
 values; dependency flags alone retain their previous behavior. No host FFI is
 introduced: reached calls evaluate their ordinary arguments first, then report
-`E-INTERP-FFI`; reached constants report `E-FFI`. Conversions, null creation and
-null tests report the existing raw-value `E-FFI` before evaluating operands.
+`E-INTERP-FFI`; reached constants report `E-FFI`. Unsigned conversions, null
+creation and null tests report the existing raw-value `E-FFI` before evaluating
+operands. Pure `f32(i32)` evaluates its operand and therefore preserves integer
+traps before converting. This does not allow the evaluators to invoke foreign
+functions that accept or return floats.
 Unused declarations and untaken native branches do not prevent pure evaluation.
 CLI native-run selection is unchanged. Native-only programs have C/C/target-ABI
 comparison evidence, not interpreter execution parity. See

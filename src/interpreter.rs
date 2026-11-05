@@ -10,9 +10,10 @@ pub use functions::Closure;
 
 type Env = HashMap<String, Rc<RefCell<Value>>>;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum Value {
     Int(i32),
+    F32(f32),
     Bool(bool),
     Unit,
     Str(String),
@@ -26,6 +27,7 @@ impl fmt::Display for Value {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Int(n) => write!(f, "{n}"),
+            Self::F32(n) => f.write_str(&crate::floats::display(*n)),
             Self::Bool(b) => write!(f, "{b}"),
             Self::Unit => write!(f, "()"),
             Self::Str(value) => write!(f, "{value}"),
@@ -491,10 +493,41 @@ fn eval_call(
             .apply_expressions(value, args, env, call_depth);
         }
     }
-    if matches!(
-        name.as_str(),
-        "u8" | "u32" | "u64" | "f32" | "c_null" | "is_null"
-    ) {
+    if name == "f32" {
+        if args.len() != 1 {
+            return Err("E-FLOAT: f32 expects one i32 argument".into());
+        }
+        return match eval(
+            &args[0],
+            env,
+            functions,
+            constructors,
+            externs,
+            records,
+            call_depth,
+        )? {
+            Value::Int(value) => Ok(Value::F32(value as f32)),
+            _ => Err("E-FLOAT: f32 expects an i32 argument".into()),
+        };
+    }
+    if let Some(operation) = crate::floats::FloatOp::named(name) {
+        let values = args
+            .iter()
+            .map(|arg| {
+                eval(
+                    arg,
+                    env,
+                    functions,
+                    constructors,
+                    externs,
+                    records,
+                    call_depth,
+                )
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        return operation.evaluate(&values);
+    }
+    if matches!(name.as_str(), "u8" | "u32" | "u64" | "c_null" | "is_null") {
         return Err("E-FFI: raw C values require native C emission".into());
     }
     if is_vector_builtin(name) {

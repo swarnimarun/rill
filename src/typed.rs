@@ -28,6 +28,7 @@ use copy_loans::{CopyLocals, CopySlot};
 #[cfg(test)]
 mod copy_match_tests;
 mod foreign;
+pub use crate::floats::FloatOp;
 use foreign::NativeManifest;
 pub use foreign::{
     ForeignArg, ForeignConstantId, ForeignConvert, ForeignFunctionId, PointerTypeId,
@@ -35,6 +36,8 @@ pub use foreign::{
 mod field_loans;
 #[cfg(test)]
 mod field_loans_tests;
+#[cfg(test)]
+mod floats_tests;
 #[cfg(test)]
 mod foreign_tests;
 #[cfg(test)]
@@ -233,6 +236,7 @@ pub enum ExprKind {
     ByteAt(Box<ExprNode>, Box<ExprNode>),
     BytesNew(usize),
     Vector(VectorOp, Vec<ExprNode>),
+    Float(FloatOp, Vec<ExprNode>),
     BytesLen(Box<ExprNode>),
     BytesGet(Box<ExprNode>, Box<ExprNode>),
     BytesSet(Box<ExprNode>, Box<ExprNode>, Box<ExprNode>),
@@ -1116,6 +1120,15 @@ impl Lower<'_, '_> {
                 op.result(&args.iter().map(|arg| arg.ty).collect::<Vec<_>>())?;
                 ExprKind::Vector(op, args)
             }
+            Expr::Call(name, args) if FloatOp::named(name).is_some() => {
+                let op = FloatOp::named(name).unwrap();
+                let args = args
+                    .iter()
+                    .enumerate()
+                    .map(|(i, arg)| self.expr_child(arg, NodeRole::BuiltinOperand(i)))
+                    .collect::<Result<Vec<_>, _>>()?;
+                ExprKind::Float(op, args)
+            }
             Expr::Call(name, args) if name == "bytes_new" && args.len() == 1 => {
                 let Expr::Int(n) = args[0] else {
                     return Err("E-TYPED: invalid bytes_new capacity".into());
@@ -1570,6 +1583,20 @@ fn verify_expr(
                 .collect::<Result<Vec<_>, _>>()?;
             op.result(&types)?
         }
+        ExprKind::Float(op, args) => {
+            let types = args
+                .iter()
+                .map(|arg| verify_expr(arg, scope, ids, context))
+                .collect::<Result<Vec<_>, _>>()?;
+            if types.len() != op.arity() || types.iter().any(|ty| *ty != Type::CF32) {
+                return Err("E-TYPED-FLOAT: invalid f32 operation operands".into());
+            }
+            if op.predicate() {
+                Type::Bool
+            } else {
+                Type::CF32
+            }
+        }
         ExprKind::TryAlloc { input, layout, .. } => {
             if verify_expr(input, scope, ids, context)? != Type::Int {
                 return Err("E-TYPED-ALLOC: input must be i32".into());
@@ -1975,7 +2002,7 @@ fn any_expr(expr: &ExprNode, predicate: &dyn Fn(&ExprKind) -> bool) -> bool {
         }
 
         ExprKind::ForeignCall(_, args) => args.iter().any(|arg| matches!(arg, ForeignArg::Value(value) if any_expr(value, predicate))),
-        ExprKind::Vector(_,args)=>args.iter().any(|arg|any_expr(arg,predicate)),
+        ExprKind::Vector(_,args) | ExprKind::Float(_,args)=>args.iter().any(|arg|any_expr(arg,predicate)),
         ExprKind::CopyMatch { value, arms } => {
             any_expr(value, predicate) || arms.iter().any(|a| any_expr(&a.body, predicate))
         }
@@ -2034,7 +2061,7 @@ fn collect_calls(expr: &ExprNode, out: &mut Vec<usize>) {
                 }
             }
         }
-        ExprKind::Vector(_, args) => {
+        ExprKind::Vector(_, args) | ExprKind::Float(_, args) => {
             for arg in args {
                 collect_calls(arg, out);
             }
@@ -2320,12 +2347,26 @@ fn evaluate_expr(
         ExprKind::ForeignConst(_) => {
             Err("E-FFI: imported C constants require native C emission".into())
         }
+        ExprKind::ForeignConvert(ForeignConvert::F32, input) => {
+            let value = evaluate_expr(input, locals, program, depth, state, owners)?;
+            match value {
+                Value::Int(value) => Ok(Value::F32(value as f32)),
+                _ => Err("E-TYPED-FLOAT: conversion input must be i32".into()),
+            }
+        }
         ExprKind::ForeignConvert(..) | ExprKind::NullPointer | ExprKind::IsNull(_) => {
             // The AST evaluator rejects raw operations before reaching operands.
             Err("E-FFI: raw C values require native C emission".into())
         }
         ExprKind::Vector(op, args) => {
             vectors::evaluate(*op, args, locals, program, depth, state, owners)
+        }
+        ExprKind::Float(op, args) => {
+            let values = args
+                .iter()
+                .map(|arg| evaluate_expr(arg, locals, program, depth, state, owners))
+                .collect::<Result<Vec<_>, _>>()?;
+            op.evaluate(&values)
         }
         ExprKind::TryAlloc { .. } => Err("E-TYPED-ALLOC: affine allocation used as Copy".into()),
         ExprKind::CopyMatch { value, arms } => copy_match::evaluate_match(

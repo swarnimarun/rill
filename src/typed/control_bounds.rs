@@ -235,7 +235,7 @@ impl<'a> Tree<'a> {
                 ExprKind::Match { arms, .. } => arms.len().saturating_add(1),
                 ExprKind::Record { fields, .. } => fields.len(),
                 ExprKind::Constructor { fields, .. } => fields.len(),
-                ExprKind::Vector(_, args) => args.len(),
+                ExprKind::Vector(_, args) | ExprKind::Float(_, args) => args.len(),
                 _ => 3,
             },
         }
@@ -362,7 +362,9 @@ impl<'a> Tree<'a> {
                         }
                     }
                 }
-                ExprKind::Vector(_, args) | ExprKind::Constructor { fields: args, .. } => {
+                ExprKind::Vector(_, args)
+                | ExprKind::Float(_, args)
+                | ExprKind::Constructor { fields: args, .. } => {
                     for value in args {
                         add(Self::Value(value));
                     }
