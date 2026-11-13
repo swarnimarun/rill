@@ -7,6 +7,26 @@ artifact directly, without a separate `gh-pages` branch or another site generato
 
 ## Sources and addresses
 
+Keep planning roles distinct:
+
+| Document | Owns |
+| --- | --- |
+| `README.md` | Project purpose, quickstarts and links to supported workflows |
+| `PLAN.md` | Long-term semantic contract and phase acceptance gates |
+| `docs/phase-status.md` | Current implemented subset, open gates and evidence links |
+| `docs/CONTINUATION_PLAN.md` | Ordered future work and dependencies |
+| `docs/build-performance.md` | Performance workloads, measurement protocol and optimization gates |
+| `AGENTS.md` | Engineering instructions, resuming a workspace and running verification |
+| `docs/proposals/` and dated plans | Candidate designs and bounded implementation tasks |
+| `docs/verification/` | Historical evidence tied to tested source and environments |
+
+When accepting an increment, update its contract and current status, then adjust
+the active queue if dependencies change. Link the verification record instead
+of copying its totals into multiple guides. Keep historical failures, skips
+and revisions intact. Proposal rankings are local to their subject; they do
+not create a second project queue. Distinguish implemented, proposed, measured
+and target behavior in both tables and prose.
+
 The language guides live under `docs/`, with the standard-library catalogue in
 `stdlib/README.md`. The repository README introduces the project and links into
 those guides. Public API comments belong beside declarations in `.rill` files,

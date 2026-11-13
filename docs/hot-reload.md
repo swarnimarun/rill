@@ -92,9 +92,13 @@ fn main() -> Result<(), String> {
 without executing the hook. All registered hook contracts must remain compatible.
 An incompatible or invalid candidate retains the current program and generation.
 `replace` requires exclusive access between synchronous calls. A call uses one
-complete accepted generation, including its helper functions. State lives in the
-host and crosses the boundary only as integer arguments/results. Generation
-starts at zero and advances only after an accepted replacement; exhaustion rejects.
+complete accepted generation, including its helper functions. For this interpreter
+API, state crosses the boundary only as integer arguments/results. The native
+`CopySession` and `live_reload::LiveSession` APIs carry bounded Copy schemas
+through a separate byte codec; `LiveSession` also validates versioned state and
+runs an explicit host migration callback before selected roots are published.
+See [native generations](native-hot-reload.md). Generation starts at zero and
+advances only after an accepted replacement; exhaustion rejects.
 
 Each invocation clones, checks and lowers the program through the ordinary
 interpreter. Use this API for embedding and iteration; it is not a fast native
@@ -125,11 +129,12 @@ an accepted generation and tracks the last generation it handled. These helpers
 read no filesystem or hidden global state and register no implicit callbacks.
 The [runnable source example](../examples/reload/main.rill) prints `13`.
 
-The experimental [native generation API](native-hot-reload.md) builds on the
-[scalar C export contract](c-exports.md). A Rust host compiles/loads a candidate
-and replaces registered native i32 functions between exclusive synchronous
-calls on macOS/Linux, retaining its own integer state. Failed candidates keep
-the old generation callable. Runtime traps remain process fatal.
+The experimental [native generation APIs](native-hot-reload.md) build on the
+checked C export paths. `NativeSession` replaces scalar i32 functions;
+`CopySession` uses the bounded Copy-wire ABI. `live_reload::LiveSession` adds
+versioned Copy state, explicit host migration and selected-root replacement.
+These APIs require exclusive synchronous calls on macOS/Linux and retain active
+code when a candidate is rejected. Runtime traps remain process-fatal.
 
 General native replacement still needs the wider quiescence and migration
 contracts in the [native reload blocker](blockers/hot-reload.md).

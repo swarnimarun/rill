@@ -9,6 +9,8 @@ use std::fmt::Write;
 use crate::ast::{ParamMode, Program};
 use crate::check::Type;
 
+pub mod copy;
+
 /// A checked source function and its explicit external C symbol.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct Export {

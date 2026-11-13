@@ -15,6 +15,10 @@ The catalogue now contains 19 modules. New source utilities use braces and
 semicolons, explicit errors and caller-selected storage. See the
 [standard library guide](../docs/standard-library.md) for complete signatures,
 edge cases and runnable examples.
+The [continuation plan](../docs/CONTINUATION_PLAN.md) sets future library work
+alongside compiler prerequisites. Use the
+[performance plan](../docs/build-performance.md) for measurements; catalogue
+size and example coverage do not establish performance or phase completion.
 
 | Modules | Purpose |
 | --- | --- |

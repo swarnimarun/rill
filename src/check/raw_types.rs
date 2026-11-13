@@ -14,9 +14,20 @@ impl CheckedProgram<'_> {
     /// Include dormant parameters, phantom arguments, callable environments and
     /// unused declaration fields, rather than only executed raw expressions.
     pub(crate) fn has_raw_source_types(&self) -> Result<bool, String> {
+        self.scan_raw_source_types(false)
+    }
+
+    /// Copy wire transport admits pure binary32 operations, but no other raw
+    /// scalar, pointer, C string or foreign declaration acquires that admission.
+    pub(crate) fn has_foreign_source_types(&self) -> Result<bool, String> {
+        self.scan_raw_source_types(true)
+    }
+
+    fn scan_raw_source_types(&self, allow_f32: bool) -> Result<bool, String> {
         let mut scan = Scan {
             remaining: WORK,
             raw: false,
+            allow_f32,
         };
         for function in &self.program.functions {
             scan.reserve(1)?;
@@ -57,6 +68,7 @@ impl CheckedProgram<'_> {
 struct Scan {
     remaining: usize,
     raw: bool,
+    allow_f32: bool,
 }
 
 impl Scan {
@@ -70,12 +82,10 @@ impl Scan {
         let mut pending = vec![root];
         while let Some(ty) = pending.pop() {
             match ty {
-                Type::CStr
-                | Type::CU8
-                | Type::CU32
-                | Type::CU64
-                | Type::CF32
-                | Type::CPointer { .. } => self.raw = true,
+                Type::CStr | Type::CU8 | Type::CU32 | Type::CU64 | Type::CPointer { .. } => {
+                    self.raw = true
+                }
+                Type::CF32 if !self.allow_f32 => self.raw = true,
                 Type::Nominal(_, arguments) => {
                     self.reserve(arguments.len())?;
                     pending.extend(arguments);
@@ -107,10 +117,9 @@ impl Scan {
                 self.raw = true;
             } else if bindings.contains(ty.name.as_str()) {
                 continue;
-            } else if matches!(
-                ty.name.as_str(),
-                "u8" | "u32" | "u64" | "f32" | "ptr" | "const_ptr"
-            ) {
+            } else if matches!(ty.name.as_str(), "u8" | "u32" | "u64" | "ptr" | "const_ptr")
+                || (ty.name == "f32" && !self.allow_f32)
+            {
                 self.raw = true;
             }
             self.reserve(ty.args.len())?;
@@ -130,12 +139,14 @@ mod tests {
         let mut too_small = Scan {
             remaining: 2,
             raw: false,
+            allow_f32: false,
         };
         assert_eq!(too_small.checked_type(&tree).unwrap_err(), LIMIT);
         assert!(!too_small.raw);
         let mut exact = Scan {
             remaining: 3,
             raw: false,
+            allow_f32: false,
         };
         exact.checked_type(&tree).unwrap();
         assert!(exact.raw);
@@ -149,6 +160,7 @@ mod tests {
         let mut scan = Scan {
             remaining: 3,
             raw: false,
+            allow_f32: false,
         };
         for name in ["u32", "ptr"] {
             scan.source_type(
@@ -170,5 +182,36 @@ mod tests {
         )
         .unwrap();
         assert!(scan.raw);
+    }
+
+    #[test]
+    fn binary32_admission_is_explicit_and_keeps_foreign_atoms_closed() {
+        for allow_f32 in [false, true] {
+            let mut scan = Scan {
+                remaining: 10,
+                raw: false,
+                allow_f32,
+            };
+            scan.checked_type(&Type::CF32).unwrap();
+            assert_eq!(scan.raw, !allow_f32);
+        }
+        for ty in [
+            Type::CStr,
+            Type::CU8,
+            Type::CU32,
+            Type::CU64,
+            Type::CPointer {
+                pointee: "Handle".into(),
+                is_const: false,
+            },
+        ] {
+            let mut scan = Scan {
+                remaining: 10,
+                raw: false,
+                allow_f32: true,
+            };
+            scan.checked_type(&ty).unwrap();
+            assert!(scan.raw);
+        }
     }
 }

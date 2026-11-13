@@ -5,7 +5,7 @@
 **Baseline:** The user-provided *Rill rebuild plan* (`markdown.md`).  
 **Scope:** A native-first ML-family language for graphics, games, tools, and systems software. All Rill code below is proposed surface syntax or explicitly identified core notation, not code accepted by the current compiler.
 
-## Implementation amendments, 3–4 November 2026
+## Implementation amendments, 3–5 November 2026
 
 The implementation uses Rust and targets C11 first. The current supported
 subset and open phase gates are recorded in [phase status](docs/phase-status.md).
@@ -31,6 +31,31 @@ where they differ:
 See the [current syntax and commands](README.md) and the
 [direct SDL3 example](examples/sdl3-direct/README.md). These amendments do not
 relax the acceptance gates in section 19 or claim the language is stable.
+
+### Current direction and document ownership
+
+The 5 November source review keeps Rust and C11 as the implementation and
+delivery strategy. C11 is already the native build/run backend; a direct LLVM
+or MLIR backend is a later option requiring a measured limitation and a bounded
+proposal. It is not a prerequisite for improving the current native workflow.
+Section 16's complete verified MIR remains a target architecture. Current
+execution prefers typed lowering with a checked Copy fallback, and the typed
+verifier does not yet prove the full ownership/effect contract.
+
+Use [phase status](docs/phase-status.md) for current capabilities and evidence,
+[the active roadmap](docs/CONTINUATION_PLAN.md) for work order, and
+[the performance plan](docs/build-performance.md) for workloads, measurements
+and optimization gates. The README introduces supported workflows. Dated
+implementation plans and verification reports retain their original scope;
+they do not override the current queue or imply later-source acceptance.
+
+The next priorities are routine compiler regression checks, reproducible
+performance baselines and bounded ownership/cleanup improvements. Useful
+library, diagnostics and renderer work can proceed within existing contracts.
+General containers, effects, canonical interfaces and checked foreign resources
+retain their dependencies. Alpha packaging and external shader tooling do not
+complete P6, P10 or P11. This normalization changes no phase gate or language
+semantics; see the [source review](docs/verification/2026-11-05-project-direction.md).
 
 ## Executive decision
 
@@ -90,7 +115,7 @@ A profile removes capabilities or rejects unsupported constructs; it must not qu
 | Failure, choice, rollback | Keep distinct | Failure is not evidence that external state is reversible |
 | `option` with implicit transactional expectations | Specify a migration explicitly | Recommended new `option` handles failure; `attempt` or `transaction` requests rollback; do not silently change old programs |
 | Computation builders | Retain as checked library expansion | No privileged safety bypass based on builder spelling |
-| MLIR as intended native path | Retain as an optional later lowering route | A thin direct LLVM path is a reasonable first native backend; choose one native route initially |
+| MLIR as intended native path | Retain as an optional later lowering route | Deliver through C11 now; select a later LLVM or MLIR route only for a measured need |
 | Broad concurrency forms | Define through task contracts first | Keyword count is not a concurrency model |
 | Self-hosting | Defer | It is not a prerequisite for a useful, trustworthy toolchain |
 
@@ -741,13 +766,19 @@ Source and package graph
   -> cleanup elaboration and final effect/interface verification
   -> verified MIR
        -> reference interpreter
-       -> readable C bootstrap/differential backend
-       -> chosen first native backend
+       -> readable C11 delivery/differential backend
+       -> optional later native backend
             -> direct LLVM, OR a deliberately small MLIR-to-LLVM path
        -> later validated shader/other target subset
 ```
 
-Do not implement both direct LLVM and a broad custom MLIR stack in parallel before one is useful. The recommended default is interpreter plus C for validation, then direct LLVM for native development. Preserve a well-defined verified-MIR boundary so MLIR can later support multi-level vector/tensor work when justified by workloads.
+The current delivery backend is C11, with the interpreter and checked Copy
+reference path used for differential validation. Close semantic representation
+gaps and measure compiler/runtime costs before selecting another backend.
+Direct LLVM and a small MLIR-to-LLVM path remain alternatives if measured
+workloads justify one; do not implement both in parallel. Preserve the intended
+verified-MIR boundary without describing today's provisional verifier as that
+completed architecture.
 
 MLIR's conversion framework supplies legality, rewrite, and type-conversion infrastructure. It does not define Rill ownership, transactions, ABI, or cancellation automatically. Each conversion must specify the invariant it preserves. [S19]
 
@@ -828,6 +859,14 @@ Haxe documents AST-based macros at defined compilation stages and target-feature
 Read-only analysis plugins and checked source-generating macros can use a narrow versioned API. Optimizer/backend plugins are a stronger trust boundary: a structurally valid transformation can still change semantics, and emitted machine code can violate safety. Mark them as trusted toolchain components and include versions in build identities. A MIR verifier is not a sandbox for an arbitrary backend.
 
 ## 17. Optimization program
+
+This section defines long-term legality and cost requirements. The executable
+work queue and measurement protocol are in [build performance](docs/build-performance.md).
+Current C11 optimizations, exact-graph checked-C reuse and external GPU examples
+do not establish the unimplemented effects, container, concurrency or shader
+contracts below. Begin with supported workloads and retain correctness evidence
+before comparing timings. Set numeric regression budgets from reproducible
+baselines rather than treating design targets as measured results.
 
 ### 17.1 Required source-level cost contracts
 
@@ -921,6 +960,11 @@ A first useful language release is P6, not completion of the entire table. It ne
 
 Each item is a reviewable work package with a bounded acceptance condition. Some run in parallel, but semantic contracts precede consumers.
 
+These identifiers describe the original requirements, not the current task
+queue. Several now have bounded implementations without full acceptance.
+Consult [phase status](docs/phase-status.md) before opening work and use
+[the active roadmap](docs/CONTINUATION_PLAN.md) to order the remaining pieces.
+
 | ID | Work package | Acceptance / rejection tests |
 |---|---|---|
 | C01 | Specify primitive values, order, integer operations, and traps | Same arithmetic behavior in interpreter and generated C at all tested optimizations |
@@ -985,7 +1029,13 @@ Property-test substitution, kinding, effect-row algebra, overlap symmetry, move-
 
 ## 22. Decisions that remain genuinely open
 
-The product needs a fixed native strategy before implementation: confirm the default move-versus-read convention using small representative programs; choose the precise finite-set row theory and prove its inference fragment; select the first host ABI; decide which traits/effect summaries are allowed in stable public interfaces; choose a proof assistant supported by the team; and choose the direct-LLVM versus minimal-MLIR native route.
+Rust with C11 output is the current native strategy. Existing supported
+parameter conventions are documented in the language guides and must not be
+silently changed by this blueprint. Remaining decisions include the precise
+finite-set row theory and its inference fragment, the supported ABI/release
+target matrix, traits/effect summaries in stable public interfaces, and a proof
+assistant the project can maintain. A direct-LLVM versus minimal-MLIR decision
+is deferred until measurements justify another backend.
 
 The recommendations in this document make default choices, but these are the highest-risk areas for an implementation spike. Do not delay the whole project for every advanced question. Freeze the small accepted core, reject unsupported cases, and keep a decision ledger for extensions.
 

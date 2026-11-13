@@ -1,6 +1,10 @@
 # Next language increments for discussion
 
-This is a proposed order, not an implementation commitment or accepted syntax.
+This is a proposed order within language ergonomics, not an implementation
+commitment or accepted syntax. The [continuation plan](../CONTINUATION_PLAN.md)
+sets the project-wide priority order, including compiler foundations and the
+[performance plan](../build-performance.md). The ranking here does not supersede
+those dependencies.
 The [migration guide](../rust-to-rill.md) describes working Rill today; the
 [feature inventory](rust-migration.md) records the broader alternatives.
 The five increments below each address a concrete porting problem without
@@ -24,7 +28,8 @@ continue to withhold a compilable AST when syntax is invalid.
 
 ## 1. Closed local type annotations
 
-Decision status: recommended first, pending a syntax and inference decision.
+Decision status: recommended first among these syntax proposals, pending a
+syntax and inference decision.
 
 The [result-annotation example](../../examples/result-annotations/main.rill)
 defines `fn absent() -> Option<i32> { None }`, then initializes mutable `answer`

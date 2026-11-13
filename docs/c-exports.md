@@ -1,4 +1,4 @@
-# Experimental scalar C exports
+# Experimental C export ABIs
 
 `rill::abi::emit_i32_library` emits a checked C11 library, a public header and a
 versioned JSON interface. An independent C program can call selected Rill
@@ -91,6 +91,31 @@ does not encode a target triple, compiler flags, content identity, private IDs
 or a complete loader compatibility decision. ABI version 1 describes this
 experimental scalar schema, not a stable language release.
 
+## Experimental Copy-wire ABI
+
+`rill::abi::copy::emit_copy_library` emits checked roots through an explicit
+byte codec rather than C aggregate layouts. The version-1 manifest identifies
+`rill-copy-wire`; `RILL_COPY_WIRE_ABI_VERSION` in the header is also `1`. The
+schema supports `i32`, `bool`, binary32, named records and tagged enums. Integer
+words and enum tags use little-endian bytes, booleans accept only `0` or `1`,
+and `f32` values preserve all 32 bits, including signed zero and NaN payloads.
+
+A schema is limited to 4096 nodes, depth 16, names up to 1024 bytes and
+encoded values up to 65536 bytes. Roots have at most 32 parameters, and a
+library has 1 through 64 unique exports. Decoders reject truncated/trailing
+bytes, invalid booleans/tags, schema/value mismatches, duplicate declarations
+and insufficient buffers before entering the Rill function. Output capacity
+must accommodate the result schema's maximum encoded length. This wire format
+is independent of native struct layout. Version 1 is experimental, not a stable
+language or third-party ABI commitment.
+
+Copy exports reject `main`, native dependencies/declarations/foreign values,
+owners, allocation contracts and callable values. Selected functions have
+closed monomorphic value parameters; private helpers may specialize over
+supported Copy layouts. Every declaration is checked. The API creates editable
+C artifacts but does not load them; loading is restricted to source-generated
+candidates in `native_reload`.
+
 ## Runtime and reload boundary
 
 Generated libraries use a hosted C11 runtime, including stdio and process exit
@@ -104,16 +129,29 @@ concurrent independent C calls do not share a depth counter. This does not
 provide a Rill worker runtime or make an async signal handler a legal caller.
 
 The scalar library retains no Rill state between calls. Keep persistent state
-in the host and pass it as integers. Internal Rill calls remain direct calls
-within one artifact. Updating a leaf function that has been inlined or called
-directly requires recompiling its containing artifact.
+in the host and pass it as integers. The Copy-wire library also retains no Rill
+state; callers encode arguments and decode results using the emitted schema.
+Internal Rill calls remain direct calls within one artifact. Updating a leaf
+function that has been inlined or called directly requires recompiling its
+containing artifact.
 
-A future reload host must validate a complete candidate, compare the required
-public signatures and target/build identities, then publish dispatch changes
-at a safe call boundary. It must wait for active calls before unloading old
-code, or keep the old generation until those calls finish. State validation,
-migration, callbacks, retained pointers, loader coverage and failed-update
-rollback still need explicit contracts and tests. The current manifest and
-header alone do not discharge these obligations. See the
-[native reload blocker](blockers/hot-reload.md) and the existing
+The native generation APIs validate source-generated candidates and their
+versioned build identity before publishing at an exclusive synchronous call
+boundary. `NativeSession` is the scalar `i32` interface. `CopySession` uses the
+bounded Copy-wire schema above and replaces only an identical public function
+contract. Neither API holds application state.
+
+`live_reload::LiveSession` layers an explicit versioned Copy state schema over
+independently replaceable roots. Hosts select `Pure`, `Query` and `Step`
+bindings. A selected set is built and checked before publication; each root
+keeps its own complete reachable helper cohort, so unselected roots can retain
+older helper code. Hosts own migration callbacks and must replace affected
+state-bound roots together. Checkpoints use a strict, bounded JSON format and
+never load code. See [native generations](native-hot-reload.md) and the
+[runnable stateful example](../examples/reload-renderer/README.md).
+
+These APIs do not transport owners, raw C values or native pointers; they do not
+migrate GPU/foreign resources, preserve callbacks or patch active frames. The
+host/compiler and native execution remain trusted, and runtime traps are
+process-fatal. See the [native reload blocker](blockers/hot-reload.md) and
 [watch/interpreter workflows](hot-reload.md).

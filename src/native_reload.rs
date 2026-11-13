@@ -20,6 +20,9 @@ use std::rc::Rc;
 use crate::abi::{Export, ReloadExport};
 use crate::ast::Program;
 
+mod copy;
+pub use copy::{CopyCandidate, CopySession};
+
 /// Fixed native compiler profiles supported by the reload bridge.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Optimization {
@@ -233,35 +236,12 @@ mod platform {
 
     impl Loaded {
         pub(super) fn open(candidate: &NativeCandidate) -> Result<Self, String> {
-            let path = CString::new(candidate.library.as_os_str().as_bytes())
-                .map_err(|_| "E-RELOAD: native library path contains NUL")?;
-            // The only loadable paths belong to source-generated candidates in
-            // private directories. The selected compiler is trusted executable
-            // authority, not an unverified artifact supplied by another party.
-            let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
-            let handle =
-                NonNull::new(handle).ok_or_else(|| loader_error("cannot load candidate"))?;
-            // Own the handle immediately so every following error closes it.
-            let guard = Handle(handle);
-            let identity = unsafe {
-                std::mem::transmute::<*mut libc::c_void, Identity>(symbol(
-                    handle,
-                    c"rill_abi_identity_v1",
-                )?)
-            };
-            let expected = &candidate.identity;
-            // A bounded copy avoids borrowing pointers or trusting a returned
-            // native allocation. Check the versioned identity before resolving
-            // or calling the dispatcher.
-            let length = unsafe { identity(std::ptr::null_mut(), 0) };
-            if length as usize != expected.len() {
-                return Err("E-RELOAD: native ABI or build identity length mismatch".into());
-            }
-            let mut actual = vec![0; expected.len()];
-            let copied = unsafe { identity(actual.as_mut_ptr(), length) };
-            if copied != length || actual != *expected {
-                return Err("E-RELOAD: native ABI or build identity mismatch".into());
-            }
+            let guard = open_identity(
+                &candidate.library,
+                &candidate.identity,
+                c"rill_abi_identity_v1",
+            )?;
+            let handle = guard.0;
             let invoke = unsafe {
                 std::mem::transmute::<*mut libc::c_void, Invoke>(symbol(
                     handle,
@@ -274,9 +254,6 @@ mod platform {
 
         pub(super) fn call(&mut self, slot: usize, arguments: &[i32]) -> Result<i32, String> {
             let mut result = 0;
-            // The checked contract bounds slots to 64 and arity to 32. The
-            // bridge has one fixed C signature and directly calls verified
-            // private function IDs; no guessed per-endpoint casts are used.
             let status = unsafe {
                 (self.invoke)(
                     slot as u32,
@@ -294,6 +271,38 @@ mod platform {
         }
     }
 
+    pub(super) fn open_identity(
+        library: &Path,
+        expected: &[u8],
+        identity_symbol: &CStr,
+    ) -> Result<Handle, String> {
+        let path = CString::new(library.as_os_str().as_bytes())
+            .map_err(|_| "E-RELOAD: native library path contains NUL")?;
+        // The only loadable paths belong to source-generated candidates in
+        // private directories. The selected compiler is trusted executable
+        // authority, not an unverified artifact supplied by another party.
+        let handle = unsafe { libc::dlopen(path.as_ptr(), libc::RTLD_NOW | libc::RTLD_LOCAL) };
+        let handle = NonNull::new(handle).ok_or_else(|| loader_error("cannot load candidate"))?;
+        // Own the handle immediately so every following error closes it.
+        let guard = Handle(handle);
+        let identity = unsafe {
+            std::mem::transmute::<*mut libc::c_void, Identity>(symbol(handle, identity_symbol)?)
+        };
+        // A bounded copy avoids borrowing pointers or trusting a returned
+        // native allocation. Check the versioned identity before resolving
+        // or calling the dispatcher.
+        let length = unsafe { identity(std::ptr::null_mut(), 0) };
+        if length as usize != expected.len() {
+            return Err("E-RELOAD: native ABI or build identity length mismatch".into());
+        }
+        let mut actual = vec![0; expected.len()];
+        let copied = unsafe { identity(actual.as_mut_ptr(), length) };
+        if copied != length || actual != expected {
+            return Err("E-RELOAD: native ABI or build identity mismatch".into());
+        }
+        Ok(guard)
+    }
+
     impl Drop for Loaded {
         fn drop(&mut self) {
             // No callable or borrowed pointer escapes Loaded, and its session
@@ -302,7 +311,7 @@ mod platform {
         }
     }
 
-    struct Handle(NonNull<libc::c_void>);
+    pub(super) struct Handle(pub(super) NonNull<libc::c_void>);
 
     impl Drop for Handle {
         fn drop(&mut self) {
@@ -310,7 +319,10 @@ mod platform {
         }
     }
 
-    fn symbol(handle: NonNull<libc::c_void>, name: &CStr) -> Result<*mut libc::c_void, String> {
+    pub(super) fn symbol(
+        handle: NonNull<libc::c_void>,
+        name: &CStr,
+    ) -> Result<*mut libc::c_void, String> {
         unsafe { libc::dlerror() };
         let pointer = unsafe { libc::dlsym(handle.as_ptr(), name.as_ptr()) };
         let error = unsafe { libc::dlerror() };
@@ -334,13 +346,13 @@ mod platform {
     }
 
     #[derive(PartialEq, Eq)]
-    struct CompilerIdentity {
-        path: PathBuf,
-        digest: [u8; 32],
+    pub(super) struct CompilerIdentity {
+        pub(super) path: PathBuf,
+        pub(super) digest: [u8; 32],
     }
 
     impl CompilerIdentity {
-        fn capture(executable: &OsStr) -> Result<Self, String> {
+        pub(super) fn capture(executable: &OsStr) -> Result<Self, String> {
             let path = if executable.as_bytes().contains(&b'/') {
                 PathBuf::from(executable)
             } else {
@@ -444,7 +456,7 @@ mod platform {
         })
     }
 
-    fn private_directory() -> Result<Directory, String> {
+    pub(super) fn private_directory() -> Result<Directory, String> {
         static NEXT: AtomicU64 = AtomicU64::new(0);
         let parent = fs::canonicalize(std::env::temp_dir())
             .map_err(|error| format!("E-RELOAD: cannot resolve temporary directory: {error}"))?;

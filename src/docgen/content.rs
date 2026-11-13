@@ -104,7 +104,11 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
         "docs/native-hot-reload.md"
     ),
     chapter!("c-interop", "C interoperability", "docs/c-interop.md"),
-    chapter!("c-exports", "Scalar C exports", "docs/c-exports.md"),
+    chapter!(
+        "c-exports",
+        "Experimental C export ABIs",
+        "docs/c-exports.md"
+    ),
     chapter!(
         "source-format",
         "Source formatting",
@@ -115,6 +119,11 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
         "phase-status",
         "Implementation status",
         "docs/phase-status.md"
+    ),
+    chapter!(
+        "roadmap",
+        "Development roadmap",
+        "docs/CONTINUATION_PLAN.md"
     ),
     chapter!(
         "recursive-signatures",

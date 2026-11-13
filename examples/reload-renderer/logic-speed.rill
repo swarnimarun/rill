@@ -1,0 +1,12 @@
+// state-version: 2
+type Scene = { ticks: i32; x: i32; speed: i32 }
+
+fn update(state: Scene) -> Scene {
+    record Scene {
+        ticks = (state.ticks + 1) % 1000000;
+        x = (state.x + state.speed) % 500;
+        speed = state.speed
+    }
+}
+
+fn color(state: Scene) -> i32 { 210 }

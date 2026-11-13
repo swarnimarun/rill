@@ -17,6 +17,7 @@ mod foreign;
 mod records;
 mod results;
 mod vectors;
+mod wire;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::fmt::Write;
 
@@ -79,6 +80,41 @@ fn emit_verified(program: &TypedMain) -> Result<String, String> {
 pub(super) fn emit_i32_library(library: &super::library::Library) -> Result<String, String> {
     super::library::verify(library)?;
     emit_mode(&library.program, Some(&library.exports))
+}
+
+pub(super) fn emit_copy_library(library: &super::library::Library) -> Result<String, String> {
+    super::library::verify_copy(library)?;
+    // An empty export slice selects the library runtime and emits neither a
+    // synthetic main nor scalar wrappers. Wire roots retain their actual types.
+    let mut c = emit_mode(&library.program, Some(&[]))?;
+    wire::append(library, &mut c)?;
+    Ok(c)
+}
+
+#[cfg(any(target_os = "macos", target_os = "linux"))]
+pub(super) fn emit_copy_reload(
+    library: &super::library::Library,
+    manifest: &str,
+    build_context: &[u8],
+) -> Result<(String, Vec<u8>), String> {
+    let mut c = emit_copy_library(library)?;
+    let mut identity = b"rill-native-copy\0\x01".to_vec();
+    for part in [build_context, manifest.as_bytes()] {
+        let length =
+            u32::try_from(part.len()).map_err(|_| "E-RELOAD: Copy metadata exceeds ABI length")?;
+        identity.extend_from_slice(&length.to_le_bytes());
+        identity.extend_from_slice(part);
+    }
+    identity.extend_from_slice(&crate::fingerprint::digest(c.as_bytes()));
+    if identity.len() > 128 * 1024 {
+        return Err("E-RELOAD: Copy metadata exceeds 128 KiB".into());
+    }
+    c.push_str("\nstatic const unsigned char rl_copy_identity[] = {");
+    for byte in &identity {
+        write!(c, "{byte},").unwrap();
+    }
+    c.push_str("};\nuint32_t rill_abi_copy_identity_v1(unsigned char *out, uint32_t capacity) {\n    uint32_t n = (uint32_t)sizeof(rl_copy_identity);\n    if (out != NULL && capacity >= n) {\n        for (uint32_t i = 0; i < n; ++i) out[i] = rl_copy_identity[i];\n    }\n    return n;\n}\n");
+    Ok((c, identity))
 }
 
 #[cfg(any(target_os = "macos", target_os = "linux"))]

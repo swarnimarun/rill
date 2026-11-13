@@ -10,6 +10,8 @@ uses the gates in [PLAN.md section 19](../PLAN.md#19-dependency-ordered-delivery
 The [Rust migration guide](rust-to-rill.md) maps common forms to supported
 Rill syntax. [Feature proposals](proposals/rust-migration.md) record the value,
 prerequisites and acceptance cases for missing control flow and other additions.
+The [continuation plan](CONTINUATION_PLAN.md) orders future work; this page
+describes capabilities and dependencies, not a separate implementation queue.
 
 ## Current feature boundary
 
@@ -20,10 +22,10 @@ prerequisites and acceptance cases for missing control flow and other additions.
 | Enums | Generic algebraic types, exhaustive nested/literal patterns, compact tagged unions, tag-only nullary enums and checked phantom products | Recursive owning containers, GADTs and general existential packages |
 | Static polymorphism | Generic functions and types, concrete reachable specialization, immutable local value schemes and specialized callbacks | Traits, coherent implementations, associated types, higher-rank APIs and const generics |
 | Functions | Named function values, lambdas, immutable Copy captures, currying, pipelines and composition | Mutable/owned/borrowed captures, affine call capabilities and explicit dynamic erasure |
-| Numbers and vectors | Checked `i32` arithmetic, explicit binary32 arithmetic and predicates, booleans, explicit `u8x16` operations, portable scalar C and selected AArch64 NEON operations | Float literals/operator syntax, wider numeric types, explicit wrapping/saturating operations, target-sized integers and broader SIMD |
+| Numbers and vectors | Checked `i32` arithmetic, `std.int` checked/saturating helpers, explicit binary32 arithmetic and predicates, booleans, explicit `u8x16` operations, portable scalar C and selected AArch64 NEON operations | Float literals/operator syntax, wider numeric arithmetic, explicit wrapping operations, target-sized integers and broader SIMD |
 | Equality | `i32`/`bool`/`unit`, same-type native scalar/pointer equality and byte-content `str == str`/`!=` | Structural record/enum equality and generic equality constraints |
 | Memory and borrowing | Hosted owned `i32` boxes and fixed-length owned bytes, recoverable allocation, restricted moves/returns, owner-bearing enums, call-scoped `read`/`inout` and disjoint field loans | Custom allocators, growable vectors/strings, borrowed slices, stored/returned references, general initialization and cleanup |
-| C interop | Target-header checks, automatic referenced-header imports, explicit externs, scalar calls/constants, exact nullable raw pointer transport and experimental explicit i32 C exports | Pointer dereference/arithmetic, aggregate ABI adapters, callbacks, wider/stable C exports and checked foreign lifetime/resource contracts |
+| C interop | Target-header checks, automatic referenced-header imports, explicit externs, scalar calls/constants, exact nullable raw pointer transport, experimental i32 exports and a separate bounded Copy-wire export ABI | Pointer dereference/arithmetic, native aggregate-layout ABI, callbacks, stable C exports and checked foreign lifetime/resource contracts |
 | Modules and libraries | Local file modules, explicit exports, 19 bundled modules covering checked math, Option/Result, text, buffers, binary data, ranges, allocation, JSON, CLI, reload, SDL, Raylib, shader metadata and the Slang bridge, local project manifests and reusable native bindings | Growable containers/runtime strings, broader OS services, dependency packages, opaque interfaces, canonical interface serialization and stable ABI versions |
 | Metaprogramming | Bounded compiler specialization and generated C declarations from supported header inputs | Source-level constant evaluation, hygienic macros, reflection, checked builders and bounded `comptime` |
 | Effects and concurrency | Explicit supported allocation and mutation operations | Effect checking, transitive allocation policies, tasks, atomics, thread safety, cancellation, transactions and search |
@@ -114,16 +116,20 @@ workflow in the regression suite.
 
 File watching can rebuild and restart a project after source changes. A
 restart gives the replacement process new program state. An embedded host can
-also own a checked program and explicitly choose when to replace its function
-bodies, within the signature and value restrictions of its reload API.
+also use checked interpreter hooks or the experimental
+[native generation API](native-hot-reload.md). The scalar native API replaces registered closed i32 functions on macOS/Linux
+between exclusive synchronous host calls. The Copy-native API carries values
+through a bounded explicit schema and wire codec. `live_reload::LiveSession`
+adds versioned Copy state, explicit host migration and selected-root
+replacement. See [native generations](native-hot-reload.md) and the
+[stateful reload renderer](../examples/reload-renderer/README.md). Runtime traps
+remain process-fatal.
 
-Native per-function replacement in a running generated executable requires a
-separate versioned plugin ABI, stable function identities, an explicit state
-schema/migration protocol and proof that active jobs/callbacks no longer use
-retired code. Changing code must not silently reinterpret live owner layouts
-or foreign pointers. These are requirements from
-[PLAN.md section 14.5](../PLAN.md#145-practical-development-loop), with current
-evidence and next steps in the [hot-reload blocker](blockers/hot-reload.md).
+These host APIs do not move owned state, foreign pointers, active jobs, callbacks
+or GPU resources. They do not change layouts implicitly. Broader native
+replacement still requires the quiescence and resource contracts in
+[PLAN.md section 14.5](../PLAN.md#145-practical-development-loop) and the
+[hot-reload blocker](blockers/hot-reload.md).
 
 ## Dependency-ordered compiler work
 
@@ -142,21 +148,23 @@ evidence and next steps in the [hot-reload blocker](blockers/hot-reload.md).
 5. Add deterministic, bounded compile-time evaluation and hygienic expansion.
    Check generic bodies under declared constraints; generated code must return
    through ordinary name, type, ownership and effect checking.
-6. Build native reload on explicit exports, interface identities and state
-   migration. Add concurrency only with frame ownership, joins, cancellation
-   and quiescence rules that the reload protocol can use.
+6. Extend the existing scalar native generation API only with explicit state
+   migration and wider interface contracts. Add concurrency only with frame
+   ownership, joins, cancellation and quiescence rules that reload can use.
 7. Expand optimization, target profiles and releases against the conformance
    and reproducibility gates. Later syntax remains rejected until its
    consumers implement the corresponding checks.
 
-These steps summarize dependencies; the authoritative work packages and
-acceptance cases remain in [PLAN.md sections 19–21](../PLAN.md#19-dependency-ordered-delivery-plan).
-They are outstanding engineering work, not completed features.
+These steps summarize dependencies. The [continuation plan](CONTINUATION_PLAN.md)
+sets the current work order; [PLAN.md sections 19–21](../PLAN.md#19-dependency-ordered-delivery-plan)
+retain the phase gates and acceptance cases. No phase completion follows from
+the bounded features listed above.
 
 ## Performance evidence
 
-[Build scaling](build-performance.md) documents module splitting, indexed callable
-lookups, retained watch inputs and the remaining separate-compilation work.
+[The performance plan](build-performance.md) owns the workload definitions,
+measurement protocol, evidence links and performance work order. It distinguishes
+implemented build reuse from remaining separate-compilation work.
 
 Compact aggregates, monomorphization, C optimization and a SIMD instruction
 selection are implementation choices, not a whole-language speed result.
@@ -164,14 +172,9 @@ The historical buffer measurements in [native builds](native-builds.md)
 describe a particular reference-emitter snapshot, compiler and host. They
 do not establish current performance for every program.
 
-For each performance change, keep the workload, input, compiler/target flags
-and arithmetic policy fixed. Check independent expected outputs, mutated
-state, allocation/failure behavior and cleanup events before timing. Compare
-debug and optimized execution and the supported independent evaluator/C
-consumers. Record warmups, repetitions, median/tail times, variance, allocation
-counts, peak memory, code size and clean/incremental compilation costs when
-relevant. Document regressions and capability skips. A source watch loop or
-reload host also needs measured edit-to-accepted-update latency.
+For each performance change, verify outputs, mutated state, allocation/failure
+behavior and cleanup before timing. Compare supported independent consumers
+and optimized/unoptimized execution using that plan's measurement protocol.
 
 Follow the [project verification commands](../AGENTS.md#verification) and
 report which checks actually ran. A skipped toolchain or platform integration

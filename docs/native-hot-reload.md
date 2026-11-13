@@ -1,9 +1,11 @@
 # Native function generations
 
-The experimental `rill::native_reload` API replaces checked scalar native
-functions between synchronous host calls on macOS and Linux. The Rust host
-retains integer state, compiles a candidate library, and installs it after
-compatibility and load checks. Project `watch` still restarts whole executables.
+The experimental `rill::native_reload` APIs replace checked native functions
+between synchronous host calls on macOS and Linux. The scalar `NativeSession`
+retains no Rill state; hosts pass `i32` arguments and results. The bounded
+`CopySession` carries explicit closed Copy values through a versioned byte ABI.
+`live_reload::LiveSession` adds versioned host-owned Copy state and explicit
+migration. Project `watch` still restarts whole executables.
 
 ## Use the host API
 
@@ -84,9 +86,16 @@ There are no callbacks or native references that outlive a call.
 Generation starts at zero and advances only after successful replacement;
 exhaustion rejects. Source, compiler, contract, image, identity and symbol
 failures leave the old generation callable. Failure to remove retired files
-does not report a failed replacement after publication. Host state crosses the
-boundary as integer inputs/results, with application-level validity managed by
-the host. No Rill object migration occurs.
+does not report a failed replacement after publication. For `NativeSession`,
+host state crosses the boundary as integer inputs/results.
+`CopySession` accepts only the closed schemas described in
+[Copy-wire exports](c-exports.md#experimental-copy-wire-abi). `LiveSession`
+validates its versioned state schema and lets the host supply migration code.
+A state checkpoint uses format version 1, strict JSON decoding and a 1 MiB
+limit. A changed schema requires a strictly higher application state version;
+unchanged schemas may keep or increase the version. Restore migration must
+produce the active session's exact version and schema. Neither API transports
+owned Rill resources or native pointers.
 
 ## Limits
 
@@ -98,7 +107,20 @@ The selected compiler, wrapper/environment and native execution are trusted.
 This is not a sandbox. Other loader platforms reject explicitly; Windows
 compile-only checks do not establish loader execution there.
 
-This replaces an entire library generation of opted-in roots and helpers. It
-does not patch active frames, migrate owned objects/layouts, retain callbacks
-or coordinate arbitrary threads/jobs. Wider signatures, state migration and
-concurrent generation retention remain [separate ABI work](blockers/hot-reload.md).
+`NativeSession` and `CopySession` replace a complete compatible library
+contract. `LiveSession` accepts 1 through 64 unique roots. `Pure` functions
+receive host arguments, `Query` takes one state value and returns a fixed Copy
+result schema, and `Step` takes and returns the same state schema. A selected
+set is built and checked before publication; each root keeps its own complete
+reachable helper cohort. Unselected roots remain on their old code, so select
+together roots that must share helper changes.
+Publication occurs between exclusive synchronous calls. The host migration
+callback and schema validation finish before code/state publication; failure
+keeps the previous session active.
+
+These APIs do not patch active frames, migrate owned objects or foreign/GPU
+resources, retain callbacks, or coordinate arbitrary threads/jobs. Native
+traps remain process-fatal. The renderer example keeps its window and graphics
+resources in a long-lived C/Raylib adapter and migrates only its explicit Copy
+state. See [the runnable example](../examples/reload-renderer/README.md) and
+the [remaining reload blocker](blockers/hot-reload.md).
