@@ -1,0 +1,20 @@
+type Wrapped<a> = { value: a }
+
+fn project(x) {
+    let wrapped = make(x);
+    let value = wrapped.value;
+    let alias = value;
+    alias
+}
+
+fn make(x) {
+    if true {
+        record Wrapped { value = x }
+    } else {
+        record Wrapped { value = project(x) }
+    }
+}
+
+fn main() {
+    if project(true) { project(42) } else { 0 }
+}

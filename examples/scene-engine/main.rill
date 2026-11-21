@@ -1,0 +1,34 @@
+import scene;
+import game;
+@include("stdio.h");
+extern fn getchar() -> i32;
+extern fn putchar(value: i32) -> i32;
+
+fn draw(read world) {
+    let pixels = game.frame(world);
+    let mut i = 0;
+    let mut ok = true;
+    while i < 160 && ok {
+        let glyph = bytes_get(pixels, i);
+        ok <- putchar(if glyph == 0 { 46 } else { glyph }) >= 0;
+        if ok && i % 20 == 19 { ok <- putchar(10) >= 0; };
+        i <- i + 1;
+    };
+    ok
+}
+
+fn main() {
+    let mut world = scene.empty();
+    let mut ready = game.start(inout world) && draw(world);
+    let mut score = 0;
+    let mut playing = true;
+    while ready && playing {
+        let key = getchar();
+        playing <- key >= 0 && key != 113;
+        if key == 104 || key == 106 || key == 107 || key == 108 {
+            score <- score + game.tick(inout world, key);
+            ready <- draw(world);
+        };
+    };
+    if ready { score } else { -1 }
+}

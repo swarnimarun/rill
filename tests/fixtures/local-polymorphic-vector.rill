@@ -1,0 +1,13 @@
+type Marker<a> = Marker(u8x16)
+fn integers(read x: Marker<i32>) { match x { Marker(v) => u8x16_lane(v,0) } }
+fn booleans(read x: Marker<bool>) { match x { Marker(v) => u8x16_lane(v,0) } }
+fn main() {
+    let mut bytes = bytes_new(16);
+    bytes <- bytes_set(bytes,0,21);
+    let mut live = u8x16_load(bytes,0);
+    let snapshot = live;
+    let p = Marker(snapshot);
+    let alias = p;
+    live <- u8x16_xor(live,live);
+    integers(alias) + booleans(p) + u8x16_lane(live,0)
+}

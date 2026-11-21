@@ -1,0 +1,75 @@
+// Rill owns revision ordering and query semantics. The native adapter opens
+// one store per process and supplies fixed-size sequential and positioned I/O.
+import std.option as option;
+
+extern fn db_open() -> i32;
+extern fn db_close() -> unit;
+extern fn db_seek(skipped: i32) -> unit;
+extern fn db_read() -> unit;
+extern fn db_key() -> i32;
+extern fn db_value() -> i32;
+extern fn db_append(key: i32, value: i32) -> unit;
+extern fn db_change(revision: i32, key: i32, value: i32) -> unit;
+
+export type Update = Applied | Replayed | Full | InvalidRevision | Gap | Conflict
+
+export fn open() { db_open() }
+export fn close() { db_close() }
+
+export fn put(inout count: i32, key, value) {
+    if count == 2147483647 { Full } else {
+        db_append(key, value);
+        count <- count + 1;
+        Applied
+    }
+}
+
+export fn apply(inout count: i32, revision, key, value) {
+    if revision <= 0 { InvalidRevision } else {
+        if revision <= count {
+            db_seek(revision - 1);
+            db_read();
+            if db_key() == key && db_value() == value { Replayed } else { Conflict }
+        } else {
+            if revision - 1 != count { Gap } else { put(inout count, key, value) }
+        }
+    }
+}
+
+export fn lookup(count: i32, key: i32) -> option.Option<i32> {
+    db_seek(0);
+    let mut value = option.None;
+    let mut scanned = 0;
+    while scanned < count {
+        db_read();
+        if db_key() == key { value <- option.Some(db_value()); };
+        scanned <- scanned + 1;
+    };
+    value
+}
+
+// Both operations seek once and iterate the suffix. Even at the last
+// representable revision the loop increment stays within i32.
+fn scan(count: i32, cursor: i32, publish: bool, floor: i32) -> option.Option<i32> {
+    if cursor < 0 || cursor > count { option.None } else {
+        db_seek(cursor);
+        let mut pos = cursor;
+        let mut hits = 0;
+        while pos < count {
+            db_read();
+            pos <- pos + 1;
+            if publish { db_change(pos, db_key(), db_value()); } else {
+                if db_value() >= floor { hits <- hits + 1; };
+            };
+        };
+        option.Some(hits)
+    }
+}
+
+export fn changes(count, cursor) {
+    match scan(count, cursor, true, 0) {
+        option.Some(_) => true | option.None => false
+    }
+}
+
+export fn count_ge(count, cursor, floor) { scan(count, cursor, false, floor) }

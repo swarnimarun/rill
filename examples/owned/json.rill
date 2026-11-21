@@ -1,0 +1,7 @@
+import json_output;
+
+// The caller chooses the allocation and owns cleanup. The module borrows it.
+let main =
+    let length = 8 * 4 in
+    let mut output = system_bytes_zeroed_abort(length) in
+    json_output.write_string(inout output, "Rill \"JSON\"", 0)

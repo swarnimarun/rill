@@ -1,0 +1,129 @@
+import world;
+
+fn near_world(coordinate, radius) {
+    coordinate >= 0 - radius && coordinate < 8 + radius
+}
+
+fn in_brush(x, y, z, cx, cy, cz, radius) {
+    let dx = x - cx;
+    let dy = y - cy;
+    let dz = z - cz;
+    dx * dx + dy * dy + dz * dz <= radius * radius
+}
+
+fn blast_cell(inout cells, index, cx, cy, cz, radius) {
+    let x = index % 8;
+    let z = index / 8 % 8;
+    let y = index / 64;
+    let mut removed = 0;
+    if in_brush(x, y, z, cx, cy, cz, radius) && world.get(cells, x, y, z) > 1 {
+        world.set(inout cells, x, y, z, 0);
+        removed <- 1;
+    };
+    removed
+}
+
+// The bounded brush includes its center and preserves immovable bedrock.
+// A negative radius is a no-op. Larger brushes clamp to three cells.
+export fn blast(inout cells, cx, cy, cz, radius) {
+    let r = if radius > 3 {
+        3
+    } else {
+        radius
+    };
+    let mut removed = 0;
+    // Clip before squaring, keeping arithmetic bounded even for an off-world
+    // center supplied by a caller.
+    if r >= 0 && near_world(cx, r) && near_world(cy, r) && near_world(cz, r) {
+        let mut i = 0;
+        while i < 512 {
+            removed <- removed + blast_cell(inout cells, i, cx, cy, cz, r);
+            i <- i + 1;
+        };
+    };
+    removed
+}
+
+fn connected(read support, x, y, z) {
+    world.get(support, x - 1, y, z) != 0 ||
+    world.get(support, x + 1, y, z) != 0 ||
+    world.get(support, x, y - 1, z) != 0 ||
+    world.get(support, x, y + 1, z) != 0 ||
+    world.get(support, x, y, z - 1) != 0 ||
+    world.get(support, x, y, z + 1) != 0
+}
+
+fn seed_support_cell(read cells, inout support, index) {
+    let x = index % 8;
+    let z = index / 8 % 8;
+    let y = index / 64;
+    let material = world.get(cells, x, y, z);
+    if material == 1 || (y == 0 && material != 0) {
+        world.set(inout support, x, y, z, 1);
+    };
+}
+
+fn support_cell(read cells, inout support, index) {
+    let x = index % 8;
+    let z = index / 8 % 8;
+    let y = index / 64;
+    let mut changed = false;
+    if world.get(cells, x, y, z) != 0 && world.get(support, x, y, z) == 0 && connected(support, x, y, z) {
+        world.set(inout support, x, y, z, 1);
+        changed <- true;
+    };
+    changed
+}
+
+fn support_pass(read cells, inout support) {
+    let mut changed = false;
+    let mut i = 0;
+    while i < 512 {
+        let updated = support_cell(cells, inout support, i);
+        changed <- changed || updated;
+        i <- i + 1;
+    };
+    changed
+}
+
+fn rebuild_support(read cells, inout support) {
+    support <- world.empty();
+    let mut i = 0;
+    while i < 512 {
+        seed_support_cell(cells, inout support, i);
+        i <- i + 1;
+    };
+    // Face-connected solids carry support, including horizontal bridges.
+    // At most 511 edges separate two cells in this finite world.
+    let mut changed = true;
+    let mut pass = 0;
+    while changed && pass < 512 {
+        changed <- support_pass(cells, inout support);
+        pass <- pass + 1;
+    };
+}
+
+export fn step(inout cells, inout support) {
+    rebuild_support(cells, inout support);
+    let mut moved = 0;
+    // Bottom-up order allows a stack to fall one cell without overwrites.
+    // Each destination has already been visited, so no cell falls twice.
+    let mut i = 64;
+    while i < 512 {
+        let x = i % 8;
+        let z = i / 8 % 8;
+        let y = i / 64;
+        let material = world.get(cells, x, y, z);
+        if material > 1 && world.get(support, x, y, z) == 0 && world.get(cells, x, y - 1, z) == 0 {
+            world.set(inout cells, x, y - 1, z, material);
+            world.set(inout cells, x, y, z, 0);
+            moved <- moved + 1;
+        };
+        i <- i + 1;
+    };
+    // Keep the caller's support view aligned with the resulting occupancy.
+    if moved != 0 {
+        rebuild_support(cells, inout support);
+    };
+    moved
+}

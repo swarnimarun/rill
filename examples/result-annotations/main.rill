@@ -1,0 +1,8 @@
+// Closed result types make an otherwise ambiguous empty option usable.
+type Option<a> = None | Some(a)
+fn absent() -> Option<i32> { None }
+fn main() -> i32 {
+    let mut answer = absent();
+    answer <- Some(42);
+    match answer { None => 0 | Some(value) => value }
+}

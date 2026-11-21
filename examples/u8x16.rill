@@ -1,0 +1,4 @@
+// Sixteen zero bytes compare equal lane by lane.
+let main =
+    let lanes = u8x16_load(bytes_new(16), 0) in
+    u8x16_all(u8x16_eq(lanes, lanes))

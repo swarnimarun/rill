@@ -1,0 +1,4 @@
+import std.result as result;
+export type AllocError = InvalidLength | SizeOverflow | OutOfMemory
+export let box_i32 value = let outcome = system_box_i32(value) in move outcome
+export let bytes_zeroed length = let outcome = system_bytes_zeroed(length) in move outcome

@@ -1,0 +1,7 @@
+// %input is one signed 32-bit element. return writes this lane's result.
+rir 0
+kernel map.i32 workgroup_x 64
+%zero = const.i32 0
+%negative = slt.i32 %input %zero
+%clamped = select.i32 %negative %zero %input
+return %clamped

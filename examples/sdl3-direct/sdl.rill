@@ -1,0 +1,4 @@
+// SDL3 declarations are imported automatically from the header at build time.
+@include("SDL3/SDL.h");
+@link("SDL3");
+@pkg_config("sdl3");

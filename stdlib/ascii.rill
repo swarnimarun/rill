@@ -1,0 +1,67 @@
+//! ASCII classification of i32 byte codes, without locale or allocation.
+import std.option as option;
+
+/// True for codes 0 through 127. All other integers return false.
+export fn is_ascii(code: i32) -> bool { code >= 0 && code <= 127 }
+
+/// ASCII controls are codes 0 through 31 and DEL, code 127.
+export fn is_control(code: i32) -> bool {
+    (code >= 0 && code < 32) || code == 127
+}
+
+/// True for decimal digits 0 through 9.
+export fn is_digit(code: i32) -> bool { code >= 48 && code <= 57 }
+
+/// True for lowercase ASCII letters a through z.
+export fn is_lower(code: i32) -> bool { code >= 97 && code <= 122 }
+
+/// True for uppercase ASCII letters A through Z.
+export fn is_upper(code: i32) -> bool { code >= 65 && code <= 90 }
+
+/// True for uppercase or lowercase ASCII letters.
+export fn is_alpha(code: i32) -> bool { is_lower(code) || is_upper(code) }
+
+/// True for ASCII letters or decimal digits.
+export fn is_alphanumeric(code: i32) -> bool { is_alpha(code) || is_digit(code) }
+
+/// ASCII whitespace is space, tab, LF, vertical tab, form feed or CR.
+export fn is_whitespace(code: i32) -> bool {
+    code == 32 || (code >= 9 && code <= 13)
+}
+
+/// Horizontal ASCII whitespace is space or tab.
+export fn is_blank(code: i32) -> bool { code == 32 || code == 9 }
+
+/// Visible ASCII codes 33 through 126, excluding space.
+export fn is_graphic(code: i32) -> bool { code >= 33 && code <= 126 }
+
+/// Printable ASCII codes 32 through 126, including space.
+export fn is_printable(code: i32) -> bool { code >= 32 && code <= 126 }
+
+/// Visible ASCII punctuation excludes letters, digits and whitespace.
+export fn is_punctuation(code: i32) -> bool { is_graphic(code) && !is_alphanumeric(code) }
+
+/// True for decimal digits and ASCII letters a through f or A through F.
+export fn is_hex_digit(code: i32) -> bool {
+    is_digit(code) || (code >= 65 && code <= 70) || (code >= 97 && code <= 102)
+}
+
+/// Convert uppercase ASCII to lowercase. Every other integer is unchanged.
+export fn to_lower(code: i32) -> i32 { if is_upper(code) { code + 32 } else { code } }
+
+/// Convert lowercase ASCII to uppercase. Every other integer is unchanged.
+export fn to_upper(code: i32) -> i32 { if is_lower(code) { code - 32 } else { code } }
+
+/// Decode one decimal digit. Non-digits return None.
+export fn digit_value(code: i32) -> option.Option<i32> {
+    if is_digit(code) { option.Some(code - 48) } else { option.None }
+}
+
+/// Decode one hexadecimal digit, accepting either ASCII letter case.
+export fn hex_value(code: i32) -> option.Option<i32> {
+    if is_digit(code) { option.Some(code - 48) } else {
+        if code >= 65 && code <= 70 { option.Some(code - 55) } else {
+            if code >= 97 && code <= 102 { option.Some(code - 87) } else { option.None }
+        }
+    }
+}

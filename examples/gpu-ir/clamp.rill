@@ -1,0 +1,4 @@
+// A CPU-callable Rill function eligible for the version-zero device map.
+export fn clamp(input: i32) -> i32 {
+    if input < 0 { 0 } else { input }
+}

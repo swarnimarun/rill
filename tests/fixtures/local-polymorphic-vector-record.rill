@@ -1,0 +1,17 @@
+type Option<a> = None | Some(a)
+type Stored<a> = { payload: u8x16; tag: Option<a> }
+fn integers(read x: Stored<i32>) { u8x16_lane(x.payload,0) }
+fn booleans(read x: Stored<bool>) { u8x16_lane(x.payload,0) }
+fn absent(read x: Option<bool>) { match x { None => true | Some(_) => false } }
+fn main() {
+    let mut bytes = bytes_new(16);
+    bytes <- bytes_set(bytes,0,21);
+    let mut live = u8x16_load(bytes,0);
+    let snapshot = live;
+    let p = record Stored { tag = None; payload = snapshot };
+    let alias = p;
+    live <- u8x16_xor(live,live);
+    if absent(p.tag) {
+        integers(alias) + booleans(p) + u8x16_lane(p.payload,0) - 21 + u8x16_lane(live,0)
+    } else { 0 }
+}

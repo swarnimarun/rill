@@ -1,0 +1,74 @@
+// A 16-node translation-only scene. Store count, then six bytes per node:
+// parent+1, local x/y, width, height, and sprite. Parents precede children.
+import std.option as option;
+
+export type Sprite = { x: i32; y: i32; width: i32; height: i32; glyph: i32 }
+export type Parent = Root | Child(i32)
+
+export fn empty() -> bytes<97> { bytes_new(97) }
+
+export fn count(read scene: bytes<97>) { bytes_get(scene, 0) }
+
+fn byte(value) { value >= 0 && value <= 255 }
+fn offset(id) { 1 + 6 * id }
+
+export fn spawn(inout scene: bytes<97>, parent: Parent, x, y, width, height, glyph) {
+    let n = count(scene);
+    let link = match parent { Root => 0 | Child(id) => if id >= 0 && id < n { id + 1 } else { -1 } };
+    if n >= 16 || link < 0 || !byte(x) || !byte(y) || width <= 0 || !byte(width)
+        || height <= 0 || !byte(height) || glyph < 32 || glyph > 126 {
+        option.None
+    } else {
+        let mut data = scene;
+        let at = offset(n);
+        data <- bytes_set(data, at, link);
+        data <- bytes_set(data, at + 1, x);
+        data <- bytes_set(data, at + 2, y);
+        data <- bytes_set(data, at + 3, width);
+        data <- bytes_set(data, at + 4, height);
+        data <- bytes_set(data, at + 5, glyph);
+        scene <- bytes_set(data, 0, n + 1);
+        option.Some(n)
+    }
+}
+
+export fn position(inout scene: bytes<97>, id, x, y) {
+    if id < 0 || id >= count(scene) || id >= 16 || !byte(x) || !byte(y) { false } else {
+        let data = bytes_set(scene, offset(id) + 1, x);
+        scene <- bytes_set(data, offset(id) + 2, y);
+        true
+    }
+}
+
+export fn sprite(read scene: bytes<97>, id) {
+    let data = scene;
+    if id < 0 || id >= count(data) || id >= 16 { option.None } else {
+        let mut node = id;
+        let mut x = 0;
+        let mut y = 0;
+        let mut valid = true;
+        while node >= 0 && valid {
+            let base = offset(node);
+            x <- x + bytes_get(data, base + 1);
+            y <- y + bytes_get(data, base + 2);
+            let parent = bytes_get(data, base) - 1;
+            valid <- parent < node;
+            node <- parent;
+        };
+        let base = offset(id);
+        if valid { option.Some(record Sprite { x = x; y = y; width = bytes_get(data, base + 3);
+            height = bytes_get(data, base + 4); glyph = bytes_get(data, base + 5) }) } else { option.None }
+    }
+}
+
+// Compare half-open intervals even for caller-constructed rectangles near i32::MAX.
+fn intersects_axis(a, width_a, b, width_b) {
+    if width_a <= 0 || width_b <= 0 { false } else {
+        if a <= b { a > 2147483647 - width_a || b < a + width_a }
+        else { b > 2147483647 - width_b || a < b + width_b }
+    }
+}
+
+export fn overlaps(a: Sprite, b: Sprite) {
+    intersects_axis(a.x, a.width, b.x, b.width) && intersects_axis(a.y, a.height, b.y, b.height)
+}

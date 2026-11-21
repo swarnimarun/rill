@@ -1,0 +1,2 @@
+import math as m;
+let main = m.answer(41)

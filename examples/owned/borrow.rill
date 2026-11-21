@@ -1,0 +1,9 @@
+// The caller retains the allocation while the functions borrow it.
+let get (read value) = box_read(value)
+let increment (inout value) =
+    let current = get(value) in
+    box_write(inout value, current + 1)
+let main =
+    let mut resource = system_box_i32_abort(41) in
+    let done = increment(inout resource) in
+    box_read(resource)

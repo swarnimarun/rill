@@ -1,0 +1,8 @@
+// Extract a value from an Option using ordinary calls.
+import std.option as o;
+
+fn answer(read input: o.Option<i32>) {
+    if let o.Some(value) = input { value } else { 0 }
+}
+
+fn main() { answer(o.Some(42)) }

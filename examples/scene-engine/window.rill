@@ -1,0 +1,42 @@
+import scene;
+import game;
+@include("scene_window.h");
+@pkg_config("sdl3");
+
+extern fn scene_window_open() -> bool;
+extern fn scene_window_event() -> i32;
+extern fn scene_window_begin() -> bool;
+extern fn scene_window_cell(index: i32, glyph: i32) -> bool;
+extern fn scene_window_present(score: i32) -> bool;
+extern fn scene_window_close() -> unit;
+
+fn paint(read world: bytes<97>, score) {
+    let cells = game.frame(world);
+    let mut ok = scene_window_begin();
+    let mut at = 0;
+    while at < bytes_len(cells) && ok {
+        let glyph = bytes_get(cells, at);
+        if glyph != 0 { ok <- scene_window_cell(at, glyph); };
+        at <- at + 1;
+    };
+    ok && scene_window_present(score)
+}
+
+fn main() {
+    let mut world = scene.empty();
+    let mut score = 0;
+    let mut ready = scene_window_open() && game.start(inout world) && paint(world, score);
+    let mut playing = true;
+    while ready && playing {
+        let key = scene_window_event();
+        if key < 0 { ready <- false; } else {
+            if key == 113 { playing <- false; } else {
+                // A zero key means the window needs repainting without a tick.
+                if key != 0 { score <- score + game.tick(inout world, key); };
+                ready <- paint(world, score);
+            };
+        };
+    };
+    scene_window_close();
+    if ready { score } else { -1 }
+}

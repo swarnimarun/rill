@@ -1,0 +1,27 @@
+import std.alloc as alloc;
+import std.result as r;
+type Wrap<a> = Wrapped(a) | Empty
+let forward n = let result = alloc.box_i32(n) in move result
+let main = let result = forward(40) in match move result {
+ r.Err(_) => 1000
+ | r.Ok(outer) => (let mut owner = move outer in
+   let changed = box_write(inout owner, 41) in
+   let negative = alloc.bytes_zeroed(-1) in
+   let minimum = alloc.bytes_zeroed(-2147483647 - 1) in
+   let invalid = match move negative { r.Ok(_) => 10000 | r.Err(e) => match e { alloc.InvalidLength => 0 | alloc.SizeOverflow => 10000 | alloc.OutOfMemory => 10000 } } in
+   let invalid_min = match move minimum { r.Ok(_) => 10000 | r.Err(e) => match e { alloc.InvalidLength => 0 | alloc.SizeOverflow => 10000 | alloc.OutOfMemory => 10000 } } in
+   let inner = forward(1) in
+   let score = match move inner {
+     r.Ok(payload) => (let scratch = alloc.box_i32(7) in box_read(payload))
+     | r.Err(e) => (let scratch = alloc.box_i32(8) in match e { alloc.OutOfMemory => 11 | alloc.InvalidLength => 10000 | alloc.SizeOverflow => 10000 })
+   } in
+   let mut evaluations = 0 in
+   let storage = alloc.bytes_zeroed(let changed = evaluations <- evaluations + 3 in evaluations) in
+   let zeros = match move storage { r.Ok(bytes) => owned_bytes_get(bytes, 0) + owned_bytes_get(bytes, 1) + owned_bytes_get(bytes, 2) | r.Err(_) => 100 } in
+   let empty = alloc.bytes_zeroed(0) in
+   let unused = forward(9) in
+   let nested = Wrapped(move unused) in
+   let wildcard = alloc.bytes_zeroed(1) in
+   let consumed = match move wildcard { r.Ok(_) => 0 | r.Err(_) => 0 } in
+   box_read(owner) + score + zeros + invalid + invalid_min + evaluations - 3)
+}

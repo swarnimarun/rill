@@ -1,0 +1,8 @@
+// A payload-bearing type and an exhaustive nested match.
+type Option<a> = None | Some(a)
+type Pair = Pair(i32, Option<i32>)
+
+let main = match Pair(10, Some(32)) {
+    Pair(x, Some(y)) => x + y
+  | Pair(_, None) => 0
+}

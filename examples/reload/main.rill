@@ -1,0 +1,14 @@
+import std.reload as reload;
+
+// A host passes its accepted generation and the last generation it observed.
+fn update(state: i32, generation: i32, previous: i32) -> i32 {
+    let context = reload.context(generation, previous);
+    if reload.first_load(context) { state + 1 }
+    else { if reload.changed(context) { state + 10 } else { state + 2 } }
+}
+
+fn main() {
+    let started = update(0, 0, -1);
+    let next = update(started, 0, 0);
+    update(next, 1, 0)
+}

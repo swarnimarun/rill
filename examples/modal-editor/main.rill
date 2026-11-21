@@ -1,0 +1,189 @@
+// Rill owns the document, cursor, dirty flag and mode. The adapter moves one
+// validated byte at a time across the scalar C ABI.
+extern fn ed_open() -> i32;
+extern fn ed_initial_byte(index: i32) -> i32;
+extern fn ed_key() -> i32;
+extern fn ed_frame(insert: bool, dirty: bool, full: bool) -> unit;
+extern fn ed_draw(byte: i32, cursor: bool) -> unit;
+extern fn ed_present() -> unit;
+extern fn ed_stage(index: i32, byte: i32) -> unit;
+extern fn ed_save(length: i32) -> bool;
+extern fn ed_finish(unsaved: bool) -> unit;
+
+fn insert_at(inout text: bytes < 256 >, length, at, byte) {
+    let mut pos = length;
+    while pos > at {
+        let previous = bytes_get(text, pos - 1);
+        text <- bytes_set(text, pos, previous);
+        pos <- pos - 1;
+    };
+    text <- bytes_set(text, at, byte)
+}
+
+fn delete_at(inout text: bytes < 256 >, length, at) {
+    let mut pos = at;
+    while pos + 1 < length {
+        let next = bytes_get(text, pos + 1);
+        text <- bytes_set(text, pos, next);
+        pos <- pos + 1;
+    };
+}
+
+// Move to the same byte column on the adjacent line, clamped to its end.
+fn vertical(read text: bytes < 256 >, length, cursor, down) {
+    let mut begin = cursor;
+    while begin > 0 && bytes_get(text, begin - 1) != 10 {
+        begin <- begin - 1;
+    };
+    let column = cursor - begin;
+    if down {
+        let mut next = cursor;
+        while next < length && bytes_get(text, next) != 10 {
+            next <- next + 1;
+        };
+        if next == length {
+            cursor
+        } else {
+            let start = next + 1;
+            next <- start;
+            while next < length && next - start < column && bytes_get(text, next) != 10 {
+                next <- next + 1;
+            };
+            next
+        }
+    } else {
+        if begin == 0 {
+            cursor
+        } else {
+            let end = begin - 1;
+            let mut start = end;
+            while start > 0 && bytes_get(text, start - 1) != 10 {
+                start <- start - 1;
+            };
+            if start + column > end {
+                end
+            } else {
+                start + column
+            }
+        }
+    }
+}
+
+fn show(read text: bytes < 256 >, length, at, insert, dirty) {
+    ed_frame(insert, dirty, length == bytes_len(text));
+    let mut i = 0;
+    while i < length {
+        ed_draw(bytes_get(text, i), at == i);
+        i <- i + 1;
+    };
+    if at == length {
+        ed_draw(32, true);
+    };
+    ed_present();
+}
+
+fn save(read text: bytes < 256 >, length) {
+    let mut i = 0;
+    while i < length {
+        ed_stage(i, bytes_get(text, i));
+        i <- i + 1;
+    };
+    ed_save(length)
+}
+
+fn main() {
+    let mut length = ed_open();
+    let mut text = bytes_new(256);
+    let mut i = 0;
+    while i < length {
+        text <- bytes_set(text, i, ed_initial_byte(i));
+        i <- i + 1;
+    };
+    let mut cursor = 0;
+    let mut insert = false;
+    let mut dirty = false;
+    let mut running = true;
+    let mut unsaved = false;
+    while running {
+        show(text, length, cursor, insert, dirty);
+        let key = ed_key();
+        if key < 0 {
+            unsaved <- dirty;
+            running <- false;
+        } else {
+            if insert {
+                match key {
+                    27 => {
+                        insert <- false;
+                    }
+                    | 8 => {
+                        if cursor > 0 {
+                            cursor <- cursor - 1;
+                            delete_at(inout text, length, cursor);
+                            length <- length - 1;
+                            dirty <- true;
+                        };
+                    }
+                    | _ => {
+                        if (key == 10 || (key >= 32 && key <= 126)) && length < bytes_len(text) {
+                            insert_at(inout text, length, cursor, key);
+                            length <- length + 1;
+                            cursor <- cursor + 1;
+                            dirty <- true;
+                        };
+                    }
+                };
+            } else {
+                match key {
+                    105 => {
+                        insert <- true;
+                    } // i
+                    | 104 => {
+                        if cursor > 0 {
+                            cursor <- cursor - 1;
+                        };
+                    } // h
+                    | 108 => {
+                        if cursor < length {
+                            cursor <- cursor + 1;
+                        };
+                    } // l
+                    | 106 => {
+                        cursor <- vertical(text, length, cursor, true);
+                    } // j
+                    | 107 => {
+                        cursor <- vertical(text, length, cursor, false);
+                    } // k
+                    | 48 => {
+                        cursor <- 0;
+                    } // 0
+                    | 36 => {
+                        cursor <- length;
+                    } // $
+                    | 120 => {
+                        if cursor < length {
+                            delete_at(inout text, length, cursor);
+                            length <- length - 1;
+                            dirty <- true;
+                        };
+                    } // x
+                    | 119 => {
+                        if save(text, length) {
+                            dirty <- false;
+                        };
+                    } // w
+                    | 113 => {
+                        if ! dirty {
+                            running <- false;
+                        };
+                    } // q
+                    | 81 => {
+                        running <- false;
+                    } // Q
+                    | _ => ()
+                };
+            };
+        };
+    };
+    ed_finish(unsaved);
+}

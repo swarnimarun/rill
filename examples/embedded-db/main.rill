@@ -1,0 +1,43 @@
+import std.option as option;
+import store;
+
+extern fn db_command() -> i32;
+extern fn db_argument(index: i32) -> i32;
+extern fn db_number(value: i32) -> unit;
+extern fn db_missing() -> unit;
+extern fn db_error(reason: cstr) -> unit;
+extern fn db_finish() -> unit;
+
+fn check_update(outcome) {
+    match outcome {
+        store.Applied => () | store.Replayed => ()
+      | store.Full => db_error(c"revision space exhausted")
+      | store.InvalidRevision => db_error(c"revision must be positive")
+      | store.Conflict => db_error(c"revision conflict")
+      | store.Gap => db_error(c"revision gap")
+    }
+}
+
+fn main() {
+    let mut count = store.open();
+    let mut command = db_command();
+    while command != 0 {
+        match command {
+            1 => check_update(store.put(inout count, db_argument(0), db_argument(1)))
+          | 2 => match store.lookup(count, db_argument(0)) {
+                option.Some(value) => db_number(value) | option.None => db_missing()
+            }
+          | 3 => if !store.changes(count, db_argument(0)) { db_error(c"cursor out of range"); }
+          | 4 => check_update(store.apply(inout count, db_argument(0), db_argument(1), db_argument(2)))
+          | 5 => match store.count_ge(count, db_argument(0), db_argument(1)) {
+                option.Some(hits) => db_number(hits) | option.None => db_error(c"cursor out of range")
+            }
+          | 6 => db_number(count)
+          | _ => db_error(c"unknown command")
+        };
+        command <- db_command();
+    };
+    store.close();
+    db_finish();
+    0
+}

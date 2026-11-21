@@ -1,0 +1,14 @@
+// The host supplies generations at a quiescent call boundary.
+export type Context = { generation: i32; previous: i32 }
+
+export fn context(generation: i32, previous: i32) {
+    record Context { generation = generation; previous = previous }
+}
+
+export fn changed(read context: Context) {
+    context.generation != context.previous
+}
+
+export fn first_load(read context: Context) {
+    context.previous < 0
+}

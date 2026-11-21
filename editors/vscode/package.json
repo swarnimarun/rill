@@ -1,0 +1,55 @@
+{
+  "name": "rill-language",
+  "displayName": "Rill language",
+  "description": "Rill language server and syntax highlighting",
+  "version": "0.1.0",
+  "publisher": "rill-language",
+  "private": true,
+  "license": "UNLICENSED",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/swarnimarun/rill.git",
+    "directory": "editors/vscode"
+  },
+  "engines": { "vscode": "^1.100.0" },
+  "categories": ["Programming Languages"],
+  "extensionKind": ["workspace"],
+  "capabilities": { "untrustedWorkspaces": { "supported": false } },
+  "main": "./extension.js",
+  "activationEvents": ["onLanguage:rill"],
+  "contributes": {
+    "languages": [
+      {
+        "id": "rill",
+        "aliases": ["Rill", "rill"],
+        "extensions": [".rill"],
+        "configuration": "./language-configuration.json"
+      }
+    ],
+    "grammars": [
+      { "language": "rill", "scopeName": "source.rill", "path": "./syntaxes/rill.tmLanguage.json" }
+    ],
+    "configuration": {
+      "title": "Rill",
+      "properties": {
+        "rill.serverPath": {
+          "type": "string",
+          "default": "rill",
+          "scope": "machine-overridable",
+          "description": "Rill compiler executable. The extension launches it with the lsp argument. Reload the window after changing this setting."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "test": "node --test test/*.test.js",
+    "package": "vsce package --skip-license"
+  },
+  "dependencies": { "vscode-languageclient": "11.0.0" },
+  "overrides": { "minimatch": "11.0.1" },
+  "devDependencies": {
+    "@vscode/vsce": "4.1.0",
+    "vscode-oniguruma": "2.0.1",
+    "vscode-textmate": "9.2.0"
+  }
+}

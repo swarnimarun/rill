@@ -1,0 +1,7 @@
+// The named operation selects the hosted system allocator and traps on OOM.
+let main =
+    let mut first = system_box_i32_abort(41) in
+    let value = box_read(first) in
+    let changed = box_write(inout first, value + 1) in
+    let second = move first in
+    box_read(second)

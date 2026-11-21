@@ -1,0 +1,151 @@
+// Rill owns gameplay and frame ordering; GPU state supplies the actual player eye.
+import native as gpu;
+
+type Camera = {
+    x: i32;
+    y: i32;
+    z: i32;
+    yaw: i32;
+    pitch: i32
+}
+
+fn camera_start(n) {
+    if gpu.vg_mode() == 0 {
+        record Camera {
+            x = n * 820;
+            y = n * 380;
+            z = n * 1220;
+            yaw = -23000;
+            pitch = -12000
+        }
+    } else {
+        // Eye height is 1.9 meters above the ground-plane origin, in quarter-meter cells.
+        record Camera {
+            x = (n / 3) * 1024;
+            y = 7782;
+            z = (n - 6) * 1024;
+            yaw = 45000;
+            pitch = -5000
+        }
+    }
+}
+fn look(inout c: Camera) {
+    c.yaw <- (c.yaw + gpu.vg_mouse(0) * 100) % 360000;
+    let pitch = c.pitch - gpu.vg_mouse(1) * 100;
+    c.pitch <- if pitch > 89000 {
+        89000
+    } else {
+        if pitch < -89000 {
+            -89000
+        } else {
+            pitch
+        }
+    };
+}
+fn reconstruct_geometry() {
+    gpu.vg_dispatch(23) && gpu.vg_dispatch(6) && gpu.vg_dispatch(7) &&
+    gpu.vg_dispatch(20) && gpu.vg_dispatch(8) && gpu.vg_dispatch(25)
+}
+fn reconstruct_distance() {
+    gpu.vg_dispatch(9) && gpu.vg_dispatch(10) && gpu.vg_dispatch(11) &&
+    gpu.vg_dispatch(12) && gpu.vg_dispatch(26)
+}
+fn fracture() {
+    gpu.vg_dispatch(1) && gpu.vg_dispatch(18) && gpu.vg_dispatch(2) && gpu.vg_dispatch(3) &&
+    gpu.vg_dispatch(4) && gpu.vg_dispatch(15)
+}
+fn simulate(paused) {
+    if paused {
+        true
+    } else {
+        gpu.vg_dispatch(19) && gpu.vg_dispatch(5)
+    }
+}
+fn frame(read c: Camera, elapsed, tick, view, paused, reset, mode, fire) {
+    let mut ok = gpu.vg_begin(c.x, c.y, c.z, c.yaw, c.pitch, elapsed, tick, view) &&
+    gpu.vg_controls(mode, reset, paused) && gpu.vg_dispatch(22);
+    if reset {
+        ok <- ok && gpu.vg_dispatch(0) && gpu.vg_dispatch(17) && gpu.vg_dispatch(18) && gpu.vg_dispatch(15);
+    };
+    // Current-frame structures and debris are collision geometry before the
+    // controller moves, picks a target, or supplies the rendered eye position.
+    ok <- ok && simulate(paused) && reconstruct_geometry() && gpu.vg_dispatch(21);
+    let mut edited = false;
+    if fire {
+        ok <- ok && gpu.vg_aim(1) && fracture();
+        edited <- true;
+    };
+    if gpu.vg_key(13) != 0 {
+        ok <- ok && gpu.vg_lean() && fracture();
+        edited <- true;
+    };
+    if gpu.vg_key(9) != 0 || (gpu.vg_smoke() && gpu.vg_automatic_demo() && tick == 3) {
+        ok <- ok && gpu.vg_demo(gpu.vg_world() / 16) && fracture();
+        edited <- true;
+    };
+    if edited {
+        ok <- ok && reconstruct_geometry();
+    };
+    ok && reconstruct_distance() && gpu.vg_dispatch(13) && gpu.vg_dispatch(24) && gpu.vg_dispatch(14) && gpu.vg_present()
+}
+fn play() {
+    let mut camera = camera_start(gpu.vg_world());
+    let mut tick = 0;
+    let mut view = 0;
+    let mut mode = gpu.vg_mode();
+    let mut cooldown = 0;
+    let mut paused = false;
+    let mut running = true;
+    let mut ok = true;
+    while running && ok {
+        running <- gpu.vg_poll();
+        if running {
+            let elapsed = gpu.vg_elapsed();
+            let reset = tick == 0 || gpu.vg_key(8) != 0;
+            if reset {
+                camera <- camera_start(gpu.vg_world());
+                cooldown <- 0;
+            };
+            if gpu.vg_key(10) != 0 {
+                paused <- not paused;
+            };
+            if gpu.vg_key(11) != 0 {
+                view <- (view + 1) % 3;
+            };
+            if gpu.vg_key(12) != 0 {
+                mode <- if mode == 1 {
+                    2
+                } else {
+                    1
+                };
+            };
+            cooldown <- if cooldown > elapsed {
+                cooldown - elapsed
+            } else {
+                0
+            };
+            let fire = gpu.vg_key(7) != 0 && cooldown == 0;
+            if fire {
+                cooldown <- 100;
+            };
+            look(inout camera);
+            ok <- frame(camera, elapsed, tick, view, paused, reset, mode, fire);
+            tick <- tick + 1;
+        };
+    };
+    if ok {
+        0
+    } else {
+        1
+    }
+}
+fn main() {
+    let ready = gpu.vg_open();
+    let result = if ready {
+        play()
+    } else {
+        1
+    };
+    gpu.vg_close();
+    result
+}

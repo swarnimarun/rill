@@ -1,0 +1,110 @@
+// Two Copy byte buffers hold 8 x 8 x 8 cells. Material zero means air.
+export type Volume < a > = {
+    low: a;
+    high: a
+}
+
+export fn empty() {
+    record Volume {
+        low = bytes_new(256);
+        high = bytes_new(256)
+    }
+}
+
+export fn inside(x, y, z) {
+    x >= 0 && x < 8 && y >= 0 && y < 8 && z >= 0 && z < 8
+}
+
+export fn get(read volume, x, y, z) {
+    // An ordinary constructor fixes the byte-buffer layout before field use.
+    // Function annotations cannot name this inferred bytes type yet.
+    let typed = if true {
+        volume
+    } else {
+        empty()
+    };
+    if inside(x, y, z) {
+        let index = x + z * 8 + (y % 4) * 64;
+        if y < 4 {
+            bytes_get(typed.low, index)
+        } else {
+            bytes_get(typed.high, index)
+        }
+    } else {
+        0
+    }
+}
+
+export fn set(inout volume, x, y, z, material) {
+    if inside(x, y, z) {
+        let mut typed = if true {
+            volume
+        } else {
+            empty()
+        };
+        let index = x + z * 8 + (y % 4) * 64;
+        if y < 4 {
+            typed.low <- bytes_set(typed.low, index, material);
+        } else {
+            typed.high <- bytes_set(typed.high, index, material);
+        };
+        volume <- typed;
+    };
+}
+
+fn floor(inout cells) {
+    let mut z = 0;
+    while z < 8 {
+        let mut x = 0;
+        while x < 8 {
+            set(inout cells, x, 0, z, 1);
+            x <- x + 1;
+        };
+        z <- z + 1;
+    };
+}
+
+// Four pillars support a roof; cutting its supports starts a collapse.
+fn pillars(inout cells) {
+    let mut y = 1;
+    while y < 5 {
+        set(inout cells, 1, y, 1, 2);
+        set(inout cells, 6, y, 1, 2);
+        set(inout cells, 1, y, 6, 2);
+        set(inout cells, 6, y, 6, 2);
+        y <- y + 1;
+    };
+}
+
+fn roof(inout cells) {
+    let mut z = 1;
+    while z < 7 {
+        let mut x = 1;
+        while x < 7 {
+            set(inout cells, x, 5, z, 3);
+            x <- x + 1;
+        };
+        z <- z + 1;
+    };
+}
+
+// A small wall occludes the emitter until a blast opens it.
+fn wall(inout cells) {
+    let mut y = 1;
+    while y < 4 {
+        set(inout cells, 3, y, 4, 2);
+        set(inout cells, 4, y, 4, 2);
+        y <- y + 1;
+    };
+    set(inout cells, 3, 1, 3, 4);
+    set(inout cells, 4, 1, 3, 4);
+}
+
+export fn scene() {
+    let mut cells = empty();
+    floor(inout cells);
+    pillars(inout cells);
+    roof(inout cells);
+    wall(inout cells);
+    cells
+}

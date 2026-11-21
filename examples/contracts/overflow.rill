@@ -1,0 +1,2 @@
+// Addition overflows and traps in the evaluator and generated C.
+let main = 2147483647 + 1

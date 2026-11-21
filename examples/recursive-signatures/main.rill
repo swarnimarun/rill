@@ -1,0 +1,15 @@
+type Point = { x: i32 }
+
+// The annotated peer follows this function in the recursive group.
+fn inspect(read point) -> i32 {
+    peer(point);
+    point.x
+}
+
+fn peer(read point: Point) -> i32 {
+    if false { inspect(point) } else { 0 }
+}
+
+fn main() {
+    inspect(record Point { x = 42 })
+}

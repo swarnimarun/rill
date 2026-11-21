@@ -1,0 +1,18 @@
+type Point = { y: i32; x: i32 }
+
+fn first(inout p) -> i32 {
+    p.x <- p.x + 1;
+    middle(inout p);
+    p.x
+}
+
+fn middle(inout p) -> unit { last(inout p) }
+
+fn last(inout p: Point) -> unit {
+    if false { first(inout p); } else { () }
+}
+
+fn main() {
+    let mut p = record Point { x = 41; y = 7 };
+    first(inout p)
+}

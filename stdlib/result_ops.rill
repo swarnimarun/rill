@@ -1,0 +1,57 @@
+//! Generic helpers for Copy values. Import std.result alone for owner payloads.
+import std.result as result;
+import std.option as option;
+
+/// Return whether the result succeeded.
+export fn is_ok(value) {
+    match value { result.Ok(_) => true | result.Err(_) => false }
+}
+
+/// Return whether the result failed.
+export fn is_err(value) { !is_ok(value) }
+
+/// Use fallback for Err. Ordinary argument evaluation computes fallback eagerly.
+export fn unwrap_or(value, fallback) {
+    match value { result.Ok(item) => item | result.Err(_) => fallback }
+}
+
+/// Invoke fallback(error) only for Err.
+export fn unwrap_or_else(value, fallback) {
+    match value { result.Ok(item) => item | result.Err(error) => fallback(error) }
+}
+
+/// Transform only the successful value.
+export fn map(value, transform) {
+    match value {
+        result.Ok(item) => result.Ok(transform(item))
+        | result.Err(error) => result.Err(error)
+    }
+}
+
+/// Transform only the error value.
+export fn map_err(value, transform) {
+    match value {
+        result.Ok(item) => result.Ok(item)
+        | result.Err(error) => result.Err(transform(error))
+    }
+}
+
+/// Invoke a successful-value callback returning a Result.
+export fn and_then(value, transform) {
+    match value { result.Ok(item) => transform(item) | result.Err(error) => result.Err(error) }
+}
+
+/// Invoke an error callback returning a Result only for Err.
+export fn or_else(value, fallback) {
+    match value { result.Ok(item) => result.Ok(item) | result.Err(error) => fallback(error) }
+}
+
+/// Keep the successful value and discard a Copy error.
+export fn ok(value) {
+    match value { result.Ok(item) => option.Some(item) | result.Err(_) => option.None }
+}
+
+/// Keep the error value and discard a Copy success.
+export fn err(value) {
+    match value { result.Ok(_) => option.None | result.Err(error) => option.Some(error) }
+}

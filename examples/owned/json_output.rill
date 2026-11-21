@@ -1,0 +1,46 @@
+// JSON output into an existing owned byte buffer. No allocation occurs here.
+// Return the byte count on success, or -1 before writing on capacity failure.
+// The output range is [offset, offset + count), with no trailing NUL.
+
+let hex_digit n = if n < 10 then n + 48 else n + 87
+
+let escaped_width byte =
+    if byte == 34 || byte == 92 then 2 else if byte < 32 then 6 else 1
+
+export let write_string (inout output) text offset =
+    let capacity = owned_bytes_len(output) in
+    if offset < 0 || offset > capacity then -1 else
+    let available = capacity - offset in
+    if available < 2 then -1 else
+    // Reserve both quotes. Subtract only after checking the next encoded width.
+    let mut remaining = available - 2 in
+    let mut input = 0 in
+    let mut good = true in
+    let preflight = while input < byte_len(text) && good do
+        let needed = escaped_width(byte_at(text, input)) in
+        if needed > remaining then good <- false else
+        let reserve = remaining <- remaining - needed in
+        input <- input + 1
+    in if good then
+        let opening = owned_bytes_set(inout output, offset, 34) in
+        let mut pos = offset + 1 in
+        let restart = input <- 0 in
+        let emit = while input < byte_len(text) do
+            let byte = byte_at(text, input) in
+            let written = if byte == 34 || byte == 92 then
+                let slash = owned_bytes_set(inout output, pos, 92) in
+                owned_bytes_set(inout output, pos + 1, byte)
+            else if byte < 32 then
+                let slash = owned_bytes_set(inout output, pos, 92) in
+                let u = owned_bytes_set(inout output, pos + 1, 117) in
+                let zero1 = owned_bytes_set(inout output, pos + 2, 48) in
+                let zero2 = owned_bytes_set(inout output, pos + 3, 48) in
+                let hi = owned_bytes_set(inout output, pos + 4, hex_digit(byte / 16)) in
+                owned_bytes_set(inout output, pos + 5, hex_digit(byte % 16))
+            else owned_bytes_set(inout output, pos, byte) in
+            let advance = pos <- pos + escaped_width(byte) in
+            input <- input + 1
+        in
+        let closing = owned_bytes_set(inout output, pos, 34) in
+        pos - offset + 1
+    else -1

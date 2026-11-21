@@ -1,0 +1,2 @@
+// Both endpoints are representable, without wrapping intermediate values.
+let main = if -2147483648 < 2147483647 then 42 else 0

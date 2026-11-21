@@ -1,0 +1,3 @@
+//! A value that may be absent. No allocation or special propagation behavior.
+//! This module contains only the type so it can also carry supported owners.
+export type Option<a> = None | Some(a)

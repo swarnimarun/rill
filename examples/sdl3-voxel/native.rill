@@ -1,0 +1,19 @@
+// The C compiler validates these scalar contracts against platform.h.
+@include("platform.h");
+@pkg_config("sdl3");
+export extern fn vx_open() -> bool;
+export extern fn vx_poll() -> bool;
+export extern fn vx_key(action: i32) -> i32;
+// Mouse-down edges drained during the latest poll, not held button state.
+export extern fn vx_buttons() -> i32;
+export extern fn vx_mouse_x() -> i32;
+export extern fn vx_mouse_y() -> i32;
+export extern fn vx_elapsed() -> i32;
+export extern fn vx_smoke() -> bool;
+export extern fn vx_begin() -> bool;
+export extern fn vx_color(r: i32, g: i32, b: i32) -> bool;
+export extern fn vx_line(x1: i32, y1: i32, x2: i32, y2: i32) -> bool;
+export extern fn vx_text(x: i32, y: i32, text: cstr) -> bool;
+export extern fn vx_hud(removed: i32, moved: i32, view: i32, paused: bool) -> bool;
+export extern fn vx_present() -> bool;
+export extern fn vx_close() -> unit;

@@ -1,0 +1,6 @@
+import std.json_output as output;
+import std.json_input as input;
+
+let main = let mut bytes = system_bytes_zeroed_abort(2) in
+    let written = output.write_i32(inout bytes, 42, 0) in
+    input.parse_i32_or(bytes, -1)

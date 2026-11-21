@@ -1,0 +1,301 @@
+import world;
+import lighting;
+import native as io;
+fn absolute(n) {
+    if n < 0 {
+        0 - n
+    } else {
+        n
+    }
+}
+fn limit(n) {
+    if n > 255 {
+        255
+    } else {
+        if n < 0 {
+            0
+        } else {
+            n
+        }
+    }
+}
+export fn world_x(u, v, turn) {
+    if turn == 0 {
+        u
+    } else {
+        if turn == 1 {
+            v
+        } else {
+            if turn == 2 {
+                7 -u
+            } else {
+                7 -v
+            }
+        }
+    }
+}
+export fn world_z(u, v, turn) {
+    if turn == 0 {
+        v
+    } else {
+        if turn == 1 {
+            7 -u
+        } else {
+            if turn == 2 {
+                7 -v
+            } else {
+                u
+            }
+        }
+    }
+}
+fn contains_voxel(read cells, x, y, z, dx, my, sy) {
+    world.get(cells, x, y, z) != 0 && dx <= 28 &&
+    my >= sy - 14 + dx / 2 && my <= sy + 42 - dx / 2
+}
+fn pick_column(read cells, mx, my, u, v, turn) {
+    let x = world_x(u, v, turn);
+    let z = world_z(u, v, turn);
+    let sx = 480 + (u - v) * 28;
+    let dx = absolute(mx - sx);
+    let mut hit = 0;
+    let mut y = 0;
+    while y < 8 {
+        let sy = 330 + (u + v) * 14 - (y + 1) * 28;
+        if contains_voxel(cells, x, y, z, dx, my, sy) {
+            hit <- 1 + x + y * 8 + z * 64;
+        };
+        y <- y + 1;
+    };
+    hit
+}
+fn pick_depth(read cells, mx, my, depth, turn) {
+    let mut hit = 0;
+    let mut u = 0;
+    while u < 8 {
+        let v = depth - u;
+        if v >= 0 && v < 8 {
+            let candidate = pick_column(cells, mx, my, u, v, turn);
+            if candidate != 0 {
+                hit <- candidate;
+            };
+        };
+        u <- u + 1;
+    };
+    hit
+}
+// Return the last painted voxel under the cursor, encoded as 1+x+8*y+64*z.
+export fn pick(read cells, mx, my, turn) {
+    let mut hit = 0;
+    let mut depth = 0;
+    while depth < 15 {
+        let candidate = pick_depth(cells, mx, my, depth, turn);
+        if candidate != 0 {
+            hit <- candidate;
+        };
+        depth <- depth + 1;
+    };
+    hit
+}
+
+fn tint(material, brightness, face, selected) {
+    let red = if material == 1 {
+        63
+    } else {
+        if material == 2 {
+            193
+        } else {
+            if material == 3 {
+                77
+            } else {
+                255
+            }
+        }
+    };
+    let green = if material == 1 {
+        87
+    } else {
+        if material == 2 {
+            151
+        } else {
+            if material == 3 {
+                168
+            } else {
+                166
+            }
+        }
+    };
+    let blue = if material == 1 {
+        107
+    } else {
+        if material == 2 {
+            112
+        } else {
+            if material == 3 {
+                132
+            } else {
+                49
+            }
+        }
+    };
+    let boost = if selected {
+        35
+    } else {
+        0
+    };
+    io.vx_color(limit(red * brightness * face / 25500 + boost), limit(green * brightness * face / 25500 + boost), limit(blue * brightness * face / 25500 + boost))
+}
+fn side(sx, sy, material, brightness, selected, left) {
+    let mut ok = tint(material, brightness, if left {
+            68
+        } else {
+            82
+        }, selected);
+    let mut t = 0;
+    let count = if left {
+        28
+    } else {
+        29
+    };
+    while ok && t < count {
+        let x = if left {
+            sx - 28 + t
+        } else {
+            sx + t
+        };
+        let y = if left {
+            sy + t / 2
+        } else {
+            sy + 14 - t / 2
+        };
+        ok <- io.vx_line(x, y, x, y + 28);
+        t <- t + 1;
+    };
+    ok
+}
+fn cap(sx, sy, material, brightness, selected) {
+    let mut ok = tint(material, brightness, 100, selected);
+    let mut t = -14;
+    while ok && t <= 14 {
+        let half = 28 - absolute(t) * 2;
+        ok <- io.vx_line(sx - half, sy + t, sx + half, sy + t);
+        t <- t + 1;
+    };
+    ok
+}
+fn cube(sx, sy, material, brightness, left, right, top, selected) {
+    let mut ok = true;
+    if left {
+        ok <- side(sx, sy, material, brightness, selected, true);
+    };
+    if ok && right {
+        ok <- side(sx, sy, material, brightness, selected, false);
+    };
+    if ok && top {
+        ok <- cap(sx, sy, material, brightness, selected);
+    };
+    ok
+}
+
+fn slice_cell(read sdf, x, z) {
+    let d = lighting.distance(sdf, x, 3, z);
+    let mut ok = if d < 0 {
+        io.vx_color(limit(90 - d * 24), 75, 60)
+    } else {
+        io.vx_color(35, limit(65 + d * 20), limit(100 + d * 18))
+    };
+    let mut row = 0;
+    while ok && row < 42 {
+        ok <- io.vx_line(296 + x * 46, 150 + z * 46 + row, 338 + x * 46, 150 + z * 46 + row);
+        row <- row + 1;
+    };
+    ok
+}
+fn slice(read sdf) {
+    let mut ok = true;
+    let mut i = 0;
+    while ok && i < 64 {
+        ok <- slice_cell(sdf, i % 8, i / 8);
+        i <- i + 1;
+    };
+    ok
+}
+
+fn visible_sides(read cells, u, v, y, turn) {
+    let left = world.get(cells, world_x(u, v + 1, turn), y, world_z(u, v + 1, turn)) == 0;
+    let right = world.get(cells, world_x(u + 1, v, turn), y, world_z(u + 1, v, turn)) == 0;
+    (if left {
+            1
+        } else {
+            0
+        }) + (if right {
+            2
+        } else {
+            0
+        })
+}
+fn draw_voxel(read cells, read light, u, v, y, turn, view, selected) {
+    let x = world_x(u, v, turn);
+    let z = world_z(u, v, turn);
+    let material = world.get(cells, x, y, z);
+    if material != 0 {
+        let sides = visible_sides(cells, u, v, y, turn);
+        let top = world.get(cells, x, y + 1, z) == 0;
+        if sides != 0 || top {
+            let brightness = if view == 1 {
+                235
+            } else {
+                lighting.sample(light, x, y, z)
+            };
+            cube(480 + (u -v) * 28, 330 + (u + v) * 14 -(y + 1) * 28, material, brightness, sides % 2 == 1, sides >= 2, top, selected == 1 + x + y * 8 + z * 64)
+        } else {
+            true
+        }
+    } else {
+        true
+    }
+}
+fn draw_column(read cells, read light, u, v, turn, view, selected) {
+    let mut ok = true;
+    let mut y = 0;
+    while ok && y < 8 {
+        ok <- draw_voxel(cells, light, u, v, y, turn, view, selected);
+        y <- y + 1;
+    };
+    ok
+}
+fn draw_depth(read cells, read light, depth, turn, view, selected) {
+    let mut ok = true;
+    let mut u = 0;
+    while ok && u < 8 {
+        let v = depth -u;
+        if v >= 0 && v < 8 {
+            ok <- draw_column(cells, light, u, v, turn, view, selected);
+        };
+        u <- u + 1;
+    };
+    ok
+}
+fn draw_world(read cells, read light, turn, view, selected) {
+    let mut ok = true;
+    let mut depth = 0;
+    while ok && depth < 15 {
+        ok <- draw_depth(cells, light, depth, turn, view, selected);
+        depth <- depth + 1;
+    };
+    ok
+}
+fn headings() {
+    io.vx_begin() && io.vx_color(100, 220, 190) && io.vx_text(32, 28, c"RILL / VOXEL DESTRUCTION LAB") &&
+    io.vx_color(155, 180, 193) && io.vx_text(32, 56, c"LMB blast   RMB place   X demo blast   TAB rotate") &&
+    io.vx_text(32, 76, c"G lighting / unlit / SDF   SPACE pause   R reset   ESC quit")
+}
+export fn frame(read cells, read sdf, read light, turn, view, selected, removed, moved, paused) {
+    let mut ok = headings();
+    if view == 2 {
+        ok <- ok && slice(sdf);
+    } else {
+        ok <- ok && draw_world(cells, light, turn, view, selected);
+    };
+    ok && io.vx_hud(removed, moved, view, paused) && io.vx_present()
+}

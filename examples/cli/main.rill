@@ -1,0 +1,21 @@
+import std.cli as cli;
+import std.result as result;
+
+fn main() {
+    let token = "--count=42";
+    match cli.classify(token, true) {
+        cli.LongValue(name, value) => {
+            if cli.span_equal(token, name, "count") {
+                match cli.parse_i32(token, value) {
+                    result.Ok(count) => count
+                    | result.Err(error) => 0
+                }
+            } else { 0 }
+        }
+        | cli.Positional(span) => 0
+        | cli.LongOption(name) => 0
+        | cli.ShortOption(letter) => 0
+        | cli.EndOptions => 0
+        | cli.InvalidOption(span) => 0
+    }
+}

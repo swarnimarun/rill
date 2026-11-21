@@ -1,0 +1,2 @@
+// Neither division is evaluated.
+let main = if false && (1 / 0 == 0) then 0 else if true || (1 / 0 == 0) then 42 else 0

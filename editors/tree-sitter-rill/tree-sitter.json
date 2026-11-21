@@ -1,0 +1,19 @@
+{
+  "grammars": [{
+    "name": "rill",
+    "camelcase": "Rill",
+    "scope": "source.rill",
+    "path": ".",
+    "file-types": ["rill"],
+    "highlights": "queries/highlights.scm",
+    "locals": "queries/locals.scm",
+    "tags": "queries/tags.scm"
+  }],
+  "metadata": {
+    "version": "0.1.0",
+    "description": "Syntax highlighting for the experimental Rill compiler subset",
+    "authors": [{"name": "Rill contributors"}],
+    "links": {"repository": "https://github.com/swarnimarun/rill"}
+  },
+  "bindings": {"c": true}
+}

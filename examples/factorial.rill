@@ -1,0 +1,3 @@
+// Functions take named parameters. Calls use parentheses in this subset.
+let factorial n = if n == 0 then 1 else n * factorial(n - 1)
+let main = factorial(5)
