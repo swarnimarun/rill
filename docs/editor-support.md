@@ -104,8 +104,9 @@ parse; syntax diagnostics and recovery remain available while editing invalid
 source. Semantic errors without compiler spans anchor to the start of the
 document instead of guessing an expression location.
 
-The server advertises only implemented requests. Rename, references, code
-actions, debugger mappings and a cost report are not included.
+The advertised code action repairs a missing local-binding semicolon when the
+client supports versioned edits. Rename, references, debugger mappings and a
+cost report remain open.
 The input frame limit is 8 MiB; an open source document is limited to 1 MiB,
 with at most 128 documents and 16 MiB of open text. Module loading retains its
 existing containment, cycle, source-size and graph limits.

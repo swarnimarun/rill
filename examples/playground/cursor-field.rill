@@ -1,0 +1,17 @@
+type Cursor = {
+    column: i32;
+    row: i32
+}
+
+fn advance(inout cursor: Cursor) {
+    cursor.column <- cursor.column + 1
+}
+
+fn main() {
+    let mut cursor = record Cursor {
+        column = 7;
+        row = 2
+    };
+    advance(inout cursor);
+    cursor.column
+}

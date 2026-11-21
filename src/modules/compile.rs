@@ -122,9 +122,7 @@ pub fn lower_graph(graph: &ModuleGraph) -> Result<Program, ModuleError> {
 /// ordinary load_program never constructs metadata and cannot fail for that reason.
 pub fn load_program_with_sources(entry: &Path) -> Result<SourceProgram, ModuleError> {
     let graph = super::load(entry)?;
-    let mut trace = Trace::default();
-    let program = lower_traced(&graph, Some(&mut trace), true)?;
-    provenance::finish(graph, program, trace)
+    prepare_with_sources(graph, true)
 }
 
 /// Check immutable open-document text through the ordinary module compiler.
@@ -133,8 +131,17 @@ pub fn load_program_with_sources_and_overlays(
     overlays: &BTreeMap<PathBuf, String>,
 ) -> Result<SourceProgram, ModuleError> {
     let graph = super::load_with_overlays(entry, overlays)?;
+    prepare_with_sources(graph, true)
+}
+
+/// Resolve an already prepared source graph with positional metadata. The
+/// caller supplies its bytes and chooses the executable or library contract.
+pub(crate) fn prepare_with_sources(
+    graph: ModuleGraph,
+    require_main: bool,
+) -> Result<SourceProgram, ModuleError> {
     let mut trace = Trace::default();
-    let program = lower_traced(&graph, Some(&mut trace), true)?;
+    let program = lower_traced(&graph, Some(&mut trace), require_main)?;
     provenance::finish(graph, program, trace)
 }
 

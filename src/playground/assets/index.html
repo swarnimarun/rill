@@ -1,0 +1,96 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>Compiler explorer · Rill</title>
+  <link rel="stylesheet" href="/assets/style.css">
+  <script defer src="/assets/app.js"></script>
+</head>
+<body>
+  <a class="skip-link" href="#source">Skip to source editor</a>
+  <header class="topbar">
+    <div class="topbar-inner">
+      <a class="brand" href="/" aria-label="Rill playground">
+        <span class="brand-mark" aria-hidden="true"><i></i><i></i><i></i></span>Rill
+      </a>
+      <span class="product">Compiler explorer</span>
+      <a class="book-link" href="/book/">Language book <span aria-hidden="true">↗</span></a>
+    </div>
+  </header>
+  <noscript><p class="no-script">Enable JavaScript to edit and run lessons, or read the <a href="/book/">language book</a>.</p></noscript>
+
+  <div class="layout">
+    <button id="toggle-lessons" class="mobile-toggle" type="button" aria-expanded="false" aria-controls="library">Browse lessons <span aria-hidden="true">⌄</span></button>
+    <aside id="library" class="library">
+      <div class="library-heading"><h2>Lessons</h2><span id="lesson-count"></span></div>
+      <label class="search-box"><span aria-hidden="true" class="search-icon"></span><span class="sr-only">Filter lessons</span><input id="filter" type="search" placeholder="Find a lesson" autocomplete="off"></label>
+      <nav id="lesson-list" aria-label="Lessons"></nav>
+      <p id="filter-empty" class="muted" hidden>No matching lessons.</p>
+    </aside>
+
+    <main id="main">
+      <section class="lesson-intro" aria-labelledby="lesson-title">
+        <p class="context" id="lesson-context">Playground</p>
+        <h1 id="lesson-title" tabindex="-1">Compiler explorer</h1>
+        <p id="description" class="description">Loading lessons…</p>
+        <button id="retry-lessons" class="light-button" type="button" hidden>Reload lessons</button>
+      </section>
+
+      <section class="workbench" aria-label="Compiler workspace">
+        <div class="workspace-bar">
+          <div class="workspace-name"><span class="prompt-icon" aria-hidden="true">›_</span>Workspace</div>
+          <div class="actions">
+            <button id="reset" class="light-button" type="button" disabled>Reset</button>
+            <button id="run" class="run-button" type="button" disabled><span aria-hidden="true" class="play-icon"></span><span id="run-label">Run</span><kbd id="run-shortcut" aria-hidden="true">Ctrl ↵</kbd></button>
+          </div>
+        </div>
+        <div class="panes">
+          <section class="source-panel" aria-labelledby="source-heading">
+            <div class="pane-header">
+              <h2 id="source-heading">Source</h2>
+              <span id="source-file" class="file-label">playground.rill</span>
+            </div>
+            <div class="editor">
+              <pre id="numbers" class="numbers" aria-hidden="true"></pre>
+              <div class="code-area">
+                <pre id="highlight" class="source-text highlight" aria-hidden="true"></pre>
+                <textarea id="source" class="source-text" aria-label="Rill source" wrap="off" spellcheck="false" autocapitalize="off" autocomplete="off" disabled></textarea>
+              </div>
+            </div>
+            <div class="pane-footer"><span id="source-status">Source editor</span><span id="cursor"></span></div>
+          </section>
+          <section class="output-panel" aria-labelledby="output-heading">
+            <div class="pane-header">
+              <h2 id="output-heading">Output</h2>
+              <label class="select-wrap"><span class="sr-only">Compiler view</span>
+                <select id="view" aria-describedby="view-help" disabled>
+                  <optgroup label="Evaluate"><option value="run" data-help="Evaluates the checked program and returns the value of main.">Interpreter</option></optgroup>
+                  <optgroup label="Frontend"><option value="check" data-help="Checks names, types and ownership without executing the program.">Type check</option><option value="tokens" data-help="Lists the lexer’s tokens with source positions.">Tokens</option><option value="ast" data-help="Shows the parser’s abstract syntax tree before type inference.">Syntax tree (AST)</option><option value="types" data-help="Lists function signatures inferred by the type checker.">Inferred types</option><option value="format" data-help="Formats the source while preserving its tokens and comments.">Formatter</option></optgroup>
+                  <optgroup label="Code generation"><option value="typed-ir" data-help="Shows reachable functions and operations in the checked host IR.">Typed IR</option><option value="c" data-help="Emits C11 for the checked program, ready for a native C compiler.">C11 source</option><option value="rir" data-help="Extracts a checked scalar function into versioned Rill kernel IR.">Rill kernel IR</option><option value="ir-eval" data-help="Evaluates the map once per signed input on the CPU.">Kernel evaluator</option><option value="nvptx" data-help="Emits LLVM IR targeting NVIDIA PTX with the CUDA ABI.">LLVM · CUDA</option><option value="vulkan" data-help="Emits LLVM IR targeting Vulkan compute SPIR-V.">LLVM · Vulkan</option></optgroup>
+                </select>
+              </label>
+            </div>
+            <div id="kernel-controls" class="kernel-controls" hidden>
+              <label>Entry function<input id="entry" type="text" placeholder="clamp" spellcheck="false" autocomplete="off"></label>
+              <label id="inputs-control" hidden>i32 inputs<input id="inputs" type="text" placeholder="-7, 0, 42" spellcheck="false" autocomplete="off"></label>
+            </div>
+            <p class="view-help" id="view-help"></p>
+            <pre id="output" tabindex="0" aria-label="Compiler output"></pre>
+            <div class="pane-footer"><span id="output-status" role="status">Waiting for source</span><button id="copy" class="copy-button" type="button" disabled>Copy</button></div>
+          </section>
+        </div>
+      </section>
+
+      <section id="exercise-panel" class="exercise" aria-labelledby="exercise-title" hidden>
+        <span class="exercise-sign" aria-hidden="true">↳</span>
+        <div><h2 id="exercise-title">Try it</h2><p id="exercise"></p></div>
+      </section>
+      <nav id="lesson-pager" class="pager" aria-label="Lesson sequence" hidden>
+        <a id="previous" hidden></a><a id="next" hidden></a>
+      </nav>
+    </main>
+  </div>
+</body>
+</html>

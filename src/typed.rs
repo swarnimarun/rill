@@ -42,6 +42,7 @@ mod independent_phantom_product_tests;
 mod initialization;
 #[cfg(test)]
 mod initialization_tests;
+pub(crate) mod inspection;
 mod instances;
 mod library;
 pub(crate) use library::emit_i32_library;

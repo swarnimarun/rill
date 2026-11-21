@@ -117,6 +117,10 @@ pub(super) fn run(args: impl Iterator<Item = OsString>) -> Result<(), String> {
     Ok(())
 }
 
+pub(super) fn language_book() -> Result<BTreeMap<String, Vec<u8>>, String> {
+    render::render_with_playground_link(&content::collect(None)?, true)
+}
+
 fn io_error(error: std::io::Error) -> String {
     format!("E-DOCS-IO: {error}")
 }

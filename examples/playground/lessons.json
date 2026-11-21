@@ -1,0 +1,85 @@
+[
+  {
+    "id": "signal-gain",
+    "file": "signal-gain.rill",
+    "title": "Shape a signal",
+    "topic": "Expressions",
+    "description": "Amplify a sample and cap its level at 60. The last expression of the block supplies the result.",
+    "exercise": "Change the sample from 14 to 25. Predict which branch returns 60, then run it.",
+    "view": "run",
+    "expected": "42"
+  },
+  {
+    "id": "generic-identity",
+    "file": "generic-identity.rill",
+    "title": "Read an inferred type",
+    "topic": "Inference",
+    "description": "Use one identity function at bool and i32. Inspect its inferred signature and the concrete result of main.",
+    "exercise": "Switch to Run to get 9. Replace keep(9) with keep(true) and compare the types of the two branches.",
+    "view": "types",
+    "expected": "keep"
+  },
+  {
+    "id": "optional-reading",
+    "file": "optional-reading.rill",
+    "title": "Handle a missing reading",
+    "topic": "Patterns",
+    "description": "A sensor supplies Some(18) or None. The success arm of if let binds the reading and the other arm supplies a fallback.",
+    "exercise": "Replace Some(18) with None. Run it, then inspect the AST to see how the pattern conditional is represented.",
+    "view": "run",
+    "expected": "18"
+  },
+  {
+    "id": "cursor-field",
+    "file": "cursor-field.rill",
+    "title": "Move a cursor",
+    "topic": "Records",
+    "description": "An inout parameter gives a function exclusive access to a mutable cursor. The caller can read its new column after the call.",
+    "exercise": "Add a second advance(inout cursor) statement. Predict the final column. Then remove mut from the declaration and check the diagnostic.",
+    "view": "run",
+    "expected": "8"
+  },
+  {
+    "id": "transfer-owner",
+    "file": "transfer-owner.rill",
+    "title": "Follow an allocation",
+    "topic": "Ownership",
+    "description": "Borrow a boxed sample for one observation, then move the allocation to its final consumer. Both reads contribute to the result.",
+    "exercise": "Reverse the operands of the addition and replace first with observe(sample). Check what happens when the read follows the move.",
+    "view": "run",
+    "expected": "24"
+  },
+  {
+    "id": "operand-error",
+    "file": "operand-error.rill",
+    "title": "Repair a type error",
+    "topic": "Diagnostics",
+    "description": "An integer channel count and a boolean flag reach the same addition. Ask the checker which operand needs to change.",
+    "exercise": "Replace enabled in the addition with (if enabled { 1 } else { 0 }). Check the edit and run it to obtain 3.",
+    "view": "check",
+    "ok": false,
+    "expected": "right operand of '+' expects i32, found bool"
+  },
+  {
+    "id": "native-branch",
+    "file": "native-branch.rill",
+    "title": "Trace a native branch",
+    "topic": "C11",
+    "description": "Generate C for a signed comparison. Find the conditional in the generated function, then follow its result into the C entry point.",
+    "exercise": "Change the input from 8 to -8. Compare the interpreter result and the emitted C literal.",
+    "view": "c",
+    "expected": "int main(void)"
+  },
+  {
+    "id": "signed-bands",
+    "file": "signed-bands.rill",
+    "title": "Classify GPU lanes",
+    "topic": "Kernel IR",
+    "description": "Classify signed inputs into three bands. The map profile uses one independent input and result per active GPU lane.",
+    "exercise": "Evaluate -1, 0, 7 and 8. Inspect Rill IR to find both signed comparisons, then compare the CUDA and Vulkan LLVM entry points.",
+    "view": "ir-eval",
+    "entry": "band",
+    "inputs": [-1, 0, 7, 8],
+    "expected": "0\n1\n1\n2"
+  }
+]

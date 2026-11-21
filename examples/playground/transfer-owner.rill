@@ -1,0 +1,13 @@
+fn observe(read slot) {
+    box_read(slot)
+}
+
+fn finish(slot) {
+    box_read(slot)
+}
+
+fn main() {
+    let sample = system_box_i32_abort(12);
+    let first = observe(sample);
+    first + finish(move sample)
+}

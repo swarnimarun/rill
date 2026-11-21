@@ -496,3 +496,5 @@ describe that boundary and the remaining runtime containers/OS work.
 This is a source-library increment, not a completed P2/P3 phase or stable release.
 
 On the `systems-ml` branch the [GPU compilation guide](gpu-compilation.md) reproduces checked source extraction, kernel IR evaluation, LLVM emission, validation and device smoke tests. The compiler CLI and IR tests run without either GPU toolkit.
+
+Start `cargo run --locked -- playground` for the local compiler explorer and its bundled book. The [run guide](learning-workbench.md) includes application entry points, LSP setup and verification. The [compiler walkthrough](compiler-core.md) follows one program through the implementation. See the [playground verification](verification/2026-11-21-playground.md) for the browser and CLI results. Keep teaching material synchronized using the workflow in [AGENTS.md](../AGENTS.md).

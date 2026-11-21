@@ -1,0 +1,13 @@
+type Option < a > = None | Some(a)
+
+fn reading_or(read latest: Option < i32 >, fallback: i32) {
+    if let Some(value) = latest {
+        value
+    } else {
+        fallback
+    }
+}
+
+fn main() {
+    reading_or(Some(18), 5)
+}

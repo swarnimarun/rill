@@ -25,6 +25,13 @@ struct Targets {
 }
 
 pub(super) fn render(site: &Site) -> Result<BTreeMap<String, Vec<u8>>, String> {
+    render_with_playground_link(site, false)
+}
+
+pub(super) fn render_with_playground_link(
+    site: &Site,
+    playground: bool,
+) -> Result<BTreeMap<String, Vec<u8>>, String> {
     check_label(&site.title)?;
     if site.pages.len() > super::MAX_FILES - 4 {
         return Err("E-DOCS-LIMIT: too many rendered pages".into());
@@ -107,7 +114,7 @@ pub(super) fn render(site: &Site) -> Result<BTreeMap<String, Vec<u8>>, String> {
             &mut files,
             &mut output_bytes,
             page.path.clone(),
-            shell(site, Some(page), &content, &toc, false).into_bytes(),
+            shell(site, Some(page), &content, &toc, false, playground).into_bytes(),
         )?;
     }
     let search = "<h1>Search documentation</h1><p class=\"intro\">Find language syntax, project guides and source declarations.</p><p class=\"search-hint\">Try <code>inout</code>, <code>std.cli</code> or a function name.</p><p id=\"search-status\" role=\"status\" aria-live=\"polite\">Enter a term in the search field.</p><ol id=\"search-results\" class=\"search-results\"></ol><button id=\"search-more\" type=\"button\" hidden>Show more results</button><noscript><p>Search requires JavaScript. Use the page navigation or your browser's Find command to read the documentation.</p></noscript>";
@@ -115,7 +122,7 @@ pub(super) fn render(site: &Site) -> Result<BTreeMap<String, Vec<u8>>, String> {
         &mut files,
         &mut output_bytes,
         "search.html".into(),
-        shell(site, None, search, "", true).into_bytes(),
+        shell(site, None, search, "", true, playground).into_bytes(),
     )?;
     add_file(
         &mut files,
@@ -369,12 +376,22 @@ fn navigation(site: &Site, page: Option<&Page>, prefix: &str) -> String {
     result
 }
 
-fn shell(site: &Site, page: Option<&Page>, body: &str, toc: &str, search: bool) -> String {
+fn shell(
+    site: &Site,
+    page: Option<&Page>,
+    body: &str,
+    toc: &str,
+    search: bool,
+    playground: bool,
+) -> String {
     let path = page.map_or("search.html", |page| page.path.as_str());
     let title = page.map_or("Search", |page| page.title.as_str());
     let section = page.map_or("Documentation", |page| page.section.as_str());
     let prefix = links::root_prefix(path);
-    let nav = navigation(site, page, &prefix);
+    let mut nav = navigation(site, page, &prefix);
+    if playground {
+        nav.insert_str(0, "<p><a href=\"/\">Compiler explorer</a></p>");
+    }
     let index_script = if search {
         format!("<script src=\"{prefix}assets/search-index.js\" defer></script>")
     } else {

@@ -33,6 +33,25 @@ Raw C pointers have no checked Rill lifetime or automatic foreign-resource
 cleanup. Header compatibility is not an effect or ownership proof. See
 `docs/c-interop.md` before expanding this boundary.
 
+## Keep the language, playground and book in sync
+
+- Keep semantic changes in the shared Rust lexer, parser, checker, interpreter, typed IR, emitters and LSP presentation. `rill::explorer::inspect` in `src/explorer.rs` adapts these APIs for one source buffer. A browser view must use that API for results and diagnostics. The HTTP layer lives in `src/playground/` and the browser controls in `src/playground/assets/`.
+- Keep each lesson’s source in `examples/playground/<id>.rill`. Add its title, exercise, starting view and expected result, compiler-output fragment or diagnostic substring to `examples/playground/lessons.json`. Use `ok: false` for a deliberate rejection. Run, check and IR evaluation compare the entire trimmed result. `build.rs` discovers and embeds the sources. The CLI and browser consume the same embedded catalogue. Rebuild and restart the server after changing lessons, guides or browser assets.
+- When syntax, inference, ownership or IR changes, update the matching compiler and editor regression tests, the relevant lesson, and the [compiler walkthrough](docs/compiler-core.md). For a new playground view, update the shared explorer dispatch, the browser stage selector, its help text, [run guide](docs/learning-workbench.md) and view tests. Preserve precise distinctions between interpreted values, generated code and device execution.
+- When a command, dependency or example changes, run its documented invocation and update the README quickstart, [run guide](docs/learning-workbench.md), owning example README and CLI help as applicable. Register new book chapters in `src/docgen/content.rs`. Both the live `/book/` and `rill docs --language` render those same checked-in Markdown sources. Keep historical verification records attached to their original checkpoints.
+
+Run the targeted synchronization checks before the full matrix below.
+
+```sh
+cargo run --locked -- playground --check-lessons
+cargo test --locked --test explorer_core --test playground_cli --test docs_cli
+cargo run --locked -- docs --language -o build/book
+python3 scripts/check-docs-links.py build/book
+node scripts/test-docs-search.cjs
+```
+
+For a UI change, start `rill playground`, run `node scripts/test-playground-browser.cjs` with Playwright and Chromium available, and exercise desktop and mobile layouts. Check a source edit, a diagnostic, a target switch, and book navigation. Run default and minimal-feature Cargo suites sequentially in the same target directory, or use separate target directories. Their CLI binaries have the same filename.
+
 ## Verification
 
 ```sh

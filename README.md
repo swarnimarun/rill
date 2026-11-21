@@ -4,6 +4,25 @@ Rill is an experimental compiler for the language described in [PLAN.md](PLAN.md
 It currently implements a small sequential subset. It is not yet a stable
 language; see [phase status](docs/phase-status.md) and [remaining work](docs/blockers/remaining-phases.md).
 
+## Learn and run Rill
+
+From the repository root, start the local compiler explorer with Rust and Cargo.
+
+```sh
+cargo run --locked -- playground
+```
+
+Open **http://127.0.0.1:7878/** and choose **Shape a signal**. Run it to get `42`, change the sample to `25`, and run it again to get `60`. Switch the output to inferred types, the syntax tree, verified host IR or generated C11 to see how the same edit moves through the compiler. The kernel lesson also exposes Rill map IR, CPU lane evaluation and LLVM for CUDA or Vulkan. The **Language book** link opens the searchable manual served with the playground. Use `Ctrl-C` in the terminal to stop it.
+
+| To do this | Run from the repository root |
+| --- | --- |
+| Use an available local port | `cargo run --locked -- playground --port 0` |
+| Replay every lesson and its expected result or diagnostic | `cargo run --locked -- playground --check-lessons` |
+| Generate the book for reading directly from disk | `cargo run --locked -- docs --language -o build/book` and open `build/book/index.html` |
+| Run the first lesson directly with the checked interpreter | `cargo run --locked -- run examples/playground/signal-gain.rill --interpret` |
+
+The [learning and run guide](docs/learning-workbench.md) covers installation, the examples, editor/LSP setup, native and GPU tools, proofs and tests. Follow the [compiler core walkthrough](docs/compiler-core.md) to trace a function from source through type inference, ownership checks, execution and code generation.
+
 The independent [systems ML roadmap](docs/systems-ml-roadmap.md) pairs language
 changes with three runnable applications. Run a [scene graph with SDL3 and terminal renderers](examples/scene-engine/README.md),
 edit a real file with the [modal editor](examples/modal-editor/README.md), or

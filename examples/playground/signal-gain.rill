@@ -1,0 +1,12 @@
+fn amplify(sample, gain) {
+    let level = sample * gain;
+    if level > 60 {
+        60
+    } else {
+        level
+    }
+}
+
+fn main() {
+    amplify(14, 3)
+}

@@ -111,7 +111,7 @@ pub(super) fn annotation(ty: &TypeExpr) -> String {
     }
 }
 
-pub(super) fn function_detail(
+pub(crate) fn function_detail(
     name: &str,
     function: &crate::ast::Function,
     signature: &check::FunctionType,

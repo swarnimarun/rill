@@ -110,6 +110,28 @@ pub fn load_with_overlays(
             format!("entry escapes project root: {}", entry.display()),
         ));
     }
+    discover(root, path, normalized, overlay_conflicts, None)
+}
+
+/// Resolve an editor buffer and explicitly imported bundled modules entirely
+/// in memory. Local imports have no backing directory in this compilation.
+pub(crate) fn load_buffer(source: &str) -> Result<ModuleGraph, ModuleError> {
+    discover(
+        PathBuf::new(),
+        PathBuf::from("playground.rill"),
+        BTreeMap::new(),
+        HashSet::new(),
+        Some(source),
+    )
+}
+
+fn discover<'a>(
+    root: PathBuf,
+    path: PathBuf,
+    normalized: BTreeMap<PathBuf, &'a str>,
+    overlay_conflicts: HashSet<PathBuf>,
+    entry_text: Option<&'a str>,
+) -> Result<ModuleGraph, ModuleError> {
     let mut loader = Loader {
         root: root.clone(),
         modules: BTreeMap::new(),
@@ -119,6 +141,7 @@ pub fn load_with_overlays(
         stack: Vec::new(),
         overlays: normalized,
         overlay_conflicts,
+        entry_text,
     };
     loader.visit(ENTRY.to_string(), path)?;
     Ok(ModuleGraph {
@@ -178,6 +201,7 @@ struct Loader<'a> {
     stack: Vec<(String, PathBuf)>,
     overlays: BTreeMap<PathBuf, &'a str>,
     overlay_conflicts: HashSet<PathBuf>,
+    entry_text: Option<&'a str>,
 }
 impl Loader<'_> {
     fn visit(&mut self, name: String, path: PathBuf) -> Result<(), ModuleError> {
@@ -211,6 +235,14 @@ impl Loader<'_> {
             return Err(error("E-MODULE-LIMIT", "module count exceeds 256"));
         }
         let source = if let Some(source) = stdlib::source(&name) {
+            source.to_owned()
+        } else if let Some(source) = self.entry_text {
+            if name != ENTRY {
+                return Err(error(
+                    "E-MODULE-IMPORT",
+                    "buffer imports require a bundled std module",
+                ));
+            }
             source.to_owned()
         } else {
             let file = match File::open(&path) {
@@ -301,6 +333,12 @@ impl Loader<'_> {
                         "bundled module {name} cannot import local module {}",
                         import.module
                     ),
+                ));
+            }
+            if self.entry_text.is_some() {
+                return Err(error(
+                    "E-MODULE-IMPORT",
+                    format!("{}:{}:{}: local import {} requires a project directory; the explorer loads bundled std modules", path.display(), import.line, import.column, import.module),
                 ));
             }
             let candidate = self

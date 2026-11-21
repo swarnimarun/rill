@@ -2,6 +2,7 @@
 mod hints;
 mod index;
 mod types;
+pub(crate) use types::function_detail;
 
 pub use hints::{inlay_hints, signature_help};
 

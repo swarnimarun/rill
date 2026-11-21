@@ -1,0 +1,11 @@
+fn classify(value: i32) -> i32 {
+    if value < 0 {
+        1
+    } else {
+        2
+    }
+}
+
+fn main() {
+    classify(8)
+}

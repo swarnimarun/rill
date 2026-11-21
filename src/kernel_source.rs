@@ -123,6 +123,10 @@ fn lower_file(
 ) -> Result<String, String> {
     let source =
         load_library_with_sources_and_overlays(entry, overlays).map_err(|e| e.to_string())?;
+    lower_program(&source, name)
+}
+
+pub(crate) fn lower_program(source: &SourceProgram, name: &str) -> Result<String, String> {
     let symbol = source
         .symbols()
         .iter()
@@ -151,7 +155,7 @@ fn lower_file(
         ));
     }
     let mut lower = Lower {
-        source: &source,
+        source,
         input: &function.params[0].name,
         output: "rir 0\nkernel map.i32 workgroup_x 64\n".into(),
         definitions: 0,

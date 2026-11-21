@@ -34,6 +34,12 @@ macro_rules! chapter {
 
 const LANGUAGE: &[(&str, &str, &str, &str)] = &[
     chapter!("index", "Rill", "README.md"),
+    chapter!(
+        "learning-workbench",
+        "Learn Rill in the playground",
+        "docs/learning-workbench.md"
+    ),
+    chapter!("compiler-core", "Compiler core", "docs/compiler-core.md"),
     chapter!("syntax-tour", "Syntax tour", "docs/syntax-tour.md"),
     chapter!(
         "language-features",
@@ -68,6 +74,14 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
         "docs/source-format.md"
     ),
     chapter!("editor-support", "Editor support", "docs/editor-support.md"),
+    chapter!("helix", "Set up Helix", "editors/helix/README.md"),
+    chapter!("neovim", "Set up Neovim", "editors/neovim/README.md"),
+    chapter!("vscode", "Set up VS Code", "editors/vscode/README.md"),
+    chapter!(
+        "tree-sitter",
+        "Tree-sitter grammar",
+        "editors/tree-sitter-rill/README.md"
+    ),
     chapter!(
         "phase-status",
         "Implementation status",
@@ -104,6 +118,37 @@ const LANGUAGE: &[(&str, &str, &str, &str)] = &[
         "Remaining language work",
         "docs/blockers/remaining-phases.md"
     ),
+    chapter!(
+        "operand-diagnostics",
+        "Operand diagnostics",
+        "docs/operand-diagnostics.md"
+    ),
+    chapter!("type-models", "Type models", "docs/type-models.md"),
+    chapter!(
+        "option-core-proof",
+        "Option core proof",
+        "docs/option-core-proof.md"
+    ),
+    chapter!(
+        "gpu-compilation",
+        "Rill IR and GPU compilation",
+        "docs/gpu-compilation.md"
+    ),
+    chapter!(
+        "scene-engine",
+        "Scene engine",
+        "examples/scene-engine/README.md"
+    ),
+    chapter!(
+        "modal-editor",
+        "Modal editor",
+        "examples/modal-editor/README.md"
+    ),
+    chapter!(
+        "embedded-db",
+        "Embedded database",
+        "examples/embedded-db/README.md"
+    ),
     chapter!("plan", "Language blueprint", "PLAN.md"),
 ];
 
@@ -127,7 +172,7 @@ pub(super) fn collect(project: Option<&crate::project::Project>) -> Result<Site,
         "Rill".into()
     };
     let mut markdown = format!("# {title} documentation\n\n");
-    markdown.push_str("Rill is an experimental language. Browse the language manual, project guides and parsed source declarations.\n\n");
+    markdown.push_str("Start with [Learn Rill in the playground](language/learning-workbench.html) to run your first program. Follow it through the [compiler core](language/compiler-core.html) to connect its source, types, IR and generated C.\n\n");
     for section in ["Language", "Project", "API"] {
         let entries: Vec<_> = pages
             .iter()

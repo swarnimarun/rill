@@ -1,0 +1,12 @@
+fn keep(value) {
+    value
+}
+
+fn main() {
+    let enabled = keep(true);
+    if enabled {
+        keep(9)
+    } else {
+        0
+    }
+}

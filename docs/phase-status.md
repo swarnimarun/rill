@@ -330,3 +330,5 @@ growable storage, crash recovery, loan proofs and early-exit cleanup.
 See the [checkpoint verification](verification/2026-11-21-systems-ml.md) for the executed matrix and platform limits.
 
 The [GPU IR checkpoint](gpu-compilation.md) extracts a restricted checked `i32 -> i32` map, evaluates its versioned IR and emits LLVM for NVPTX and Vulkan compute. CUDA execution used RTX hardware. The raw Vulkan artifact ran on llvmpipe and requires `shaderInt8` with the tested LLVM release. Generic dispatch leases, checked arithmetic and the broader device memory model are open.
+
+The local [learning playground](learning-workbench.md) exposes the actual frontend, checked interpreter, formatter, C emitter and host/device IR inspections. The [compiler core chapter](compiler-core.md) traces their shared rules. The web process serves bundled resources on loopback and runs inspections in bounded child processes. The GPU views emit LLVM text or evaluate a lane on the CPU.

@@ -1,0 +1,5 @@
+fn main() {
+    let channels = 2;
+    let enabled = true;
+    channels + enabled
+}

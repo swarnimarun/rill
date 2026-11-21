@@ -22,7 +22,7 @@ mod bounds;
 mod interrupted;
 #[path = "control_relation.rs"]
 mod relation;
-pub(super) use bounds::has_extension;
+pub(super) use bounds::{has_extension, Tree};
 pub(super) use interrupted::InterruptedEvidence;
 pub(super) use relation::Frozen;
 
